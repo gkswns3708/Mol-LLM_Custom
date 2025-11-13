@@ -1,0 +1,7 @@
+gnn_hidden_dim: 4096
+gin_num_layers: 2
+drop_ratio: 0.0
+used_gnn_layer: -1
+gnn_jk: last
+graph_encoder_ckpt: None
+gnn_type: gine

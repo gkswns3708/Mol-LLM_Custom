@@ -1,0 +1,96 @@
+bert_hidden_dim: 768
+bert_name: scibert
+cross_attention_freq: 2
+num_query_token: 32
+bert_num_hidden_layers: 5
+
+projector_type: qformer
+
+llm_model: "mistralai/Mistral-7B-Instruct-v0.3"
+tune_llm: lora
+peft_config: null
+peft_dir: ""
+load_in_8bit: false
+lora_r: 64
+lora_alpha: 32
+lora_dropout: 0.1
+selfies_token_path: Mol-LLM/model/selfies_dict.txt
+add_selfies_tokens: true
+prompt: "[START_I_SMILES]{}[END_I_SMILES]"
+
+num_beams: 1
+
+strategy_name: null
+accelerator: gpu
+devices: "0,1,2,3,4,5,6,7"
+precision: bf16-mixed
+max_steps: -1
+max_epochs: 6
+every_n_epochs: 1
+task: null
+logging_dir: /data/all_checkpoints/
+llava_pretraining: 0
+second_stage_start_epoch: 4
+num_workers: 0
+skip_sanity_check: false
+
+# accumulate_grad_batches: 11
+total_batch_size: 2048
+batch_size: 4
+inference_batch_size: 10
+
+truncation: 1
+padding: max_length
+max_length: 512
+
+gen_max_len: 256
+min_len: 8
+
+apply_sequence_packing: false
+max_packing_size: -1
+
+weight_decay: 0.05
+min_lr: 0.00001
+init_lr: 0.00004
+warmup_lr: 0.000004
+warmup_epochs: 0.25
+scheduler: linear_warmup_cosine_lr
+optimizer: adamw
+log_every_n_steps: 50
+gradient_clip_val: 0.5
+
+val_check_interval: 0.20
+test_on_trainset: false
+
+# multimodal training
+mol_representation: string+graph
+log_attn_score: true
+eval_modality_util: null
+tune_gnn: true
+
+# molpo
+train_molpo: true
+eval_molpo: false
+
+molpo_batch_division: 2
+
+beta: 1.0
+gamma_beta_ratio: 0.5
+
+sft_weight: 1.0
+molpo_weight: 0.25
+anc_rejected_weight: 0.0
+anc_reject_clip: -1
+rejected_lambda: 1.5
+molpo_lambda : -0.5
+margin_clip_scale: 1.0
+
+reject_label_mask: false
+
+apply_preference_system_prompt: false
+
+selfies_enumeration: false
+
+loss_type: sigmoid
+anc_loss_type: sigmoid
+find_unused_parameters: true

@@ -1,0 +1,7 @@
+gnn_hidden_dim: 300
+gnn_num_layers: 5
+drop_ratio: 0.0
+used_gnn_layer: -1
+gnn_jk: last
+graph_encoder_ckpt: /data/all_checkpoints/MoleculeSTM/molecule_model.pth
+gnn_type: gine

@@ -1,0 +1,36 @@
+raw_data_root: /app/Mol-LLM/dataset/real_train
+data_tag: 3.3M_0415
+
+target_benchmarks:
+  # ---- used for training (논문 인스트럭션 튜닝 대상) ----
+  - bace
+  - chebi-20-mol2text
+  - chebi-20-text2mol
+  - forward_reaction_prediction
+  - qm9_homo
+  - qm9_homo_lumo_gap
+  - qm9_lumo
+  - reagent_prediction
+  - retrosynthesis
+  - smol-forward_synthesis
+  - smol-molecule_captioning
+  - smol-molecule_generation
+  - smol-property_prediction-bbbp
+  - smol-property_prediction-clintox
+  - smol-property_prediction-esol
+  - smol-property_prediction-hiv
+  - smol-property_prediction-lipo
+  - smol-property_prediction-sider
+  - smol-retrosynthesis
+
+  # ---- OOD 평가 전용 (학습에는 미사용) ----
+  # - aqsol-logS
+  # - orderly-forward_reaction_prediction
+  # - orderly-retrosynthesis
+
+  # ---- 논문에서 미사용/비언급 (학습·평가 모두 미포함) ----
+  # - alchemy_homo
+  # - alchemy_homo_lumo_gap
+  # - alchemy_lumo
+  # - presto-forward_reaction_prediction
+  # - presto-retrosynthesis

@@ -1,0 +1,7 @@
+pgrep -af 'miniconda/bin/python -c .*spawn_main' \
+  | awk '{print $1}' \
+  | xargs -r kill -TERM
+sleep 5
+pgrep -af 'miniconda/bin/python -c .*spawn_main' \
+  | awk '{print $1}' \
+  | xargs -r kill -KILL

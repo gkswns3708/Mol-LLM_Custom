@@ -1,0 +1,31 @@
+raw_data_root: /data/data/Mol-LLM-v7.1
+data_tag: 3.3M_0415
+
+tasks:
+  - alchemy_homo
+  - alchemy_homo_lumo_gap
+  - alchemy_lumo
+  - aqsol-logS
+  - bace
+  - chebi-20-mol2text
+  - chebi-20-text2mol
+  - forward_reaction_prediction
+  - orderly-forward_reaction_prediction
+  - orderly-retrosynthesis
+  - presto-forward_reaction_prediction
+  - presto-retrosynthesis
+  - qm9_homo
+  - qm9_homo_lumo_gap
+  - qm9_lumo
+  - reagent_prediction
+  - retrosynthesis
+  - smol-forward_synthesis
+  - smol-molecule_captioning
+  - smol-molecule_generation
+  - smol-property_prediction-bbbp
+  - smol-property_prediction-clintox
+  - smol-property_prediction-esol
+  - smol-property_prediction-hiv
+  - smol-property_prediction-lipo
+  - smol-property_prediction-sider
+  - smol-retrosynthesis

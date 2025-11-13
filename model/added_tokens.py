@@ -1,0 +1,13 @@
+BOOL = ["<BOOLEAN>", "</BOOLEAN>"]
+FLOAT = ["<FLOAT>", "</FLOAT>"]
+DESCRIPTION = ["<DESCRIPTION>", "</DESCRIPTION>"]
+SELFIES = ["<SELFIES>", "</SELFIES>"]
+MOL_2D = ["<GRAPH>", "</GRAPH>"]
+MOL_3D = ["<3D_CONFORMER>", "</3D_CONFORMER>"]
+MOL_EMBEDDING = ["<mol>"]
+NUMBER = [f"<|{i}|>" for i in range(10)]
+NUMBER.extend(["<|+|>", "<|-|>", "<|.|>"])
+INSTRUCTION = ["<INSTRUCTION>", "</INSTRUCTION>"]
+REACTION_DIRECTION = ["|>>|"]
+IUPAC = ["<IUPAC>", "</IUPAC>"]
+MOLFORMULA = ["<MOLFORMULA>", "</MOLFORMULA>"]
