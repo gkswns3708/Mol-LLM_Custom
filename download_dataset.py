@@ -728,10 +728,10 @@ if __name__ == "__main__":
 
     # get arg replace_ratio, dataset_path
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_dir", type=str, default="Mol-LLM/configs/download/")
-    parser.add_argument("--config", type=str, default="hopv_homo")
-    parser.add_argument("--train_procs", type=int, default=1)
-    parser.add_argument("--test_procs", type=int, default=1)
+    parser.add_argument("--config_dir", type=str, default="./configs/download/")
+    parser.add_argument("--config", type=str, default="default")
+    parser.add_argument("--train_procs", type=int, default=8)
+    parser.add_argument("--test_procs", type=int, default=8)
     args = parser.parse_args()
 
     

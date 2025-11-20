@@ -2,7 +2,7 @@ export TOKENIZERS_PARALLELISM=false;
 gpus=$1
 data_tag=3.3M_0415_molpo-replace-0.3
 filename="HJChoi" # Replace with your actual filename
-ckpt_path="/app/Mol-LLM/checkpoint/mol-llm.ckpt" # Replace with your actual checkpoint path'"
+ckpt_path="/appcheckpoint/mol-llm.ckpt" # Replace with your actual checkpoint path'"
 
 echo "==============Executing task: ablation==============="
 python Mol-LLM/stage3.py \

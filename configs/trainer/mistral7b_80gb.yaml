@@ -28,7 +28,7 @@ max_steps: -1
 max_epochs: 12
 every_n_epochs: 1
 task: null
-logging_dir: /app/Mol-LLM/checkpoint/
+logging_dir: /appcheckpoint/
 llava_pretraining: 0
 second_stage_start_epoch: 4
 num_workers: 0

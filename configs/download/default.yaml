@@ -1,0 +1,23 @@
+raw_data_root: /app/Mol-LLM_Custom/dataset/real_train
+data_tag: 3.3M_0415
+
+target_benchmarks:
+  - bace
+  - chebi-20-mol2text
+  - chebi-20-text2mol
+  - forward_reaction_prediction
+  - qm9_homo
+  - qm9_homo_lumo_gap
+  - qm9_lumo
+  - reagent_prediction
+  - retrosynthesis
+  - smol-forward_synthesis
+  - smol-molecule_captioning
+  - smol-molecule_generation
+  - smol-property_prediction-bbbp
+  - smol-property_prediction-clintox
+  - smol-property_prediction-esol
+  - smol-property_prediction-hiv
+  - smol-property_prediction-lipo
+  - smol-property_prediction-sider
+  - smol-retrosynthesis
