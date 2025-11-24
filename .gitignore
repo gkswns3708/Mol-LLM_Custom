@@ -2,3 +2,4 @@ checkpoint/
 outputs/
 wandb/
 dataset/
+__pycache__/

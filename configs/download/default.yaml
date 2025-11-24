@@ -21,3 +21,7 @@ target_benchmarks:
   - smol-property_prediction-lipo
   - smol-property_prediction-sider
   - smol-retrosynthesis
+  # - smol-name_conversion-i2f
+  # - smol-name_conversion-i2s
+  # - smol-name_conversion-s2f
+  # - smol-name_conversion-s2i

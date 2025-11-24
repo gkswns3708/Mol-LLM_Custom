@@ -730,8 +730,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_dir", type=str, default="./configs/download/")
     parser.add_argument("--config", type=str, default="default")
-    parser.add_argument("--train_procs", type=int, default=8)
-    parser.add_argument("--test_procs", type=int, default=8)
+    parser.add_argument("--train_procs", type=int, default=32)
+    parser.add_argument("--test_procs", type=int, default=32)
     args = parser.parse_args()
 
     
@@ -962,9 +962,9 @@ if __name__ == "__main__":
             "x": data_instance["x"],
             "edge_index": data_instance["edge_index"],
             "edge_attr": data_instance["edge_attr"],
-            "additional_x": data_instance["x"],
-            "additional_edge_index": data_instance["edge_index"],
-            "additional_edge_attr": data_instance["edge_attr"],
+            "additional_x": data_instance["additional_x"],
+            "additional_edge_index": data_instance["additional_edge_index"],
+            "additional_edge_attr": data_instance["additional_edge_attr"],
             "prompt_text": formatted_prompt_text,
             "target_text": formatted_target_text,
         }
