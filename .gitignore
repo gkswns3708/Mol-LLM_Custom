@@ -2,4 +2,5 @@ checkpoint/
 outputs/
 wandb/
 dataset/
-__pycache__/
+__pycache__/*
+*.pyc
