@@ -19,68 +19,56 @@ smol-property_prediction-sider_0 already exists
 smol-retrosynthesis_0 already exists
 smol-name_conversion-i2s_0 already exists
 smol-name_conversion-s2i_0 already exists
-bace -task
 bace_0 loaded
 bace_0 loaded
-chebi-20-mol2text -task
 chebi-20-mol2text_0 loaded
 chebi-20-mol2text_0 loaded
-chebi-20-text2mol -task
 chebi-20-text2mol_0 loaded
 chebi-20-text2mol_0 loaded
-forward_reaction_prediction -task
 forward_reaction_prediction_0 loaded
 forward_reaction_prediction_0 loaded
-qm9_homo -task
 qm9_homo_0 loaded
 qm9_homo_0 loaded
-qm9_homo_lumo_gap -task
 qm9_homo_lumo_gap_0 loaded
 qm9_homo_lumo_gap_0 loaded
-qm9_lumo -task
 qm9_lumo_0 loaded
 qm9_lumo_0 loaded
-reagent_prediction -task
 reagent_prediction_0 loaded
 reagent_prediction_0 loaded
-retrosynthesis -task
 retrosynthesis_0 loaded
 retrosynthesis_0 loaded
-smol-forward_synthesis -task
 smol-forward_synthesis_0 loaded
 smol-forward_synthesis_0 loaded
-smol-molecule_captioning -task
 smol-molecule_captioning_0 loaded
 smol-molecule_captioning_0 loaded
-smol-molecule_generation -task
 smol-molecule_generation_0 loaded
 smol-molecule_generation_0 loaded
-smol-property_prediction-bbbp -task
 smol-property_prediction-bbbp_0 loaded
 smol-property_prediction-bbbp_0 loaded
-smol-property_prediction-clintox -task
 smol-property_prediction-clintox_0 loaded
 smol-property_prediction-clintox_0 loaded
-smol-property_prediction-esol -task
 smol-property_prediction-esol_0 loaded
 smol-property_prediction-esol_0 loaded
-smol-property_prediction-hiv -task
 smol-property_prediction-hiv_0 loaded
 smol-property_prediction-hiv_0 loaded
-smol-property_prediction-lipo -task
 smol-property_prediction-lipo_0 loaded
 smol-property_prediction-lipo_0 loaded
-smol-property_prediction-sider -task
 smol-property_prediction-sider_0 loaded
 smol-property_prediction-sider_0 loaded
-smol-retrosynthesis -task
 smol-retrosynthesis_0 loaded
 smol-retrosynthesis_0 loaded
-smol-name_conversion-i2s -task
 [info] skipping test split for NAME CONVERSION task: smol-name_conversion-i2s
 smol-name_conversion-i2s_0 loaded
 smol-name_conversion-i2s_0 loaded
-smol-name_conversion-s2i -task
 [info] skipping test split for NAME CONVERSION task: smol-name_conversion-s2i
 smol-name_conversion-s2i_0 loaded
 smol-name_conversion-s2i_0 loaded
+[dedup] chebi-20-mol2text/0: train size 26407 -> 25854 after removing molecules that appear in eval (test+val)
+[dedup] smol-molecule_captioning/0: train size 56497 -> 48531 after removing molecules that appear in eval (test+val)
+[dedup] chebi-20-text2mol/0: train size 26407 -> 25854 after removing molecules that appear in eval (test+val)
+[dedup] smol-molecule_generation/0: train size 56498 -> 48532 after removing molecules that appear in eval (test+val)
+[dedup] retrosynthesis: train size 126110 -> 125565 after removing molecules that appear in eval (test+val)
+[dedup] smol-retrosynthesis/0: train size 941735 -> 938530 after removing molecules that appear in eval (test+val)
+[dedup] forward_reaction_prediction: train size 121896 -> 121890 after removing molecules that appear in eval (test+val)
+[dedup] smol-forward_synthesis/0: train size 971766 -> 971351 after removing molecules that appear in eval (test+val)
+End time: 2.102627738316854 minutes 6.1576642990112305 seconds

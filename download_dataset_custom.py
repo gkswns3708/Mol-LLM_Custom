@@ -15,6 +15,7 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.data.separate import separate
 from torch_geometric.loader.dataloader import Collater
 from tqdm import tqdm
+import time
 from typing import List, Dict, Any
 
 import instructions_smol
@@ -41,7 +42,7 @@ from data_utils import (
 
 
 import multiprocessing as mp
-
+start_time = time.time() 
 
 
 def wrap_label(label, task):
@@ -390,6 +391,7 @@ class ChEBIDataset(Dataset):
         descriptiopn = self.description_list[index]
         selfies = self.selfies_list[index]
         smiles = sf.decoder(selfies)
+        print(instruction, descriptiopn, selfies, smiles, "- sample data")
 
         if self.task in TEXT2MOL_BENCHMARKS:
             label = selfies
@@ -648,13 +650,13 @@ def get_dataset(task_name, raw_data_root):
     elif "chebi-20" in task_name:
         # load data from csv
         train_dataset = pd.read_csv(
-            os.path.join(raw_data_root, "raw/BioT5_chebi20_train.csv")
+            os.path.join(raw_data_root, "raw/chebi20_mol2text_train.csv")
         )
         valid_dataset = pd.read_csv(
-            os.path.join(raw_data_root, "raw/BioT5_chebi20_valid.csv")
+            os.path.join(raw_data_root, "raw/chebi20_mol2text_validation.csv")
         )
         test_dataset = pd.read_csv(
-            os.path.join(raw_data_root, "raw/BioT5_chebi20_test.csv")
+            os.path.join(raw_data_root, "raw/chebi20_mol2text_test.csv")
         )
 
         tasks = [task_name]
@@ -901,7 +903,6 @@ if __name__ == "__main__":
 
     for task_subtask_pair in task_subtask_pairs:
         task, subtask_idx = task_subtask_pair
-        print(task, "-task")
         trainset = datasets.Dataset.load_from_disk(
             f"{raw_data_root}/{task}_subtask-{subtask_idx}_train"
         )
@@ -925,9 +926,212 @@ if __name__ == "__main__":
         print(f"{task}_{subtask_idx} loaded")
         print(f"{task}_{subtask_idx} loaded")
 
+    # ------------------ Step 2: Deduplication following the paper ------------------
+    from datasets import concatenate_datasets
+
+    SELFIES_START, SELFIES_END = added_tokens.SELFIES
+
+    def _extract_single_selfies_block(text: str):
+        """
+        첫 번째 <SELFIES> ... </SELFIES> 사이의 내용을 추출.
+        못 찾으면 None.
+        """
+        if text is None:
+            return None
+        try:
+            start_idx = text.index(SELFIES_START)
+            end_idx = text.index(SELFIES_END, start_idx + len(SELFIES_START))
+            inner = text[start_idx + len(SELFIES_START): end_idx]
+            return inner.strip()
+        except ValueError:
+            return None
+
+    def _mol_key_from_caption_input(input_mol_string: str):
+        """
+        Molecule Captioning 용 분자 키:
+        input_mol_string 안의 SELFIES -> SMILES -> canonical SMILES
+        """
+        selfies = _extract_single_selfies_block(input_mol_string)
+        if selfies is None:
+            return None
+        try:
+            smiles = sf.decoder(selfies)
+        except Exception:
+            return None
+        return get_canonical_smiles(smiles)
+
+    def _mol_key_from_text2mol_label(label: str):
+        """
+        Description-Guided Molecule Generation (Text2Mol) 용 분자 키:
+        label 안의 SELFIES -> SMILES -> canonical SMILES
+        """
+        selfies = _extract_single_selfies_block(label)
+        if selfies is None:
+            return None
+        try:
+            smiles = sf.decoder(selfies)
+        except Exception:
+            return None
+        return get_canonical_smiles(smiles)
+
+    def _mol_key_from_reaction_input(input_mol_string: str):
+        """
+        Forward / Retro 용 반응 키:
+        일단 전체 입력 문자열을 그대로 키로 사용 (반응 단위 dedup).
+        """
+        s = input_mol_string.strip()
+        return s or None
+
+    # 그룹 정의 (dataset 내부 field "task_subtask_pair" 기준)
+    CAPTION_TASK_TAGS = {"chebi-20-mol2text/0", "smol-molecule_captioning/0"}
+    TEXT2MOL_TASK_TAGS = {"chebi-20-text2mol/0", "smol-molecule_generation/0"}
+    RETRO_TASK_TAGS   = {"retrosynthesis", "smol-retrosynthesis/0"}
+    FORWARD_TASK_TAGS = {"forward_reaction_prediction", "smol-forward_synthesis/0"}
+
+    def _build_key_to_tag_dict(split_dict):
+        """
+        split_dict: {(task, subtask_idx) -> Dataset}
+        각 Dataset의 첫 샘플에서 'task_subtask_pair' 문자열을 읽어서
+        key -> tag(str) 매핑을 만든다.
+        """
+        mapping = {}
+        for k, ds in split_dict.items():
+            if len(ds) == 0:
+                continue
+            tag = ds[0]["task_subtask_pair"]  # 예: 'smol-molecule_captioning/0'
+            mapping[k] = tag
+        return mapping
+
+    def _collect_split_mol_keys(split_dict, key_to_tag, target_tags, mode):
+        """
+        하나의 split(dict)에 대해 분자/반응 키를 모은다.
+        mode: 'caption' | 'text2mol' | 'reaction'
+        """
+        keys = set()
+        for k, tag in key_to_tag.items():
+            if tag not in target_tags:
+                continue
+            ds = split_dict.get(k, None)
+            if ds is None or len(ds) == 0:
+                continue
+
+            if mode in ("caption", "reaction"):
+                ims_list = ds["input_mol_string"]
+                for ims in ims_list:
+                    if mode == "caption":
+                        mk = _mol_key_from_caption_input(ims)
+                    else:
+                        mk = _mol_key_from_reaction_input(ims)
+                    if mk is not None:
+                        keys.add(mk)
+
+            elif mode == "text2mol":
+                labels = ds["label"]
+                for lab in labels:
+                    mk = _mol_key_from_text2mol_label(lab)
+                    if mk is not None:
+                        keys.add(mk)
+            else:
+                raise ValueError(f"Unknown mode: {mode}")
+        return keys
+
+    def _filter_train_by_mol_keys(trainsets_dict, key_to_tag, target_tags, mode, forbidden_keys):
+        """
+        target_tags 에 해당하는 task들의 train split에서
+        forbidden_keys(= eval에서 나온 분자/반응 키)에 해당하는 샘플을 제거.
+        -> 'eval(test+val)에 나온 분자는 train에서 안 쓰인다' 보장.
+        """
+        for k, tag in list(key_to_tag.items()):
+            if tag not in target_tags:
+                continue
+            ds = trainsets_dict.get(k, None)
+            if ds is None or len(ds) == 0:
+                continue
+
+            keep_indices = []
+            if mode in ("caption", "reaction"):
+                ims_list = ds["input_mol_string"]
+                for idx, ims in enumerate(ims_list):
+                    if mode == "caption":
+                        mk = _mol_key_from_caption_input(ims)
+                    else:
+                        mk = _mol_key_from_reaction_input(ims)
+                    # mk == None 이면 기준이 애매하므로 그냥 유지
+                    if mk is None or mk not in forbidden_keys:
+                        keep_indices.append(idx)
+
+            elif mode == "text2mol":
+                labels = ds["label"]
+                for idx, lab in enumerate(labels):
+                    mk = _mol_key_from_text2mol_label(lab)
+                    if mk is None or mk not in forbidden_keys:
+                        keep_indices.append(idx)
+            else:
+                raise ValueError(f"Unknown mode: {mode}")
+
+            if len(keep_indices) != len(ds):
+                print(f"[dedup] {tag}: train size {len(ds)} -> {len(keep_indices)} "
+                      f"after removing molecules that appear in eval (test+val)")
+
+            trainsets_dict[k] = ds.select(keep_indices)
+
+    # ---- 실제 적용: test + val 모두 eval로 간주 ----
+    train_key_to_tag = _build_key_to_tag_dict(trainsets_dict)
+    test_key_to_tag  = _build_key_to_tag_dict(testsets_dict)
+    val_key_to_tag   = _build_key_to_tag_dict(valsets_dict)
+
+    def _collect_eval_keys(target_tags, mode):
+        keys = set()
+        # test에서 키 수집
+        keys |= _collect_split_mol_keys(testsets_dict, test_key_to_tag, target_tags, mode)
+        # validation에서도 동일하게 수집
+        keys |= _collect_split_mol_keys(valsets_dict,  val_key_to_tag,  target_tags, mode)
+        return keys
+
+    # 1) Molecule Captioning (ChEBI-20 + SMolInstruct)
+    caption_eval_keys = _collect_eval_keys(CAPTION_TASK_TAGS, mode="caption")
+    _filter_train_by_mol_keys(
+        trainsets_dict, train_key_to_tag, CAPTION_TASK_TAGS, mode="caption",
+        forbidden_keys=caption_eval_keys,
+    )
+
+    # 2) Description-Guided Molecule Generation (Text2Mol)
+    text2mol_eval_keys = _collect_eval_keys(TEXT2MOL_TASK_TAGS, mode="text2mol")
+    _filter_train_by_mol_keys(
+        trainsets_dict, train_key_to_tag, TEXT2MOL_TASK_TAGS, mode="text2mol",
+        forbidden_keys=text2mol_eval_keys,
+    )
+
+    # 3) Retrosynthesis (Mol-Instructions + SMolInstruct)
+    retro_eval_keys = _collect_eval_keys(RETRO_TASK_TAGS, mode="reaction")
+    _filter_train_by_mol_keys(
+        trainsets_dict, train_key_to_tag, RETRO_TASK_TAGS, mode="reaction",
+        forbidden_keys=retro_eval_keys,
+    )
+
+    # 4) Forward Reaction Prediction (Mol-Instructions + SMolInstruct)
+    forward_eval_keys = _collect_eval_keys(FORWARD_TASK_TAGS, mode="reaction")
+    _filter_train_by_mol_keys(
+        trainsets_dict, train_key_to_tag, FORWARD_TASK_TAGS, mode="reaction",
+        forbidden_keys=forward_eval_keys,
+    )
+
+    # --- dedup 반영된 dict로부터 다시 trainsets / testsets 리스트 재구성 ---
+    trainsets = []
+    testsets = []
+    for task_subtask_pair in task_subtask_pairs:
+        task, subtask_idx = task_subtask_pair
+        trainsets.append(trainsets_dict[task_subtask_pair])
+        # Name Conversion Task는 여전히 test에서 제외
+        if task in NAME_CONVERSION_BENCHMARKS:
+            continue
+        if task_subtask_pair in testsets_dict:
+            testsets.append(testsets_dict[task_subtask_pair])
+
     concat_trainset = datasets.concatenate_datasets(trainsets)
-    concat_testset = datasets.concatenate_datasets(testsets)
-    #concat_testset = datasets.concatenate_datasets(testsets + trainsets + valsets)
+    concat_testset  = datasets.concatenate_datasets(testsets)
+
+
         
     from transformers import AutoTokenizer
     system_prompt = "You are a helpful assistant for molecular chemistry, to address tasks including molecular property classification, molecular property regression, chemical reaction prediction, molecule captioning, molecule generation."
@@ -1022,3 +1226,5 @@ if __name__ == "__main__":
     mapped_testset.save_to_disk(f"{raw_data_root}/{processed_file_name}_validation_{cfg.data_tag}")
 
     a = 17
+    end_time = time.time()
+    print(f"End time: {(end_time - start_time) / 60} minutes {(end_time - start_time) % 60} seconds")
