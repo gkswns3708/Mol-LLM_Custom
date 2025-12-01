@@ -6,7 +6,7 @@ gine:
   drop_ratio: 0.0
   used_gnn_layer: -1
   gnn_jk: last
-  graph_encoder_ckpt: /appcheckpoint/mol-llm.ckpt
+  graph_encoder_ckpt: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/mol-llm.ckpt
   gnn_type: gine
 tokengt:
   input_feat_dim: 9
@@ -18,5 +18,5 @@ tokengt:
   d_e: 64
   use_graph_token: True
   max_position_embeddings: 102
-  graph_encoder_ckpt: /appcheckpoint/mol-llm.ckpt
+  graph_encoder_ckpt: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/mol-llm.ckpt
   gnn_type: tokengt

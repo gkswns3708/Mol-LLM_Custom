@@ -39,7 +39,7 @@ class Stage3DM(LightningDataModule):
                 self.train_dataset = get_dataset("train", tokenizer, args)
             self.test_dataset = get_dataset("test", tokenizer, args)
             self.val_dataset = get_dataset("test", tokenizer, args)
-
+        print(os.path.join(args.raw_data_root, "InstructGraph.py"), "-os.path.join(args.raw_data_root, 'InstructGraph.py')")
         builder = load_dataset_builder(
             os.path.join(args.raw_data_root, "InstructGraph.py"),
             trust_remote_code=True,

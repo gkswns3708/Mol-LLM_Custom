@@ -1,4 +1,4 @@
-raw_data_root: /data/data/Mol-LLM-v7.1
+raw_data_root: /tmp/jovyan/real_train
 data_tag: 3.3M_0415_molpo-replace-0.3
 
 
