@@ -14,7 +14,7 @@ load_in_8bit: false
 lora_r: 64
 lora_alpha: 32
 lora_dropout: 0.1
-selfies_token_path: Mol-LLM/model/selfies_dict.txt
+selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt
 add_selfies_tokens: true
 prompt: "[START_I_SMILES]{}[END_I_SMILES]"
 

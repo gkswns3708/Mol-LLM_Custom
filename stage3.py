@@ -50,11 +50,10 @@ class MyDDPStrategy(strategies.DDPStrategy):
         self.lightning_module.load_state_dict(checkpoint["state_dict"], strict=strict)
 
 
-@hydra.main(config_path="configs", config_name="default.yaml", version_base=None)
+@hydra.main(config_path="configs", config_name="test_CHJ.yaml", version_base=None)
 def main(cfg):
     cfg = flatten_dictconfig(cfg)
     pl.seed_everything(cfg.seed)
-
     model = Blip2Stage3(cfg)
     print("total params:", sum(p.numel() for p in model.parameters()))
 
