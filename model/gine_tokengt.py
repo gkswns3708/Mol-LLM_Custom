@@ -30,8 +30,9 @@ class GINE_TokenGT(nn.Module):
             max_position_embeddings=args.tokengt.max_position_embeddings
         )
         ##### load pretrained GINE #####
+        print(args.gine.graph_encoder_ckpt, "-args.gine.graph_encoder_ckpt")
         ckpt = torch.load(
-            args.gine.graph_encoder_ckpt, map_location=torch.device("cpu")
+            args.gine.graph_encoder_ckpt, map_location=torch.device("cpu"), weights_only=False
         )
         renamed_state_dict = {}
         for param, value in ckpt['state_dict'].items():
@@ -42,7 +43,7 @@ class GINE_TokenGT(nn.Module):
 
         ##### load pretrained TokenGT #####
         ckpt = torch.load(
-            args.tokengt.graph_encoder_ckpt, map_location=torch.device("cpu")
+            args.tokengt.graph_encoder_ckpt, map_location=torch.device("cpu"), weights_only=False
         )
         renamed_state_dict = {}
         for param, value in ckpt['state_dict'].items():

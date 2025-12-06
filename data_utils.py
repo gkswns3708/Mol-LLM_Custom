@@ -504,7 +504,7 @@ class DataCollator(DataCollatorForSeq2Seq):
             )
             if not self.train:
                 features["prompt_is_mol_token"] = (
-                    torch.tensor(features["prompt_input_ids"])
+                    features["prompt_input_ids"].clone().detach() # .clone().detach() 수정됨
                     == self.tokenizer.mol_token_id
                 )
 

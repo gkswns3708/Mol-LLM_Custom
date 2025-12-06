@@ -14,4 +14,3 @@ data.data_tag=${data_tag} \
 trainer=mistral7b_80gb \
 trainer.skip_sanity_check=false \
 ckpt_path=${ckpt_path}
-
