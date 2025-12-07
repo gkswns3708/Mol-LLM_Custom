@@ -192,7 +192,10 @@ def molecule_evaluate(
             failure_idxs.append(i)
             prediction_mol = None
             print(
-                f"When evaluating, failed to convert selfies to mol, target : {target}, prediction : {prediction}"
+                f"When evaluating, failed to convert selfies to mol, target : {target}\n",
+                f"Prediction : {prediction}\n",
+                f"Input input_mol_strings: {input_mol_strings}, \n",
+                f"Prompts: {prompts}" 
             )
             continue
 

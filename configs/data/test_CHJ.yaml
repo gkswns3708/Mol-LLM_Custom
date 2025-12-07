@@ -17,11 +17,11 @@ tasks:
   # - qm9_homo
   # - qm9_homo_lumo_gap
   # - qm9_lumo
-  # - reagent_prediction
+  - reagent_prediction
   # - retrosynthesis
   # - smol-forward_synthesis
   # - smol-molecule_captioning
-  - smol-molecule_generation
+  # - smol-molecule_generation
   # - smol-property_prediction-bbbp
   # - smol-property_prediction-clintox
   # - smol-property_prediction-esol

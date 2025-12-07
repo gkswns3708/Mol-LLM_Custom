@@ -1,0 +1,1610 @@
+==============Executing task: Specific Task===============
+Added 2944 selfies tokens to the tokenizer
+trainable params: 167,772,160 || all params: 7,440,183,296 || trainable%: 2.2549
+/home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt -args.gine.graph_encoder_ckpt
+load graph encoder from /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
+load graph encoder from /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
+bert load scibert
+total params: 7550544809
+/home/jovyan/CHJ/Mol-LLM_Custom/dataset/real_train/InstructGraph.py -os.path.join(args.raw_data_root, 'InstructGraph.py')
+train_tasks: ('smol-name_conversion-i2s', 'smol-name_conversion-i2f', 'smol-name_conversion-s2f', 'smol-name_conversion-s2i', 'smol-property_prediction-bbbp', 'smol-property_prediction-clintox', 'smol-property_prediction-hiv', 'smol-property_prediction-sider', 'bace', 'smol-property_prediction-esol', 'smol-property_prediction-lipo', 'qm9_homo', 'qm9_lumo', 'qm9_homo_lumo_gap', 'qm9_dipole_moment', 'qm9_isotropic_polarizability', 'qm9_electronic_spatial_extent', 'qm9_zero_point_vibrational_energy', 'qm9_heat_capacity_298K', 'qm9_internal_energy_298K', 'qm9_enthalpy_298K', 'qm9_free_energy_298K', 'forward_reaction_prediction', 'smol-forward_synthesis', 'retrosynthesis', 'smol-retrosynthesis', 'reagent_prediction', 'chebi-20-text2mol', 'smol-molecule_generation', 'chebi-20-mol2text', 'smol-molecule_captioning')
+accumulate_grad_batches: 8
+loaded trained model from /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
+Testing: |                                                                                     | 0/? [00:00<?, ?it/s]Testing: |                                                                                     | 0/? [00:00<?, ?it/s]Testing DataLoader 0:   0%|                                                                    | 0/7 [00:00<?, ?it/s]Testing DataLoader 0:  14%|████████▌                                                   | 1/7 [00:05<00:34,  0.17it/s]Testing DataLoader 0:  29%|█████████████████▏                                          | 2/7 [00:09<00:24,  0.20it/s]Testing DataLoader 0:  43%|█████████████████████████▋                                  | 3/7 [00:15<00:20,  0.19it/s]Testing DataLoader 0:  57%|██████████████████████████████████▎                         | 4/7 [00:20<00:15,  0.19it/s]Testing DataLoader 0:  71%|██████████████████████████████████████████▊                 | 5/7 [00:25<00:10,  0.20it/s]
+Device cuda:1 on_evaluation_epoch_end start
+Testing DataLoader 0:  86%|███████████████████████████████████████████████████▍        | 6/7 [00:32<00:05,  0.18it/s]
+Device cuda:7 on_evaluation_epoch_end start
+
+Device cuda:6 on_evaluation_epoch_end start
+Testing DataLoader 0: 100%|████████████████████████████████████████████████████████████| 7/7 [00:36<00:00,  0.19it/s]
+Device cuda:0 on_evaluation_epoch_end start
+
+Device cuda:2 on_evaluation_epoch_end start
+
+Device cuda:5 on_evaluation_epoch_end start
+
+Device cuda:4 on_evaluation_epoch_end start
+
+Device cuda:3 on_evaluation_epoch_end start
+gather the metrics across devices
+============================== Evaluation Results ==============================
+test/alchemy_homo/avg_loss: 2.0434983825683593 
+test/alchemy_homo/failure_rate: 0.39 
+test/alchemy_homo/mae: 35.25095634788961 
+test/alchemy_homo/mse: 52176.91774871613 
+test/alchemy_homo/rmse: 95.9146688661738 
+test/alchemy_homo_lumo_gap/avg_loss: 2.0034742832183836 
+test/alchemy_homo_lumo_gap/failure_rate: 0.07 
+test/alchemy_homo_lumo_gap/mae: 2.879279191845238 
+test/alchemy_homo_lumo_gap/mse: 142.54915108082645 
+test/alchemy_homo_lumo_gap/rmse: 7.5378879327763455 
+test/alchemy_lumo/avg_loss: 2.1014162731170654 
+test/alchemy_lumo/failure_rate: 0.34 
+test/alchemy_lumo/mae: 160.4457222995 
+test/alchemy_lumo/mse: 2240167.3745876597 
+test/alchemy_lumo/rmse: 504.29964741135393 
+test/aqsol-logS/avg_loss: 2.399499816894531 
+test/aqsol-logS/failure_rate: 0.0 
+test/aqsol-logS/mae: 0.794158 
+test/aqsol-logS/mse: 1.4353132934000001 
+test/aqsol-logS/rmse: 1.102046216855881 
+test/bace/accuracy: nan 
+test/bace/avg_loss: nan 
+test/bace/f1: nan 
+test/bace/precision: nan 
+test/bace/recall: nan 
+test/bace/roc_auc: nan 
+test/chebi-20-mol2text/avg_loss: nan 
+test/chebi-20-mol2text/bleu2: nan 
+test/chebi-20-mol2text/bleu4: nan 
+test/chebi-20-mol2text/meteor: nan 
+test/chebi-20-mol2text/rouge1: nan 
+test/chebi-20-mol2text/rouge2: nan 
+test/chebi-20-mol2text/rougeL: nan 
+test/chebi-20-text2mol/MACCS_FTS: nan 
+test/chebi-20-text2mol/RDK_FTS: nan 
+test/chebi-20-text2mol/avg_loss: nan 
+test/chebi-20-text2mol/bleu_selfies: nan 
+test/chebi-20-text2mol/bleu_smiles: nan 
+test/chebi-20-text2mol/exact_match_ratio: nan 
+test/chebi-20-text2mol/levenshtein_score: nan 
+test/chebi-20-text2mol/morgan_FTS: nan 
+test/chebi-20-text2mol/validity_ratio: nan 
+test/forward_reaction_prediction/MACCS_FTS: nan 
+test/forward_reaction_prediction/RDK_FTS: nan 
+test/forward_reaction_prediction/avg_loss: nan 
+test/forward_reaction_prediction/bleu_selfies: nan 
+test/forward_reaction_prediction/bleu_smiles: nan 
+test/forward_reaction_prediction/exact_match_ratio: nan 
+test/forward_reaction_prediction/levenshtein_score: nan 
+test/forward_reaction_prediction/morgan_FTS: nan 
+test/forward_reaction_prediction/validity_ratio: nan 
+test/presto-forward_reaction_prediction/MACCS_FTS: 0.9285809591424794 
+test/presto-forward_reaction_prediction/RDK_FTS: 0.9005406854523096 
+test/presto-forward_reaction_prediction/avg_loss: 2.3492283058166503 
+test/presto-forward_reaction_prediction/bleu_selfies: 90.13044555664062 
+test/presto-forward_reaction_prediction/bleu_smiles: 89.37698852539063 
+test/presto-forward_reaction_prediction/exact_match_ratio: 0.69 
+test/presto-forward_reaction_prediction/levenshtein_score: 3.47 
+test/presto-forward_reaction_prediction/morgan_FTS: 0.8667021346459248 
+test/presto-forward_reaction_prediction/validity_ratio: 1.0 
+test/presto-retrosynthesis/MACCS_FTS: 0.8190600725272194 
+test/presto-retrosynthesis/RDK_FTS: 0.7286107665804967 
+test/presto-retrosynthesis/avg_loss: 1.9692247486114502 
+test/presto-retrosynthesis/bleu_selfies: 77.06751708984375 
+test/presto-retrosynthesis/bleu_smiles: 72.80241516113281 
+test/presto-retrosynthesis/exact_match_ratio: 0.41 
+test/presto-retrosynthesis/levenshtein_score: 14.37 
+test/presto-retrosynthesis/morgan_FTS: 0.700124781182466 
+test/presto-retrosynthesis/validity_ratio: 1.0 
+test/qm9_homo/avg_loss: nan 
+test/qm9_homo/failure_rate: nan 
+test/qm9_homo/mae: nan 
+test/qm9_homo/mse: nan 
+test/qm9_homo/rmse: nan 
+test/qm9_homo_lumo_gap/avg_loss: nan 
+test/qm9_homo_lumo_gap/failure_rate: nan 
+test/qm9_homo_lumo_gap/mae: nan 
+test/qm9_homo_lumo_gap/mse: nan 
+test/qm9_homo_lumo_gap/rmse: nan 
+test/qm9_lumo/avg_loss: nan 
+test/qm9_lumo/failure_rate: nan 
+test/qm9_lumo/mae: nan 
+test/qm9_lumo/mse: nan 
+test/qm9_lumo/rmse: nan 
+test/reagent_prediction/MACCS_FTS: nan 
+test/reagent_prediction/RDK_FTS: nan 
+test/reagent_prediction/avg_loss: nan 
+test/reagent_prediction/bleu_selfies: nan 
+test/reagent_prediction/bleu_smiles: nan 
+test/reagent_prediction/exact_match_ratio: nan 
+test/reagent_prediction/levenshtein_score: nan 
+test/reagent_prediction/morgan_FTS: nan 
+test/reagent_prediction/validity_ratio: nan 
+test/retrosynthesis/MACCS_FTS: nan 
+test/retrosynthesis/RDK_FTS: nan 
+test/retrosynthesis/avg_loss: nan 
+test/retrosynthesis/bleu_selfies: nan 
+test/retrosynthesis/bleu_smiles: nan 
+test/retrosynthesis/exact_match_ratio: nan 
+test/retrosynthesis/levenshtein_score: nan 
+test/retrosynthesis/morgan_FTS: nan 
+test/retrosynthesis/validity_ratio: nan 
+test/smol-forward_synthesis/MACCS_FTS: nan 
+test/smol-forward_synthesis/RDK_FTS: nan 
+test/smol-forward_synthesis/avg_loss: nan 
+test/smol-forward_synthesis/bleu_selfies: nan 
+test/smol-forward_synthesis/bleu_smiles: nan 
+test/smol-forward_synthesis/exact_match_ratio: nan 
+test/smol-forward_synthesis/levenshtein_score: nan 
+test/smol-forward_synthesis/morgan_FTS: nan 
+test/smol-forward_synthesis/validity_ratio: nan 
+test/smol-molecule_captioning/avg_loss: nan 
+test/smol-molecule_captioning/bleu2: nan 
+test/smol-molecule_captioning/bleu4: nan 
+test/smol-molecule_captioning/meteor: nan 
+test/smol-molecule_captioning/rouge1: nan 
+test/smol-molecule_captioning/rouge2: nan 
+test/smol-molecule_captioning/rougeL: nan 
+test/smol-molecule_generation/MACCS_FTS: nan 
+test/smol-molecule_generation/RDK_FTS: nan 
+test/smol-molecule_generation/avg_loss: nan 
+test/smol-molecule_generation/bleu_selfies: nan 
+test/smol-molecule_generation/bleu_smiles: nan 
+test/smol-molecule_generation/exact_match_ratio: nan 
+test/smol-molecule_generation/levenshtein_score: nan 
+test/smol-molecule_generation/morgan_FTS: nan 
+test/smol-molecule_generation/validity_ratio: nan 
+test/smol-property_prediction-bbbp/accuracy: nan 
+test/smol-property_prediction-bbbp/avg_loss: nan 
+test/smol-property_prediction-bbbp/f1: nan 
+test/smol-property_prediction-bbbp/precision: nan 
+test/smol-property_prediction-bbbp/recall: nan 
+test/smol-property_prediction-bbbp/roc_auc: nan 
+test/smol-property_prediction-clintox/accuracy: nan 
+test/smol-property_prediction-clintox/avg_loss: nan 
+test/smol-property_prediction-clintox/f1: nan 
+test/smol-property_prediction-clintox/precision: nan 
+test/smol-property_prediction-clintox/recall: nan 
+test/smol-property_prediction-clintox/roc_auc: nan 
+test/smol-property_prediction-esol/avg_loss: nan 
+test/smol-property_prediction-esol/failure_rate: nan 
+test/smol-property_prediction-esol/mae: nan 
+test/smol-property_prediction-esol/mse: nan 
+test/smol-property_prediction-esol/rmse: nan 
+test/smol-property_prediction-hiv/accuracy: nan 
+test/smol-property_prediction-hiv/avg_loss: nan 
+test/smol-property_prediction-hiv/f1: nan 
+test/smol-property_prediction-hiv/precision: nan 
+test/smol-property_prediction-hiv/recall: nan 
+test/smol-property_prediction-hiv/roc_auc: nan 
+test/smol-property_prediction-lipo/avg_loss: nan 
+test/smol-property_prediction-lipo/failure_rate: nan 
+test/smol-property_prediction-lipo/mae: nan 
+test/smol-property_prediction-lipo/mse: nan 
+test/smol-property_prediction-lipo/rmse: nan 
+test/smol-property_prediction-sider/accuracy: nan 
+test/smol-property_prediction-sider/avg_loss: nan 
+test/smol-property_prediction-sider/f1: nan 
+test/smol-property_prediction-sider/precision: nan 
+test/smol-property_prediction-sider/recall: nan 
+test/smol-property_prediction-sider/roc_auc: nan 
+test/smol-retrosynthesis/MACCS_FTS: nan 
+test/smol-retrosynthesis/RDK_FTS: nan 
+test/smol-retrosynthesis/avg_loss: nan 
+test/smol-retrosynthesis/bleu_selfies: nan 
+test/smol-retrosynthesis/bleu_smiles: nan 
+test/smol-retrosynthesis/exact_match_ratio: nan 
+test/smol-retrosynthesis/levenshtein_score: nan 
+test/smol-retrosynthesis/morgan_FTS: nan 
+test/smol-retrosynthesis/validity_ratio: nan 
+=================================================================================
+
+Device cuda:0 on_evaluation_epoch_end end
+Testing DataLoader 0: 100%|████████████████████████████████████████████████████████████| 7/7 [00:44<00:00,  0.16it/s]
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                       Test metric                                             DataLoader 0
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+               test/alchemy_homo/avg_loss                                   2.0434983825683593
+             test/alchemy_homo/failure_rate                                        0.39
+                  test/alchemy_homo/mae                                      35.25095634788961
+                  test/alchemy_homo/mse                                      52176.91774871613
+                 test/alchemy_homo/rmse                                      95.9146688661738
+           test/alchemy_homo_lumo_gap/avg_loss                              2.0034742832183836
+         test/alchemy_homo_lumo_gap/failure_rate                                   0.07
+             test/alchemy_homo_lumo_gap/mae                                  2.879279191845238
+             test/alchemy_homo_lumo_gap/mse                                 142.54915108082645
+             test/alchemy_homo_lumo_gap/rmse                                7.5378879327763455
+               test/alchemy_lumo/avg_loss                                   2.1014162731170654
+             test/alchemy_lumo/failure_rate                                        0.34
+                  test/alchemy_lumo/mae                                       160.4457222995
+                  test/alchemy_lumo/mse                                     2240167.3745876597
+                 test/alchemy_lumo/rmse                                     504.29964741135393
+                test/aqsol-logS/avg_loss                                     2.399499816894531
+              test/aqsol-logS/failure_rate                                          0.0
+                   test/aqsol-logS/mae                                           0.794158
+                   test/aqsol-logS/mse                                      1.4353132934000001
+                  test/aqsol-logS/rmse                                       1.102046216855881
+                   test/bace/accuracy                                               nan
+                   test/bace/avg_loss                                               nan
+                      test/bace/f1                                                  nan
+                   test/bace/precision                                              nan
+                    test/bace/recall                                                nan
+                    test/bace/roc_auc                                               nan
+             test/chebi-20-mol2text/avg_loss                                        nan
+              test/chebi-20-mol2text/bleu2                                          nan
+              test/chebi-20-mol2text/bleu4                                          nan
+              test/chebi-20-mol2text/meteor                                         nan
+              test/chebi-20-mol2text/rouge1                                         nan
+              test/chebi-20-mol2text/rouge2                                         nan
+              test/chebi-20-mol2text/rougeL                                         nan
+            test/chebi-20-text2mol/MACCS_FTS                                        nan
+             test/chebi-20-text2mol/RDK_FTS                                         nan
+             test/chebi-20-text2mol/avg_loss                                        nan
+           test/chebi-20-text2mol/bleu_selfies                                      nan
+           test/chebi-20-text2mol/bleu_smiles                                       nan
+        test/chebi-20-text2mol/exact_match_ratio                                    nan
+        test/chebi-20-text2mol/levenshtein_score                                    nan
+            test/chebi-20-text2mol/morgan_FTS                                       nan
+          test/chebi-20-text2mol/validity_ratio                                     nan
+       test/forward_reaction_prediction/MACCS_FTS                                   nan
+        test/forward_reaction_prediction/RDK_FTS                                    nan
+        test/forward_reaction_prediction/avg_loss                                   nan
+      test/forward_reaction_prediction/bleu_selfies                                 nan
+      test/forward_reaction_prediction/bleu_smiles                                  nan
+   test/forward_reaction_prediction/exact_match_ratio                               nan
+   test/forward_reaction_prediction/levenshtein_score                               nan
+       test/forward_reaction_prediction/morgan_FTS                                  nan
+     test/forward_reaction_prediction/validity_ratio                                nan
+               test/graph_attn_mean_score                                 0.00013689040497411042
+                test/graph_attn_sum_score                                   0.2636150121688843
+    test/presto-forward_reaction_prediction/MACCS_FTS                       0.9285809591424794
+     test/presto-forward_reaction_prediction/RDK_FTS                        0.9005406854523096
+    test/presto-forward_reaction_prediction/avg_loss                        2.3492283058166503
+  test/presto-forward_reaction_prediction/bleu_selfies                       90.13044555664062
+   test/presto-forward_reaction_prediction/bleu_smiles                       89.37698852539063
+test/presto-forward_reaction_prediction/exact_match_ratio                          0.69
+test/presto-forward_reaction_prediction/levenshtein_score                          3.47
+   test/presto-forward_reaction_prediction/morgan_FTS                       0.8667021346459248
+ test/presto-forward_reaction_prediction/validity_ratio                             1.0
+          test/presto-retrosynthesis/MACCS_FTS                              0.8190600725272194
+           test/presto-retrosynthesis/RDK_FTS                               0.7286107665804967
+           test/presto-retrosynthesis/avg_loss                              1.9692247486114502
+         test/presto-retrosynthesis/bleu_selfies                             77.06751708984375
+         test/presto-retrosynthesis/bleu_smiles                              72.80241516113281
+      test/presto-retrosynthesis/exact_match_ratio                                 0.41
+      test/presto-retrosynthesis/levenshtein_score                                 14.37
+          test/presto-retrosynthesis/morgan_FTS                              0.700124781182466
+        test/presto-retrosynthesis/validity_ratio                                   1.0
+                 test/qm9_homo/avg_loss                                             nan
+               test/qm9_homo/failure_rate                                           nan
+                    test/qm9_homo/mae                                               nan
+                    test/qm9_homo/mse                                               nan
+                   test/qm9_homo/rmse                                               nan
+             test/qm9_homo_lumo_gap/avg_loss                                        nan
+           test/qm9_homo_lumo_gap/failure_rate                                      nan
+               test/qm9_homo_lumo_gap/mae                                           nan
+               test/qm9_homo_lumo_gap/mse                                           nan
+               test/qm9_homo_lumo_gap/rmse                                          nan
+                 test/qm9_lumo/avg_loss                                             nan
+               test/qm9_lumo/failure_rate                                           nan
+                    test/qm9_lumo/mae                                               nan
+                    test/qm9_lumo/mse                                               nan
+                   test/qm9_lumo/rmse                                               nan
+            test/reagent_prediction/MACCS_FTS                                       nan
+             test/reagent_prediction/RDK_FTS                                        nan
+            test/reagent_prediction/avg_loss                                        nan
+          test/reagent_prediction/bleu_selfies                                      nan
+           test/reagent_prediction/bleu_smiles                                      nan
+        test/reagent_prediction/exact_match_ratio                                   nan
+        test/reagent_prediction/levenshtein_score                                   nan
+           test/reagent_prediction/morgan_FTS                                       nan
+         test/reagent_prediction/validity_ratio                                     nan
+              test/retrosynthesis/MACCS_FTS                                         nan
+               test/retrosynthesis/RDK_FTS                                          nan
+              test/retrosynthesis/avg_loss                                          nan
+            test/retrosynthesis/bleu_selfies                                        nan
+             test/retrosynthesis/bleu_smiles                                        nan
+          test/retrosynthesis/exact_match_ratio                                     nan
+          test/retrosynthesis/levenshtein_score                                     nan
+             test/retrosynthesis/morgan_FTS                                         nan
+           test/retrosynthesis/validity_ratio                                       nan
+              test/selfies_attn_mean_score                                 0.001997070387005806
+               test/selfies_attn_sum_score                                   3.040015935897827
+          test/smol-forward_synthesis/MACCS_FTS                                     nan
+           test/smol-forward_synthesis/RDK_FTS                                      nan
+          test/smol-forward_synthesis/avg_loss                                      nan
+        test/smol-forward_synthesis/bleu_selfies                                    nan
+         test/smol-forward_synthesis/bleu_smiles                                    nan
+      test/smol-forward_synthesis/exact_match_ratio                                 nan
+      test/smol-forward_synthesis/levenshtein_score                                 nan
+         test/smol-forward_synthesis/morgan_FTS                                     nan
+       test/smol-forward_synthesis/validity_ratio                                   nan
+         test/smol-molecule_captioning/avg_loss                                     nan
+           test/smol-molecule_captioning/bleu2                                      nan
+           test/smol-molecule_captioning/bleu4                                      nan
+          test/smol-molecule_captioning/meteor                                      nan
+          test/smol-molecule_captioning/rouge1                                      nan
+          test/smol-molecule_captioning/rouge2                                      nan
+          test/smol-molecule_captioning/rougeL                                      nan
+         test/smol-molecule_generation/MACCS_FTS                                    nan
+          test/smol-molecule_generation/RDK_FTS                                     nan
+         test/smol-molecule_generation/avg_loss                                     nan
+       test/smol-molecule_generation/bleu_selfies                                   nan
+        test/smol-molecule_generation/bleu_smiles                                   nan
+     test/smol-molecule_generation/exact_match_ratio                                nan
+     test/smol-molecule_generation/levenshtein_score                                nan
+        test/smol-molecule_generation/morgan_FTS                                    nan
+      test/smol-molecule_generation/validity_ratio                                  nan
+       test/smol-property_prediction-bbbp/accuracy                                  nan
+       test/smol-property_prediction-bbbp/avg_loss                                  nan
+          test/smol-property_prediction-bbbp/f1                                     nan
+      test/smol-property_prediction-bbbp/precision                                  nan
+        test/smol-property_prediction-bbbp/recall                                   nan
+       test/smol-property_prediction-bbbp/roc_auc                                   nan
+     test/smol-property_prediction-clintox/accuracy                                 nan
+     test/smol-property_prediction-clintox/avg_loss                                 nan
+        test/smol-property_prediction-clintox/f1                                    nan
+     test/smol-property_prediction-clintox/precision                                nan
+      test/smol-property_prediction-clintox/recall                                  nan
+      test/smol-property_prediction-clintox/roc_auc                                 nan
+       test/smol-property_prediction-esol/avg_loss                                  nan
+     test/smol-property_prediction-esol/failure_rate                                nan
+         test/smol-property_prediction-esol/mae                                     nan
+         test/smol-property_prediction-esol/mse                                     nan
+         test/smol-property_prediction-esol/rmse                                    nan
+       test/smol-property_prediction-hiv/accuracy                                   nan
+       test/smol-property_prediction-hiv/avg_loss                                   nan
+          test/smol-property_prediction-hiv/f1                                      nan
+       test/smol-property_prediction-hiv/precision                                  nan
+        test/smol-property_prediction-hiv/recall                                    nan
+        test/smol-property_prediction-hiv/roc_auc                                   nan
+       test/smol-property_prediction-lipo/avg_loss                                  nan
+     test/smol-property_prediction-lipo/failure_rate                                nan
+         test/smol-property_prediction-lipo/mae                                     nan
+         test/smol-property_prediction-lipo/mse                                     nan
+         test/smol-property_prediction-lipo/rmse                                    nan
+      test/smol-property_prediction-sider/accuracy                                  nan
+      test/smol-property_prediction-sider/avg_loss                                  nan
+         test/smol-property_prediction-sider/f1                                     nan
+      test/smol-property_prediction-sider/precision                                 nan
+       test/smol-property_prediction-sider/recall                                   nan
+       test/smol-property_prediction-sider/roc_auc                                  nan
+           test/smol-retrosynthesis/MACCS_FTS                                       nan
+            test/smol-retrosynthesis/RDK_FTS                                        nan
+            test/smol-retrosynthesis/avg_loss                                       nan
+          test/smol-retrosynthesis/bleu_selfies                                     nan
+          test/smol-retrosynthesis/bleu_smiles                                      nan
+       test/smol-retrosynthesis/exact_match_ratio                                   nan
+       test/smol-retrosynthesis/levenshtein_score                                   nan
+           test/smol-retrosynthesis/morgan_FTS                                      nan
+         test/smol-retrosynthesis/validity_ratio                                    nan
+                     test/total_loss                                        2.0159153938293457
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────gather the metrics across devices
+============================== Evaluation Results ==============================
+test/alchemy_homo/avg_loss: 2.0434983825683593 
+test/alchemy_homo/failure_rate: 0.39 
+test/alchemy_homo/mae: 35.25095634788961 
+test/alchemy_homo/mse: 52176.91774871613 
+test/alchemy_homo/rmse: 95.9146688661738 
+test/alchemy_homo_lumo_gap/avg_loss: 2.0034742832183836 
+test/alchemy_homo_lumo_gap/failure_rate: 0.07 
+test/alchemy_homo_lumo_gap/mae: 2.879279191845238 
+test/alchemy_homo_lumo_gap/mse: 142.54915108082645 
+test/alchemy_homo_lumo_gap/rmse: 7.5378879327763455 
+test/alchemy_lumo/avg_loss: 2.1014162731170654 
+test/alchemy_lumo/failure_rate: 0.34 
+test/alchemy_lumo/mae: 160.4457222995 
+test/alchemy_lumo/mse: 2240167.3745876597 
+test/alchemy_lumo/rmse: 504.29964741135393 
+test/aqsol-logS/avg_loss: 2.399499816894531 
+test/aqsol-logS/failure_rate: 0.0 
+test/aqsol-logS/mae: 0.794158 
+test/aqsol-logS/mse: 1.4353132934000001 
+test/aqsol-logS/rmse: 1.102046216855881 
+test/bace/accuracy: nan 
+test/bace/avg_loss: nan 
+test/bace/f1: nan 
+test/bace/precision: nan 
+test/bace/recall: nan 
+test/bace/roc_auc: nan 
+test/chebi-20-mol2text/avg_loss: nan 
+test/chebi-20-mol2text/bleu2: nan 
+test/chebi-20-mol2text/bleu4: nan 
+test/chebi-20-mol2text/meteor: nan 
+test/chebi-20-mol2text/rouge1: nan 
+test/chebi-20-mol2text/rouge2: nan 
+test/chebi-20-mol2text/rougeL: nan 
+test/chebi-20-text2mol/MACCS_FTS: nan 
+test/chebi-20-text2mol/RDK_FTS: nan 
+test/chebi-20-text2mol/avg_loss: nan 
+test/chebi-20-text2mol/bleu_selfies: nan 
+test/chebi-20-text2mol/bleu_smiles: nan 
+test/chebi-20-text2mol/exact_match_ratio: nan 
+test/chebi-20-text2mol/levenshtein_score: nan 
+test/chebi-20-text2mol/morgan_FTS: nan 
+test/chebi-20-text2mol/validity_ratio: nan 
+test/forward_reaction_prediction/MACCS_FTS: nan 
+test/forward_reaction_prediction/RDK_FTS: nan 
+test/forward_reaction_prediction/avg_loss: nan 
+test/forward_reaction_prediction/bleu_selfies: nan 
+test/forward_reaction_prediction/bleu_smiles: nan 
+test/forward_reaction_prediction/exact_match_ratio: nan 
+test/forward_reaction_prediction/levenshtein_score: nan 
+test/forward_reaction_prediction/morgan_FTS: nan 
+test/forward_reaction_prediction/validity_ratio: nan 
+test/presto-forward_reaction_prediction/MACCS_FTS: 0.9285809591424794 
+test/presto-forward_reaction_prediction/RDK_FTS: 0.9005406854523096 
+test/presto-forward_reaction_prediction/avg_loss: 2.3492283058166503 
+test/presto-forward_reaction_prediction/bleu_selfies: 90.13044555664062 
+test/presto-forward_reaction_prediction/bleu_smiles: 89.37698852539063 
+test/presto-forward_reaction_prediction/exact_match_ratio: 0.69 
+test/presto-forward_reaction_prediction/levenshtein_score: 3.47 
+test/presto-forward_reaction_prediction/morgan_FTS: 0.8667021346459248 
+test/presto-forward_reaction_prediction/validity_ratio: 1.0 
+test/presto-retrosynthesis/MACCS_FTS: 0.8190600725272194 
+test/presto-retrosynthesis/RDK_FTS: 0.7286107665804967 
+test/presto-retrosynthesis/avg_loss: 1.9692247486114502 
+test/presto-retrosynthesis/bleu_selfies: 77.06751708984375 
+test/presto-retrosynthesis/bleu_smiles: 72.80241516113281 
+test/presto-retrosynthesis/exact_match_ratio: 0.41 
+test/presto-retrosynthesis/levenshtein_score: 14.37 
+test/presto-retrosynthesis/morgan_FTS: 0.700124781182466 
+test/presto-retrosynthesis/validity_ratio: 1.0 
+test/qm9_homo/avg_loss: nan 
+test/qm9_homo/failure_rate: nan 
+test/qm9_homo/mae: nan 
+test/qm9_homo/mse: nan 
+test/qm9_homo/rmse: nan 
+test/qm9_homo_lumo_gap/avg_loss: nan 
+test/qm9_homo_lumo_gap/failure_rate: nan 
+test/qm9_homo_lumo_gap/mae: nan 
+test/qm9_homo_lumo_gap/mse: nan 
+test/qm9_homo_lumo_gap/rmse: nan 
+test/qm9_lumo/avg_loss: nan 
+test/qm9_lumo/failure_rate: nan 
+test/qm9_lumo/mae: nan 
+test/qm9_lumo/mse: nan 
+test/qm9_lumo/rmse: nan 
+test/reagent_prediction/MACCS_FTS: nan 
+test/reagent_prediction/RDK_FTS: nan 
+test/reagent_prediction/avg_loss: nan 
+test/reagent_prediction/bleu_selfies: nan 
+test/reagent_prediction/bleu_smiles: nan 
+test/reagent_prediction/exact_match_ratio: nan 
+test/reagent_prediction/levenshtein_score: nan 
+test/reagent_prediction/morgan_FTS: nan 
+test/reagent_prediction/validity_ratio: nan 
+test/retrosynthesis/MACCS_FTS: nan 
+test/retrosynthesis/RDK_FTS: nan 
+test/retrosynthesis/avg_loss: nan 
+test/retrosynthesis/bleu_selfies: nan 
+test/retrosynthesis/bleu_smiles: nan 
+test/retrosynthesis/exact_match_ratio: nan 
+test/retrosynthesis/levenshtein_score: nan 
+test/retrosynthesis/morgan_FTS: nan 
+test/retrosynthesis/validity_ratio: nan 
+test/smol-forward_synthesis/MACCS_FTS: nan 
+test/smol-forward_synthesis/RDK_FTS: nan 
+test/smol-forward_synthesis/avg_loss: nan 
+test/smol-forward_synthesis/bleu_selfies: nan 
+test/smol-forward_synthesis/bleu_smiles: nan 
+test/smol-forward_synthesis/exact_match_ratio: nan 
+test/smol-forward_synthesis/levenshtein_score: nan 
+test/smol-forward_synthesis/morgan_FTS: nan 
+test/smol-forward_synthesis/validity_ratio: nan 
+test/smol-molecule_captioning/avg_loss: nan 
+test/smol-molecule_captioning/bleu2: nan 
+test/smol-molecule_captioning/bleu4: nan 
+test/smol-molecule_captioning/meteor: nan 
+test/smol-molecule_captioning/rouge1: nan 
+test/smol-molecule_captioning/rouge2: nan 
+test/smol-molecule_captioning/rougeL: nan 
+test/smol-molecule_generation/MACCS_FTS: nan 
+test/smol-molecule_generation/RDK_FTS: nan 
+test/smol-molecule_generation/avg_loss: nan 
+test/smol-molecule_generation/bleu_selfies: nan 
+test/smol-molecule_generation/bleu_smiles: nan 
+test/smol-molecule_generation/exact_match_ratio: nan 
+test/smol-molecule_generation/levenshtein_score: nan 
+test/smol-molecule_generation/morgan_FTS: nan 
+test/smol-molecule_generation/validity_ratio: nan 
+test/smol-property_prediction-bbbp/accuracy: nan 
+test/smol-property_prediction-bbbp/avg_loss: nan 
+test/smol-property_prediction-bbbp/f1: nan 
+test/smol-property_prediction-bbbp/precision: nan 
+test/smol-property_prediction-bbbp/recall: nan 
+test/smol-property_prediction-bbbp/roc_auc: nan 
+test/smol-property_prediction-clintox/accuracy: nan 
+test/smol-property_prediction-clintox/avg_loss: nan 
+test/smol-property_prediction-clintox/f1: nan 
+test/smol-property_prediction-clintox/precision: nan 
+test/smol-property_prediction-clintox/recall: nan 
+test/smol-property_prediction-clintox/roc_auc: nan 
+test/smol-property_prediction-esol/avg_loss: nan 
+test/smol-property_prediction-esol/failure_rate: nan 
+test/smol-property_prediction-esol/mae: nan 
+test/smol-property_prediction-esol/mse: nan 
+test/smol-property_prediction-esol/rmse: nan 
+test/smol-property_prediction-hiv/accuracy: nan 
+test/smol-property_prediction-hiv/avg_loss: nan 
+test/smol-property_prediction-hiv/f1: nan 
+test/smol-property_prediction-hiv/precision: nan 
+test/smol-property_prediction-hiv/recall: nan 
+test/smol-property_prediction-hiv/roc_auc: nan 
+test/smol-property_prediction-lipo/avg_loss: nan 
+test/smol-property_prediction-lipo/failure_rate: nan 
+test/smol-property_prediction-lipo/mae: nan 
+test/smol-property_prediction-lipo/mse: nan 
+test/smol-property_prediction-lipo/rmse: nan 
+test/smol-property_prediction-sider/accuracy: nan 
+test/smol-property_prediction-sider/avg_loss: nan 
+test/smol-property_prediction-sider/f1: nan 
+test/smol-property_prediction-sider/precision: nan 
+test/smol-property_prediction-sider/recall: nan 
+test/smol-property_prediction-sider/roc_auc: nan 
+test/smol-retrosynthesis/MACCS_FTS: nan 
+test/smol-retrosynthesis/RDK_FTS: nan 
+test/smol-retrosynthesis/avg_loss: nan 
+test/smol-retrosynthesis/bleu_selfies: nan 
+test/smol-retrosynthesis/bleu_smiles: nan 
+test/smol-retrosynthesis/exact_match_ratio: nan 
+test/smol-retrosynthesis/levenshtein_score: nan 
+test/smol-retrosynthesis/morgan_FTS: nan 
+test/smol-retrosynthesis/validity_ratio: nan 
+=================================================================================
+
+Device cuda:5 on_evaluation_epoch_end end
+gather the metrics across devices
+============================== Evaluation Results ==============================
+test/alchemy_homo/avg_loss: 2.0434983825683593 
+test/alchemy_homo/failure_rate: 0.39 
+test/alchemy_homo/mae: 35.25095634788961 
+test/alchemy_homo/mse: 52176.91774871613 
+test/alchemy_homo/rmse: 95.9146688661738 
+test/alchemy_homo_lumo_gap/avg_loss: 2.0034742832183836 
+test/alchemy_homo_lumo_gap/failure_rate: 0.07 
+test/alchemy_homo_lumo_gap/mae: 2.879279191845238 
+test/alchemy_homo_lumo_gap/mse: 142.54915108082645 
+test/alchemy_homo_lumo_gap/rmse: 7.5378879327763455 
+test/alchemy_lumo/avg_loss: 2.1014162731170654 
+test/alchemy_lumo/failure_rate: 0.34 
+test/alchemy_lumo/mae: 160.4457222995 
+test/alchemy_lumo/mse: 2240167.3745876597 
+test/alchemy_lumo/rmse: 504.29964741135393 
+test/aqsol-logS/avg_loss: 2.399499816894531 
+test/aqsol-logS/failure_rate: 0.0 
+test/aqsol-logS/mae: 0.794158 
+test/aqsol-logS/mse: 1.4353132934000001 
+test/aqsol-logS/rmse: 1.102046216855881 
+test/bace/accuracy: nan 
+test/bace/avg_loss: nan 
+test/bace/f1: nan 
+test/bace/precision: nan 
+test/bace/recall: nan 
+test/bace/roc_auc: nan 
+test/chebi-20-mol2text/avg_loss: nan 
+test/chebi-20-mol2text/bleu2: nan 
+test/chebi-20-mol2text/bleu4: nan 
+test/chebi-20-mol2text/meteor: nan 
+test/chebi-20-mol2text/rouge1: nan 
+test/chebi-20-mol2text/rouge2: nan 
+test/chebi-20-mol2text/rougeL: nan 
+test/chebi-20-text2mol/MACCS_FTS: nan 
+test/chebi-20-text2mol/RDK_FTS: nan 
+test/chebi-20-text2mol/avg_loss: nan 
+test/chebi-20-text2mol/bleu_selfies: nan 
+test/chebi-20-text2mol/bleu_smiles: nan 
+test/chebi-20-text2mol/exact_match_ratio: nan 
+test/chebi-20-text2mol/levenshtein_score: nan 
+test/chebi-20-text2mol/morgan_FTS: nan 
+test/chebi-20-text2mol/validity_ratio: nan 
+test/forward_reaction_prediction/MACCS_FTS: nan 
+test/forward_reaction_prediction/RDK_FTS: nan 
+test/forward_reaction_prediction/avg_loss: nan 
+test/forward_reaction_prediction/bleu_selfies: nan 
+test/forward_reaction_prediction/bleu_smiles: nan 
+test/forward_reaction_prediction/exact_match_ratio: nan 
+test/forward_reaction_prediction/levenshtein_score: nan 
+test/forward_reaction_prediction/morgan_FTS: nan 
+test/forward_reaction_prediction/validity_ratio: nan 
+test/presto-forward_reaction_prediction/MACCS_FTS: 0.9285809591424794 
+test/presto-forward_reaction_prediction/RDK_FTS: 0.9005406854523096 
+test/presto-forward_reaction_prediction/avg_loss: 2.3492283058166503 
+test/presto-forward_reaction_prediction/bleu_selfies: 90.13044555664062 
+test/presto-forward_reaction_prediction/bleu_smiles: 89.37698852539063 
+test/presto-forward_reaction_prediction/exact_match_ratio: 0.69 
+test/presto-forward_reaction_prediction/levenshtein_score: 3.47 
+test/presto-forward_reaction_prediction/morgan_FTS: 0.8667021346459248 
+test/presto-forward_reaction_prediction/validity_ratio: 1.0 
+test/presto-retrosynthesis/MACCS_FTS: 0.8190600725272194 
+test/presto-retrosynthesis/RDK_FTS: 0.7286107665804967 
+test/presto-retrosynthesis/avg_loss: 1.9692247486114502 
+test/presto-retrosynthesis/bleu_selfies: 77.06751708984375 
+test/presto-retrosynthesis/bleu_smiles: 72.80241516113281 
+test/presto-retrosynthesis/exact_match_ratio: 0.41 
+test/presto-retrosynthesis/levenshtein_score: 14.37 
+test/presto-retrosynthesis/morgan_FTS: 0.700124781182466 
+test/presto-retrosynthesis/validity_ratio: 1.0 
+test/qm9_homo/avg_loss: nan 
+test/qm9_homo/failure_rate: nan 
+test/qm9_homo/mae: nan 
+test/qm9_homo/mse: nan 
+test/qm9_homo/rmse: nan 
+test/qm9_homo_lumo_gap/avg_loss: nan 
+test/qm9_homo_lumo_gap/failure_rate: nan 
+test/qm9_homo_lumo_gap/mae: nan 
+test/qm9_homo_lumo_gap/mse: nan 
+test/qm9_homo_lumo_gap/rmse: nan 
+test/qm9_lumo/avg_loss: nan 
+test/qm9_lumo/failure_rate: nan 
+test/qm9_lumo/mae: nan 
+test/qm9_lumo/mse: nan 
+test/qm9_lumo/rmse: nan 
+test/reagent_prediction/MACCS_FTS: nan 
+test/reagent_prediction/RDK_FTS: nan 
+test/reagent_prediction/avg_loss: nan 
+test/reagent_prediction/bleu_selfies: nan 
+test/reagent_prediction/bleu_smiles: nan 
+test/reagent_prediction/exact_match_ratio: nan 
+test/reagent_prediction/levenshtein_score: nan 
+test/reagent_prediction/morgan_FTS: nan 
+test/reagent_prediction/validity_ratio: nan 
+test/retrosynthesis/MACCS_FTS: nan 
+test/retrosynthesis/RDK_FTS: nan 
+test/retrosynthesis/avg_loss: nan 
+test/retrosynthesis/bleu_selfies: nan 
+test/retrosynthesis/bleu_smiles: nan 
+test/retrosynthesis/exact_match_ratio: nan 
+test/retrosynthesis/levenshtein_score: nan 
+test/retrosynthesis/morgan_FTS: nan 
+test/retrosynthesis/validity_ratio: nan 
+test/smol-forward_synthesis/MACCS_FTS: nan 
+test/smol-forward_synthesis/RDK_FTS: nan 
+test/smol-forward_synthesis/avg_loss: nan 
+test/smol-forward_synthesis/bleu_selfies: nan 
+test/smol-forward_synthesis/bleu_smiles: nan 
+test/smol-forward_synthesis/exact_match_ratio: nan 
+test/smol-forward_synthesis/levenshtein_score: nan 
+test/smol-forward_synthesis/morgan_FTS: nan 
+test/smol-forward_synthesis/validity_ratio: nan 
+test/smol-molecule_captioning/avg_loss: nan 
+test/smol-molecule_captioning/bleu2: nan 
+test/smol-molecule_captioning/bleu4: nan 
+test/smol-molecule_captioning/meteor: nan 
+test/smol-molecule_captioning/rouge1: nan 
+test/smol-molecule_captioning/rouge2: nan 
+test/smol-molecule_captioning/rougeL: nan 
+test/smol-molecule_generation/MACCS_FTS: nan 
+test/smol-molecule_generation/RDK_FTS: nan 
+test/smol-molecule_generation/avg_loss: nan 
+test/smol-molecule_generation/bleu_selfies: nan 
+test/smol-molecule_generation/bleu_smiles: nan 
+test/smol-molecule_generation/exact_match_ratio: nan 
+test/smol-molecule_generation/levenshtein_score: nan 
+test/smol-molecule_generation/morgan_FTS: nan 
+test/smol-molecule_generation/validity_ratio: nan 
+test/smol-property_prediction-bbbp/accuracy: nan 
+test/smol-property_prediction-bbbp/avg_loss: nan 
+test/smol-property_prediction-bbbp/f1: nan 
+test/smol-property_prediction-bbbp/precision: nan 
+test/smol-property_prediction-bbbp/recall: nan 
+test/smol-property_prediction-bbbp/roc_auc: nan 
+test/smol-property_prediction-clintox/accuracy: nan 
+test/smol-property_prediction-clintox/avg_loss: nan 
+test/smol-property_prediction-clintox/f1: nan 
+test/smol-property_prediction-clintox/precision: nan 
+test/smol-property_prediction-clintox/recall: nan 
+test/smol-property_prediction-clintox/roc_auc: nan 
+test/smol-property_prediction-esol/avg_loss: nan 
+test/smol-property_prediction-esol/failure_rate: nan 
+test/smol-property_prediction-esol/mae: nan 
+test/smol-property_prediction-esol/mse: nan 
+test/smol-property_prediction-esol/rmse: nan 
+test/smol-property_prediction-hiv/accuracy: nan 
+test/smol-property_prediction-hiv/avg_loss: nan 
+test/smol-property_prediction-hiv/f1: nan 
+test/smol-property_prediction-hiv/precision: nan 
+test/smol-property_prediction-hiv/recall: nan 
+test/smol-property_prediction-hiv/roc_auc: nan 
+test/smol-property_prediction-lipo/avg_loss: nan 
+test/smol-property_prediction-lipo/failure_rate: nan 
+test/smol-property_prediction-lipo/mae: nan 
+test/smol-property_prediction-lipo/mse: nan 
+test/smol-property_prediction-lipo/rmse: nan 
+test/smol-property_prediction-sider/accuracy: nan 
+test/smol-property_prediction-sider/avg_loss: nan 
+test/smol-property_prediction-sider/f1: nan 
+test/smol-property_prediction-sider/precision: nan 
+test/smol-property_prediction-sider/recall: nan 
+test/smol-property_prediction-sider/roc_auc: nan 
+test/smol-retrosynthesis/MACCS_FTS: nan 
+test/smol-retrosynthesis/RDK_FTS: nan 
+test/smol-retrosynthesis/avg_loss: nan 
+test/smol-retrosynthesis/bleu_selfies: nan 
+test/smol-retrosynthesis/bleu_smiles: nan 
+test/smol-retrosynthesis/exact_match_ratio: nan 
+test/smol-retrosynthesis/levenshtein_score: nan 
+test/smol-retrosynthesis/morgan_FTS: nan 
+test/smol-retrosynthesis/validity_ratio: nan 
+=================================================================================
+
+Device cuda:1 on_evaluation_epoch_end end
+gather the metrics across devices
+============================== Evaluation Results ==============================
+test/alchemy_homo/avg_loss: 2.0434983825683593 
+test/alchemy_homo/failure_rate: 0.39 
+test/alchemy_homo/mae: 35.25095634788961 
+test/alchemy_homo/mse: 52176.91774871613 
+test/alchemy_homo/rmse: 95.9146688661738 
+test/alchemy_homo_lumo_gap/avg_loss: 2.0034742832183836 
+test/alchemy_homo_lumo_gap/failure_rate: 0.07 
+test/alchemy_homo_lumo_gap/mae: 2.879279191845238 
+test/alchemy_homo_lumo_gap/mse: 142.54915108082645 
+test/alchemy_homo_lumo_gap/rmse: 7.5378879327763455 
+test/alchemy_lumo/avg_loss: 2.1014162731170654 
+test/alchemy_lumo/failure_rate: 0.34 
+test/alchemy_lumo/mae: 160.4457222995 
+test/alchemy_lumo/mse: 2240167.3745876597 
+test/alchemy_lumo/rmse: 504.29964741135393 
+test/aqsol-logS/avg_loss: 2.399499816894531 
+test/aqsol-logS/failure_rate: 0.0 
+test/aqsol-logS/mae: 0.794158 
+test/aqsol-logS/mse: 1.4353132934000001 
+test/aqsol-logS/rmse: 1.102046216855881 
+test/bace/accuracy: nan 
+test/bace/avg_loss: nan 
+test/bace/f1: nan 
+test/bace/precision: nan 
+test/bace/recall: nan 
+test/bace/roc_auc: nan 
+test/chebi-20-mol2text/avg_loss: nan 
+test/chebi-20-mol2text/bleu2: nan 
+test/chebi-20-mol2text/bleu4: nan 
+test/chebi-20-mol2text/meteor: nan 
+test/chebi-20-mol2text/rouge1: nan 
+test/chebi-20-mol2text/rouge2: nan 
+test/chebi-20-mol2text/rougeL: nan 
+test/chebi-20-text2mol/MACCS_FTS: nan 
+test/chebi-20-text2mol/RDK_FTS: nan 
+test/chebi-20-text2mol/avg_loss: nan 
+test/chebi-20-text2mol/bleu_selfies: nan 
+test/chebi-20-text2mol/bleu_smiles: nan 
+test/chebi-20-text2mol/exact_match_ratio: nan 
+test/chebi-20-text2mol/levenshtein_score: nan 
+test/chebi-20-text2mol/morgan_FTS: nan 
+test/chebi-20-text2mol/validity_ratio: nan 
+test/forward_reaction_prediction/MACCS_FTS: nan 
+test/forward_reaction_prediction/RDK_FTS: nan 
+test/forward_reaction_prediction/avg_loss: nan 
+test/forward_reaction_prediction/bleu_selfies: nan 
+test/forward_reaction_prediction/bleu_smiles: nan 
+test/forward_reaction_prediction/exact_match_ratio: nan 
+test/forward_reaction_prediction/levenshtein_score: nan 
+test/forward_reaction_prediction/morgan_FTS: nan 
+test/forward_reaction_prediction/validity_ratio: nan 
+test/presto-forward_reaction_prediction/MACCS_FTS: 0.9285809591424794 
+test/presto-forward_reaction_prediction/RDK_FTS: 0.9005406854523096 
+test/presto-forward_reaction_prediction/avg_loss: 2.3492283058166503 
+test/presto-forward_reaction_prediction/bleu_selfies: 90.13044555664062 
+test/presto-forward_reaction_prediction/bleu_smiles: 89.37698852539063 
+test/presto-forward_reaction_prediction/exact_match_ratio: 0.69 
+test/presto-forward_reaction_prediction/levenshtein_score: 3.47 
+test/presto-forward_reaction_prediction/morgan_FTS: 0.8667021346459248 
+test/presto-forward_reaction_prediction/validity_ratio: 1.0 
+test/presto-retrosynthesis/MACCS_FTS: 0.8190600725272194 
+test/presto-retrosynthesis/RDK_FTS: 0.7286107665804967 
+test/presto-retrosynthesis/avg_loss: 1.9692247486114502 
+test/presto-retrosynthesis/bleu_selfies: 77.06751708984375 
+test/presto-retrosynthesis/bleu_smiles: 72.80241516113281 
+test/presto-retrosynthesis/exact_match_ratio: 0.41 
+test/presto-retrosynthesis/levenshtein_score: 14.37 
+test/presto-retrosynthesis/morgan_FTS: 0.700124781182466 
+test/presto-retrosynthesis/validity_ratio: 1.0 
+test/qm9_homo/avg_loss: nan 
+test/qm9_homo/failure_rate: nan 
+test/qm9_homo/mae: nan 
+test/qm9_homo/mse: nan 
+test/qm9_homo/rmse: nan 
+test/qm9_homo_lumo_gap/avg_loss: nan 
+test/qm9_homo_lumo_gap/failure_rate: nan 
+test/qm9_homo_lumo_gap/mae: nan 
+test/qm9_homo_lumo_gap/mse: nan 
+test/qm9_homo_lumo_gap/rmse: nan 
+test/qm9_lumo/avg_loss: nan 
+test/qm9_lumo/failure_rate: nan 
+test/qm9_lumo/mae: nan 
+test/qm9_lumo/mse: nan 
+test/qm9_lumo/rmse: nan 
+test/reagent_prediction/MACCS_FTS: nan 
+test/reagent_prediction/RDK_FTS: nan 
+test/reagent_prediction/avg_loss: nan 
+test/reagent_prediction/bleu_selfies: nan 
+test/reagent_prediction/bleu_smiles: nan 
+test/reagent_prediction/exact_match_ratio: nan 
+test/reagent_prediction/levenshtein_score: nan 
+test/reagent_prediction/morgan_FTS: nan 
+test/reagent_prediction/validity_ratio: nan 
+test/retrosynthesis/MACCS_FTS: nan 
+test/retrosynthesis/RDK_FTS: nan 
+test/retrosynthesis/avg_loss: nan 
+test/retrosynthesis/bleu_selfies: nan 
+test/retrosynthesis/bleu_smiles: nan 
+test/retrosynthesis/exact_match_ratio: nan 
+test/retrosynthesis/levenshtein_score: nan 
+test/retrosynthesis/morgan_FTS: nan 
+test/retrosynthesis/validity_ratio: nan 
+test/smol-forward_synthesis/MACCS_FTS: nan 
+test/smol-forward_synthesis/RDK_FTS: nan 
+test/smol-forward_synthesis/avg_loss: nan 
+test/smol-forward_synthesis/bleu_selfies: nan 
+test/smol-forward_synthesis/bleu_smiles: nan 
+test/smol-forward_synthesis/exact_match_ratio: nan 
+test/smol-forward_synthesis/levenshtein_score: nan 
+test/smol-forward_synthesis/morgan_FTS: nan 
+test/smol-forward_synthesis/validity_ratio: nan 
+test/smol-molecule_captioning/avg_loss: nan 
+test/smol-molecule_captioning/bleu2: nan 
+test/smol-molecule_captioning/bleu4: nan 
+test/smol-molecule_captioning/meteor: nan 
+test/smol-molecule_captioning/rouge1: nan 
+test/smol-molecule_captioning/rouge2: nan 
+test/smol-molecule_captioning/rougeL: nan 
+test/smol-molecule_generation/MACCS_FTS: nan 
+test/smol-molecule_generation/RDK_FTS: nan 
+test/smol-molecule_generation/avg_loss: nan 
+test/smol-molecule_generation/bleu_selfies: nan 
+test/smol-molecule_generation/bleu_smiles: nan 
+test/smol-molecule_generation/exact_match_ratio: nan 
+test/smol-molecule_generation/levenshtein_score: nan 
+test/smol-molecule_generation/morgan_FTS: nan 
+test/smol-molecule_generation/validity_ratio: nan 
+test/smol-property_prediction-bbbp/accuracy: nan 
+test/smol-property_prediction-bbbp/avg_loss: nan 
+test/smol-property_prediction-bbbp/f1: nan 
+test/smol-property_prediction-bbbp/precision: nan 
+test/smol-property_prediction-bbbp/recall: nan 
+test/smol-property_prediction-bbbp/roc_auc: nan 
+test/smol-property_prediction-clintox/accuracy: nan 
+test/smol-property_prediction-clintox/avg_loss: nan 
+test/smol-property_prediction-clintox/f1: nan 
+test/smol-property_prediction-clintox/precision: nan 
+test/smol-property_prediction-clintox/recall: nan 
+test/smol-property_prediction-clintox/roc_auc: nan 
+test/smol-property_prediction-esol/avg_loss: nan 
+test/smol-property_prediction-esol/failure_rate: nan 
+test/smol-property_prediction-esol/mae: nan 
+test/smol-property_prediction-esol/mse: nan 
+test/smol-property_prediction-esol/rmse: nan 
+test/smol-property_prediction-hiv/accuracy: nan 
+test/smol-property_prediction-hiv/avg_loss: nan 
+test/smol-property_prediction-hiv/f1: nan 
+test/smol-property_prediction-hiv/precision: nan 
+test/smol-property_prediction-hiv/recall: nan 
+test/smol-property_prediction-hiv/roc_auc: nan 
+test/smol-property_prediction-lipo/avg_loss: nan 
+test/smol-property_prediction-lipo/failure_rate: nan 
+test/smol-property_prediction-lipo/mae: nan 
+test/smol-property_prediction-lipo/mse: nan 
+test/smol-property_prediction-lipo/rmse: nan 
+test/smol-property_prediction-sider/accuracy: nan 
+test/smol-property_prediction-sider/avg_loss: nan 
+test/smol-property_prediction-sider/f1: nan 
+test/smol-property_prediction-sider/precision: nan 
+test/smol-property_prediction-sider/recall: nan 
+test/smol-property_prediction-sider/roc_auc: nan 
+test/smol-retrosynthesis/MACCS_FTS: nan 
+test/smol-retrosynthesis/RDK_FTS: nan 
+test/smol-retrosynthesis/avg_loss: nan 
+test/smol-retrosynthesis/bleu_selfies: nan 
+test/smol-retrosynthesis/bleu_smiles: nan 
+test/smol-retrosynthesis/exact_match_ratio: nan 
+test/smol-retrosynthesis/levenshtein_score: nan 
+test/smol-retrosynthesis/morgan_FTS: nan 
+test/smol-retrosynthesis/validity_ratio: nan 
+=================================================================================
+
+Device cuda:3 on_evaluation_epoch_end end
+gather the metrics across devices
+============================== Evaluation Results ==============================
+test/alchemy_homo/avg_loss: 2.0434983825683593 
+test/alchemy_homo/failure_rate: 0.39 
+test/alchemy_homo/mae: 35.25095634788961 
+test/alchemy_homo/mse: 52176.91774871613 
+test/alchemy_homo/rmse: 95.9146688661738 
+test/alchemy_homo_lumo_gap/avg_loss: 2.0034742832183836 
+test/alchemy_homo_lumo_gap/failure_rate: 0.07 
+test/alchemy_homo_lumo_gap/mae: 2.879279191845238 
+test/alchemy_homo_lumo_gap/mse: 142.54915108082645 
+test/alchemy_homo_lumo_gap/rmse: 7.5378879327763455 
+test/alchemy_lumo/avg_loss: 2.1014162731170654 
+test/alchemy_lumo/failure_rate: 0.34 
+test/alchemy_lumo/mae: 160.4457222995 
+test/alchemy_lumo/mse: 2240167.3745876597 
+test/alchemy_lumo/rmse: 504.29964741135393 
+test/aqsol-logS/avg_loss: 2.399499816894531 
+test/aqsol-logS/failure_rate: 0.0 
+test/aqsol-logS/mae: 0.794158 
+test/aqsol-logS/mse: 1.4353132934000001 
+test/aqsol-logS/rmse: 1.102046216855881 
+test/bace/accuracy: nan 
+test/bace/avg_loss: nan 
+test/bace/f1: nan 
+test/bace/precision: nan 
+test/bace/recall: nan 
+test/bace/roc_auc: nan 
+test/chebi-20-mol2text/avg_loss: nan 
+test/chebi-20-mol2text/bleu2: nan 
+test/chebi-20-mol2text/bleu4: nan 
+test/chebi-20-mol2text/meteor: nan 
+test/chebi-20-mol2text/rouge1: nan 
+test/chebi-20-mol2text/rouge2: nan 
+test/chebi-20-mol2text/rougeL: nan 
+test/chebi-20-text2mol/MACCS_FTS: nan 
+test/chebi-20-text2mol/RDK_FTS: nan 
+test/chebi-20-text2mol/avg_loss: nan 
+test/chebi-20-text2mol/bleu_selfies: nan 
+test/chebi-20-text2mol/bleu_smiles: nan 
+test/chebi-20-text2mol/exact_match_ratio: nan 
+test/chebi-20-text2mol/levenshtein_score: nan 
+test/chebi-20-text2mol/morgan_FTS: nan 
+test/chebi-20-text2mol/validity_ratio: nan 
+test/forward_reaction_prediction/MACCS_FTS: nan 
+test/forward_reaction_prediction/RDK_FTS: nan 
+test/forward_reaction_prediction/avg_loss: nan 
+test/forward_reaction_prediction/bleu_selfies: nan 
+test/forward_reaction_prediction/bleu_smiles: nan 
+test/forward_reaction_prediction/exact_match_ratio: nan 
+test/forward_reaction_prediction/levenshtein_score: nan 
+test/forward_reaction_prediction/morgan_FTS: nan 
+test/forward_reaction_prediction/validity_ratio: nan 
+test/presto-forward_reaction_prediction/MACCS_FTS: 0.9285809591424794 
+test/presto-forward_reaction_prediction/RDK_FTS: 0.9005406854523096 
+test/presto-forward_reaction_prediction/avg_loss: 2.3492283058166503 
+test/presto-forward_reaction_prediction/bleu_selfies: 90.13044555664062 
+test/presto-forward_reaction_prediction/bleu_smiles: 89.37698852539063 
+test/presto-forward_reaction_prediction/exact_match_ratio: 0.69 
+test/presto-forward_reaction_prediction/levenshtein_score: 3.47 
+test/presto-forward_reaction_prediction/morgan_FTS: 0.8667021346459248 
+test/presto-forward_reaction_prediction/validity_ratio: 1.0 
+test/presto-retrosynthesis/MACCS_FTS: 0.8190600725272194 
+test/presto-retrosynthesis/RDK_FTS: 0.7286107665804967 
+test/presto-retrosynthesis/avg_loss: 1.9692247486114502 
+test/presto-retrosynthesis/bleu_selfies: 77.06751708984375 
+test/presto-retrosynthesis/bleu_smiles: 72.80241516113281 
+test/presto-retrosynthesis/exact_match_ratio: 0.41 
+test/presto-retrosynthesis/levenshtein_score: 14.37 
+test/presto-retrosynthesis/morgan_FTS: 0.700124781182466 
+test/presto-retrosynthesis/validity_ratio: 1.0 
+test/qm9_homo/avg_loss: nan 
+test/qm9_homo/failure_rate: nan 
+test/qm9_homo/mae: nan 
+test/qm9_homo/mse: nan 
+test/qm9_homo/rmse: nan 
+test/qm9_homo_lumo_gap/avg_loss: nan 
+test/qm9_homo_lumo_gap/failure_rate: nan 
+test/qm9_homo_lumo_gap/mae: nan 
+test/qm9_homo_lumo_gap/mse: nan 
+test/qm9_homo_lumo_gap/rmse: nan 
+test/qm9_lumo/avg_loss: nan 
+test/qm9_lumo/failure_rate: nan 
+test/qm9_lumo/mae: nan 
+test/qm9_lumo/mse: nan 
+test/qm9_lumo/rmse: nan 
+test/reagent_prediction/MACCS_FTS: nan 
+test/reagent_prediction/RDK_FTS: nan 
+test/reagent_prediction/avg_loss: nan 
+test/reagent_prediction/bleu_selfies: nan 
+test/reagent_prediction/bleu_smiles: nan 
+test/reagent_prediction/exact_match_ratio: nan 
+test/reagent_prediction/levenshtein_score: nan 
+test/reagent_prediction/morgan_FTS: nan 
+test/reagent_prediction/validity_ratio: nan 
+test/retrosynthesis/MACCS_FTS: nan 
+test/retrosynthesis/RDK_FTS: nan 
+test/retrosynthesis/avg_loss: nan 
+test/retrosynthesis/bleu_selfies: nan 
+test/retrosynthesis/bleu_smiles: nan 
+test/retrosynthesis/exact_match_ratio: nan 
+test/retrosynthesis/levenshtein_score: nan 
+test/retrosynthesis/morgan_FTS: nan 
+test/retrosynthesis/validity_ratio: nan 
+test/smol-forward_synthesis/MACCS_FTS: nan 
+test/smol-forward_synthesis/RDK_FTS: nan 
+test/smol-forward_synthesis/avg_loss: nan 
+test/smol-forward_synthesis/bleu_selfies: nan 
+test/smol-forward_synthesis/bleu_smiles: nan 
+test/smol-forward_synthesis/exact_match_ratio: nan 
+test/smol-forward_synthesis/levenshtein_score: nan 
+test/smol-forward_synthesis/morgan_FTS: nan 
+test/smol-forward_synthesis/validity_ratio: nan 
+test/smol-molecule_captioning/avg_loss: nan 
+test/smol-molecule_captioning/bleu2: nan 
+test/smol-molecule_captioning/bleu4: nan 
+test/smol-molecule_captioning/meteor: nan 
+test/smol-molecule_captioning/rouge1: nan 
+test/smol-molecule_captioning/rouge2: nan 
+test/smol-molecule_captioning/rougeL: nan 
+test/smol-molecule_generation/MACCS_FTS: nan 
+test/smol-molecule_generation/RDK_FTS: nan 
+test/smol-molecule_generation/avg_loss: nan 
+test/smol-molecule_generation/bleu_selfies: nan 
+test/smol-molecule_generation/bleu_smiles: nan 
+test/smol-molecule_generation/exact_match_ratio: nan 
+test/smol-molecule_generation/levenshtein_score: nan 
+test/smol-molecule_generation/morgan_FTS: nan 
+test/smol-molecule_generation/validity_ratio: nan 
+test/smol-property_prediction-bbbp/accuracy: nan 
+test/smol-property_prediction-bbbp/avg_loss: nan 
+test/smol-property_prediction-bbbp/f1: nan 
+test/smol-property_prediction-bbbp/precision: nan 
+test/smol-property_prediction-bbbp/recall: nan 
+test/smol-property_prediction-bbbp/roc_auc: nan 
+test/smol-property_prediction-clintox/accuracy: nan 
+test/smol-property_prediction-clintox/avg_loss: nan 
+test/smol-property_prediction-clintox/f1: nan 
+test/smol-property_prediction-clintox/precision: nan 
+test/smol-property_prediction-clintox/recall: nan 
+test/smol-property_prediction-clintox/roc_auc: nan 
+test/smol-property_prediction-esol/avg_loss: nan 
+test/smol-property_prediction-esol/failure_rate: nan 
+test/smol-property_prediction-esol/mae: nan 
+test/smol-property_prediction-esol/mse: nan 
+test/smol-property_prediction-esol/rmse: nan 
+test/smol-property_prediction-hiv/accuracy: nan 
+test/smol-property_prediction-hiv/avg_loss: nan 
+test/smol-property_prediction-hiv/f1: nan 
+test/smol-property_prediction-hiv/precision: nan 
+test/smol-property_prediction-hiv/recall: nan 
+test/smol-property_prediction-hiv/roc_auc: nan 
+test/smol-property_prediction-lipo/avg_loss: nan 
+test/smol-property_prediction-lipo/failure_rate: nan 
+test/smol-property_prediction-lipo/mae: nan 
+test/smol-property_prediction-lipo/mse: nan 
+test/smol-property_prediction-lipo/rmse: nan 
+test/smol-property_prediction-sider/accuracy: nan 
+test/smol-property_prediction-sider/avg_loss: nan 
+test/smol-property_prediction-sider/f1: nan 
+test/smol-property_prediction-sider/precision: nan 
+test/smol-property_prediction-sider/recall: nan 
+test/smol-property_prediction-sider/roc_auc: nan 
+test/smol-retrosynthesis/MACCS_FTS: nan 
+test/smol-retrosynthesis/RDK_FTS: nan 
+test/smol-retrosynthesis/avg_loss: nan 
+test/smol-retrosynthesis/bleu_selfies: nan 
+test/smol-retrosynthesis/bleu_smiles: nan 
+test/smol-retrosynthesis/exact_match_ratio: nan 
+test/smol-retrosynthesis/levenshtein_score: nan 
+test/smol-retrosynthesis/morgan_FTS: nan 
+test/smol-retrosynthesis/validity_ratio: nan 
+=================================================================================
+
+Device cuda:2 on_evaluation_epoch_end end
+gather the metrics across devices
+============================== Evaluation Results ==============================
+test/alchemy_homo/avg_loss: 2.0434983825683593 
+test/alchemy_homo/failure_rate: 0.39 
+test/alchemy_homo/mae: 35.25095634788961 
+test/alchemy_homo/mse: 52176.91774871613 
+test/alchemy_homo/rmse: 95.9146688661738 
+test/alchemy_homo_lumo_gap/avg_loss: 2.0034742832183836 
+test/alchemy_homo_lumo_gap/failure_rate: 0.07 
+test/alchemy_homo_lumo_gap/mae: 2.879279191845238 
+test/alchemy_homo_lumo_gap/mse: 142.54915108082645 
+test/alchemy_homo_lumo_gap/rmse: 7.5378879327763455 
+test/alchemy_lumo/avg_loss: 2.1014162731170654 
+test/alchemy_lumo/failure_rate: 0.34 
+test/alchemy_lumo/mae: 160.4457222995 
+test/alchemy_lumo/mse: 2240167.3745876597 
+test/alchemy_lumo/rmse: 504.29964741135393 
+test/aqsol-logS/avg_loss: 2.399499816894531 
+test/aqsol-logS/failure_rate: 0.0 
+test/aqsol-logS/mae: 0.794158 
+test/aqsol-logS/mse: 1.4353132934000001 
+test/aqsol-logS/rmse: 1.102046216855881 
+test/bace/accuracy: nan 
+test/bace/avg_loss: nan 
+test/bace/f1: nan 
+test/bace/precision: nan 
+test/bace/recall: nan 
+test/bace/roc_auc: nan 
+test/chebi-20-mol2text/avg_loss: nan 
+test/chebi-20-mol2text/bleu2: nan 
+test/chebi-20-mol2text/bleu4: nan 
+test/chebi-20-mol2text/meteor: nan 
+test/chebi-20-mol2text/rouge1: nan 
+test/chebi-20-mol2text/rouge2: nan 
+test/chebi-20-mol2text/rougeL: nan 
+test/chebi-20-text2mol/MACCS_FTS: nan 
+test/chebi-20-text2mol/RDK_FTS: nan 
+test/chebi-20-text2mol/avg_loss: nan 
+test/chebi-20-text2mol/bleu_selfies: nan 
+test/chebi-20-text2mol/bleu_smiles: nan 
+test/chebi-20-text2mol/exact_match_ratio: nan 
+test/chebi-20-text2mol/levenshtein_score: nan 
+test/chebi-20-text2mol/morgan_FTS: nan 
+test/chebi-20-text2mol/validity_ratio: nan 
+test/forward_reaction_prediction/MACCS_FTS: nan 
+test/forward_reaction_prediction/RDK_FTS: nan 
+test/forward_reaction_prediction/avg_loss: nan 
+test/forward_reaction_prediction/bleu_selfies: nan 
+test/forward_reaction_prediction/bleu_smiles: nan 
+test/forward_reaction_prediction/exact_match_ratio: nan 
+test/forward_reaction_prediction/levenshtein_score: nan 
+test/forward_reaction_prediction/morgan_FTS: nan 
+test/forward_reaction_prediction/validity_ratio: nan 
+test/presto-forward_reaction_prediction/MACCS_FTS: 0.9285809591424794 
+test/presto-forward_reaction_prediction/RDK_FTS: 0.9005406854523096 
+test/presto-forward_reaction_prediction/avg_loss: 2.3492283058166503 
+test/presto-forward_reaction_prediction/bleu_selfies: 90.13044555664062 
+test/presto-forward_reaction_prediction/bleu_smiles: 89.37698852539063 
+test/presto-forward_reaction_prediction/exact_match_ratio: 0.69 
+test/presto-forward_reaction_prediction/levenshtein_score: 3.47 
+test/presto-forward_reaction_prediction/morgan_FTS: 0.8667021346459248 
+test/presto-forward_reaction_prediction/validity_ratio: 1.0 
+test/presto-retrosynthesis/MACCS_FTS: 0.8190600725272194 
+test/presto-retrosynthesis/RDK_FTS: 0.7286107665804967 
+test/presto-retrosynthesis/avg_loss: 1.9692247486114502 
+test/presto-retrosynthesis/bleu_selfies: 77.06751708984375 
+test/presto-retrosynthesis/bleu_smiles: 72.80241516113281 
+test/presto-retrosynthesis/exact_match_ratio: 0.41 
+test/presto-retrosynthesis/levenshtein_score: 14.37 
+test/presto-retrosynthesis/morgan_FTS: 0.700124781182466 
+test/presto-retrosynthesis/validity_ratio: 1.0 
+test/qm9_homo/avg_loss: nan 
+test/qm9_homo/failure_rate: nan 
+test/qm9_homo/mae: nan 
+test/qm9_homo/mse: nan 
+test/qm9_homo/rmse: nan 
+test/qm9_homo_lumo_gap/avg_loss: nan 
+test/qm9_homo_lumo_gap/failure_rate: nan 
+test/qm9_homo_lumo_gap/mae: nan 
+test/qm9_homo_lumo_gap/mse: nan 
+test/qm9_homo_lumo_gap/rmse: nan 
+test/qm9_lumo/avg_loss: nan 
+test/qm9_lumo/failure_rate: nan 
+test/qm9_lumo/mae: nan 
+test/qm9_lumo/mse: nan 
+test/qm9_lumo/rmse: nan 
+test/reagent_prediction/MACCS_FTS: nan 
+test/reagent_prediction/RDK_FTS: nan 
+test/reagent_prediction/avg_loss: nan 
+test/reagent_prediction/bleu_selfies: nan 
+test/reagent_prediction/bleu_smiles: nan 
+test/reagent_prediction/exact_match_ratio: nan 
+test/reagent_prediction/levenshtein_score: nan 
+test/reagent_prediction/morgan_FTS: nan 
+test/reagent_prediction/validity_ratio: nan 
+test/retrosynthesis/MACCS_FTS: nan 
+test/retrosynthesis/RDK_FTS: nan 
+test/retrosynthesis/avg_loss: nan 
+test/retrosynthesis/bleu_selfies: nan 
+test/retrosynthesis/bleu_smiles: nan 
+test/retrosynthesis/exact_match_ratio: nan 
+test/retrosynthesis/levenshtein_score: nan 
+test/retrosynthesis/morgan_FTS: nan 
+test/retrosynthesis/validity_ratio: nan 
+test/smol-forward_synthesis/MACCS_FTS: nan 
+test/smol-forward_synthesis/RDK_FTS: nan 
+test/smol-forward_synthesis/avg_loss: nan 
+test/smol-forward_synthesis/bleu_selfies: nan 
+test/smol-forward_synthesis/bleu_smiles: nan 
+test/smol-forward_synthesis/exact_match_ratio: nan 
+test/smol-forward_synthesis/levenshtein_score: nan 
+test/smol-forward_synthesis/morgan_FTS: nan 
+test/smol-forward_synthesis/validity_ratio: nan 
+test/smol-molecule_captioning/avg_loss: nan 
+test/smol-molecule_captioning/bleu2: nan 
+test/smol-molecule_captioning/bleu4: nan 
+test/smol-molecule_captioning/meteor: nan 
+test/smol-molecule_captioning/rouge1: nan 
+test/smol-molecule_captioning/rouge2: nan 
+test/smol-molecule_captioning/rougeL: nan 
+test/smol-molecule_generation/MACCS_FTS: nan 
+test/smol-molecule_generation/RDK_FTS: nan 
+test/smol-molecule_generation/avg_loss: nan 
+test/smol-molecule_generation/bleu_selfies: nan 
+test/smol-molecule_generation/bleu_smiles: nan 
+test/smol-molecule_generation/exact_match_ratio: nan 
+test/smol-molecule_generation/levenshtein_score: nan 
+test/smol-molecule_generation/morgan_FTS: nan 
+test/smol-molecule_generation/validity_ratio: nan 
+test/smol-property_prediction-bbbp/accuracy: nan 
+test/smol-property_prediction-bbbp/avg_loss: nan 
+test/smol-property_prediction-bbbp/f1: nan 
+test/smol-property_prediction-bbbp/precision: nan 
+test/smol-property_prediction-bbbp/recall: nan 
+test/smol-property_prediction-bbbp/roc_auc: nan 
+test/smol-property_prediction-clintox/accuracy: nan 
+test/smol-property_prediction-clintox/avg_loss: nan 
+test/smol-property_prediction-clintox/f1: nan 
+test/smol-property_prediction-clintox/precision: nan 
+test/smol-property_prediction-clintox/recall: nan 
+test/smol-property_prediction-clintox/roc_auc: nan 
+test/smol-property_prediction-esol/avg_loss: nan 
+test/smol-property_prediction-esol/failure_rate: nan 
+test/smol-property_prediction-esol/mae: nan 
+test/smol-property_prediction-esol/mse: nan 
+test/smol-property_prediction-esol/rmse: nan 
+test/smol-property_prediction-hiv/accuracy: nan 
+test/smol-property_prediction-hiv/avg_loss: nan 
+test/smol-property_prediction-hiv/f1: nan 
+test/smol-property_prediction-hiv/precision: nan 
+test/smol-property_prediction-hiv/recall: nan 
+test/smol-property_prediction-hiv/roc_auc: nan 
+test/smol-property_prediction-lipo/avg_loss: nan 
+test/smol-property_prediction-lipo/failure_rate: nan 
+test/smol-property_prediction-lipo/mae: nan 
+test/smol-property_prediction-lipo/mse: nan 
+test/smol-property_prediction-lipo/rmse: nan 
+test/smol-property_prediction-sider/accuracy: nan 
+test/smol-property_prediction-sider/avg_loss: nan 
+test/smol-property_prediction-sider/f1: nan 
+test/smol-property_prediction-sider/precision: nan 
+test/smol-property_prediction-sider/recall: nan 
+test/smol-property_prediction-sider/roc_auc: nan 
+test/smol-retrosynthesis/MACCS_FTS: nan 
+test/smol-retrosynthesis/RDK_FTS: nan 
+test/smol-retrosynthesis/avg_loss: nan 
+test/smol-retrosynthesis/bleu_selfies: nan 
+test/smol-retrosynthesis/bleu_smiles: nan 
+test/smol-retrosynthesis/exact_match_ratio: nan 
+test/smol-retrosynthesis/levenshtein_score: nan 
+test/smol-retrosynthesis/morgan_FTS: nan 
+test/smol-retrosynthesis/validity_ratio: nan 
+=================================================================================
+
+Device cuda:6 on_evaluation_epoch_end end
+gather the metrics across devices
+============================== Evaluation Results ==============================
+test/alchemy_homo/avg_loss: 2.0434983825683593 
+test/alchemy_homo/failure_rate: 0.39 
+test/alchemy_homo/mae: 35.25095634788961 
+test/alchemy_homo/mse: 52176.91774871613 
+test/alchemy_homo/rmse: 95.9146688661738 
+test/alchemy_homo_lumo_gap/avg_loss: 2.0034742832183836 
+test/alchemy_homo_lumo_gap/failure_rate: 0.07 
+test/alchemy_homo_lumo_gap/mae: 2.879279191845238 
+test/alchemy_homo_lumo_gap/mse: 142.54915108082645 
+test/alchemy_homo_lumo_gap/rmse: 7.5378879327763455 
+test/alchemy_lumo/avg_loss: 2.1014162731170654 
+test/alchemy_lumo/failure_rate: 0.34 
+test/alchemy_lumo/mae: 160.4457222995 
+test/alchemy_lumo/mse: 2240167.3745876597 
+test/alchemy_lumo/rmse: 504.29964741135393 
+test/aqsol-logS/avg_loss: 2.399499816894531 
+test/aqsol-logS/failure_rate: 0.0 
+test/aqsol-logS/mae: 0.794158 
+test/aqsol-logS/mse: 1.4353132934000001 
+test/aqsol-logS/rmse: 1.102046216855881 
+test/bace/accuracy: nan 
+test/bace/avg_loss: nan 
+test/bace/f1: nan 
+test/bace/precision: nan 
+test/bace/recall: nan 
+test/bace/roc_auc: nan 
+test/chebi-20-mol2text/avg_loss: nan 
+test/chebi-20-mol2text/bleu2: nan 
+test/chebi-20-mol2text/bleu4: nan 
+test/chebi-20-mol2text/meteor: nan 
+test/chebi-20-mol2text/rouge1: nan 
+test/chebi-20-mol2text/rouge2: nan 
+test/chebi-20-mol2text/rougeL: nan 
+test/chebi-20-text2mol/MACCS_FTS: nan 
+test/chebi-20-text2mol/RDK_FTS: nan 
+test/chebi-20-text2mol/avg_loss: nan 
+test/chebi-20-text2mol/bleu_selfies: nan 
+test/chebi-20-text2mol/bleu_smiles: nan 
+test/chebi-20-text2mol/exact_match_ratio: nan 
+test/chebi-20-text2mol/levenshtein_score: nan 
+test/chebi-20-text2mol/morgan_FTS: nan 
+test/chebi-20-text2mol/validity_ratio: nan 
+test/forward_reaction_prediction/MACCS_FTS: nan 
+test/forward_reaction_prediction/RDK_FTS: nan 
+test/forward_reaction_prediction/avg_loss: nan 
+test/forward_reaction_prediction/bleu_selfies: nan 
+test/forward_reaction_prediction/bleu_smiles: nan 
+test/forward_reaction_prediction/exact_match_ratio: nan 
+test/forward_reaction_prediction/levenshtein_score: nan 
+test/forward_reaction_prediction/morgan_FTS: nan 
+test/forward_reaction_prediction/validity_ratio: nan 
+test/presto-forward_reaction_prediction/MACCS_FTS: 0.9285809591424794 
+test/presto-forward_reaction_prediction/RDK_FTS: 0.9005406854523096 
+test/presto-forward_reaction_prediction/avg_loss: 2.3492283058166503 
+test/presto-forward_reaction_prediction/bleu_selfies: 90.13044555664062 
+test/presto-forward_reaction_prediction/bleu_smiles: 89.37698852539063 
+test/presto-forward_reaction_prediction/exact_match_ratio: 0.69 
+test/presto-forward_reaction_prediction/levenshtein_score: 3.47 
+test/presto-forward_reaction_prediction/morgan_FTS: 0.8667021346459248 
+test/presto-forward_reaction_prediction/validity_ratio: 1.0 
+test/presto-retrosynthesis/MACCS_FTS: 0.8190600725272194 
+test/presto-retrosynthesis/RDK_FTS: 0.7286107665804967 
+test/presto-retrosynthesis/avg_loss: 1.9692247486114502 
+test/presto-retrosynthesis/bleu_selfies: 77.06751708984375 
+test/presto-retrosynthesis/bleu_smiles: 72.80241516113281 
+test/presto-retrosynthesis/exact_match_ratio: 0.41 
+test/presto-retrosynthesis/levenshtein_score: 14.37 
+test/presto-retrosynthesis/morgan_FTS: 0.700124781182466 
+test/presto-retrosynthesis/validity_ratio: 1.0 
+test/qm9_homo/avg_loss: nan 
+test/qm9_homo/failure_rate: nan 
+test/qm9_homo/mae: nan 
+test/qm9_homo/mse: nan 
+test/qm9_homo/rmse: nan 
+test/qm9_homo_lumo_gap/avg_loss: nan 
+test/qm9_homo_lumo_gap/failure_rate: nan 
+test/qm9_homo_lumo_gap/mae: nan 
+test/qm9_homo_lumo_gap/mse: nan 
+test/qm9_homo_lumo_gap/rmse: nan 
+test/qm9_lumo/avg_loss: nan 
+test/qm9_lumo/failure_rate: nan 
+test/qm9_lumo/mae: nan 
+test/qm9_lumo/mse: nan 
+test/qm9_lumo/rmse: nan 
+test/reagent_prediction/MACCS_FTS: nan 
+test/reagent_prediction/RDK_FTS: nan 
+test/reagent_prediction/avg_loss: nan 
+test/reagent_prediction/bleu_selfies: nan 
+test/reagent_prediction/bleu_smiles: nan 
+test/reagent_prediction/exact_match_ratio: nan 
+test/reagent_prediction/levenshtein_score: nan 
+test/reagent_prediction/morgan_FTS: nan 
+test/reagent_prediction/validity_ratio: nan 
+test/retrosynthesis/MACCS_FTS: nan 
+test/retrosynthesis/RDK_FTS: nan 
+test/retrosynthesis/avg_loss: nan 
+test/retrosynthesis/bleu_selfies: nan 
+test/retrosynthesis/bleu_smiles: nan 
+test/retrosynthesis/exact_match_ratio: nan 
+test/retrosynthesis/levenshtein_score: nan 
+test/retrosynthesis/morgan_FTS: nan 
+test/retrosynthesis/validity_ratio: nan 
+test/smol-forward_synthesis/MACCS_FTS: nan 
+test/smol-forward_synthesis/RDK_FTS: nan 
+test/smol-forward_synthesis/avg_loss: nan 
+test/smol-forward_synthesis/bleu_selfies: nan 
+test/smol-forward_synthesis/bleu_smiles: nan 
+test/smol-forward_synthesis/exact_match_ratio: nan 
+test/smol-forward_synthesis/levenshtein_score: nan 
+test/smol-forward_synthesis/morgan_FTS: nan 
+test/smol-forward_synthesis/validity_ratio: nan 
+test/smol-molecule_captioning/avg_loss: nan 
+test/smol-molecule_captioning/bleu2: nan 
+test/smol-molecule_captioning/bleu4: nan 
+test/smol-molecule_captioning/meteor: nan 
+test/smol-molecule_captioning/rouge1: nan 
+test/smol-molecule_captioning/rouge2: nan 
+test/smol-molecule_captioning/rougeL: nan 
+test/smol-molecule_generation/MACCS_FTS: nan 
+test/smol-molecule_generation/RDK_FTS: nan 
+test/smol-molecule_generation/avg_loss: nan 
+test/smol-molecule_generation/bleu_selfies: nan 
+test/smol-molecule_generation/bleu_smiles: nan 
+test/smol-molecule_generation/exact_match_ratio: nan 
+test/smol-molecule_generation/levenshtein_score: nan 
+test/smol-molecule_generation/morgan_FTS: nan 
+test/smol-molecule_generation/validity_ratio: nan 
+test/smol-property_prediction-bbbp/accuracy: nan 
+test/smol-property_prediction-bbbp/avg_loss: nan 
+test/smol-property_prediction-bbbp/f1: nan 
+test/smol-property_prediction-bbbp/precision: nan 
+test/smol-property_prediction-bbbp/recall: nan 
+test/smol-property_prediction-bbbp/roc_auc: nan 
+test/smol-property_prediction-clintox/accuracy: nan 
+test/smol-property_prediction-clintox/avg_loss: nan 
+test/smol-property_prediction-clintox/f1: nan 
+test/smol-property_prediction-clintox/precision: nan 
+test/smol-property_prediction-clintox/recall: nan 
+test/smol-property_prediction-clintox/roc_auc: nan 
+test/smol-property_prediction-esol/avg_loss: nan 
+test/smol-property_prediction-esol/failure_rate: nan 
+test/smol-property_prediction-esol/mae: nan 
+test/smol-property_prediction-esol/mse: nan 
+test/smol-property_prediction-esol/rmse: nan 
+test/smol-property_prediction-hiv/accuracy: nan 
+test/smol-property_prediction-hiv/avg_loss: nan 
+test/smol-property_prediction-hiv/f1: nan 
+test/smol-property_prediction-hiv/precision: nan 
+test/smol-property_prediction-hiv/recall: nan 
+test/smol-property_prediction-hiv/roc_auc: nan 
+test/smol-property_prediction-lipo/avg_loss: nan 
+test/smol-property_prediction-lipo/failure_rate: nan 
+test/smol-property_prediction-lipo/mae: nan 
+test/smol-property_prediction-lipo/mse: nan 
+test/smol-property_prediction-lipo/rmse: nan 
+test/smol-property_prediction-sider/accuracy: nan 
+test/smol-property_prediction-sider/avg_loss: nan 
+test/smol-property_prediction-sider/f1: nan 
+test/smol-property_prediction-sider/precision: nan 
+test/smol-property_prediction-sider/recall: nan 
+test/smol-property_prediction-sider/roc_auc: nan 
+test/smol-retrosynthesis/MACCS_FTS: nan 
+test/smol-retrosynthesis/RDK_FTS: nan 
+test/smol-retrosynthesis/avg_loss: nan 
+test/smol-retrosynthesis/bleu_selfies: nan 
+test/smol-retrosynthesis/bleu_smiles: nan 
+test/smol-retrosynthesis/exact_match_ratio: nan 
+test/smol-retrosynthesis/levenshtein_score: nan 
+test/smol-retrosynthesis/morgan_FTS: nan 
+test/smol-retrosynthesis/validity_ratio: nan 
+=================================================================================
+
+Device cuda:7 on_evaluation_epoch_end end
+
+gather the metrics across devices
+============================== Evaluation Results ==============================
+test/alchemy_homo/avg_loss: 2.0434983825683593 
+test/alchemy_homo/failure_rate: 0.39 
+test/alchemy_homo/mae: 35.25095634788961 
+test/alchemy_homo/mse: 52176.91774871613 
+test/alchemy_homo/rmse: 95.9146688661738 
+test/alchemy_homo_lumo_gap/avg_loss: 2.0034742832183836 
+test/alchemy_homo_lumo_gap/failure_rate: 0.07 
+test/alchemy_homo_lumo_gap/mae: 2.879279191845238 
+test/alchemy_homo_lumo_gap/mse: 142.54915108082645 
+test/alchemy_homo_lumo_gap/rmse: 7.5378879327763455 
+test/alchemy_lumo/avg_loss: 2.1014162731170654 
+test/alchemy_lumo/failure_rate: 0.34 
+test/alchemy_lumo/mae: 160.4457222995 
+test/alchemy_lumo/mse: 2240167.3745876597 
+test/alchemy_lumo/rmse: 504.29964741135393 
+test/aqsol-logS/avg_loss: 2.399499816894531 
+test/aqsol-logS/failure_rate: 0.0 
+test/aqsol-logS/mae: 0.794158 
+test/aqsol-logS/mse: 1.4353132934000001 
+test/aqsol-logS/rmse: 1.102046216855881 
+test/bace/accuracy: nan 
+test/bace/avg_loss: nan 
+test/bace/f1: nan 
+test/bace/precision: nan 
+test/bace/recall: nan 
+test/bace/roc_auc: nan 
+test/chebi-20-mol2text/avg_loss: nan 
+test/chebi-20-mol2text/bleu2: nan 
+test/chebi-20-mol2text/bleu4: nan 
+test/chebi-20-mol2text/meteor: nan 
+test/chebi-20-mol2text/rouge1: nan 
+test/chebi-20-mol2text/rouge2: nan 
+test/chebi-20-mol2text/rougeL: nan 
+test/chebi-20-text2mol/MACCS_FTS: nan 
+test/chebi-20-text2mol/RDK_FTS: nan 
+test/chebi-20-text2mol/avg_loss: nan 
+test/chebi-20-text2mol/bleu_selfies: nan 
+test/chebi-20-text2mol/bleu_smiles: nan 
+test/chebi-20-text2mol/exact_match_ratio: nan 
+test/chebi-20-text2mol/levenshtein_score: nan 
+test/chebi-20-text2mol/morgan_FTS: nan 
+test/chebi-20-text2mol/validity_ratio: nan 
+test/forward_reaction_prediction/MACCS_FTS: nan 
+test/forward_reaction_prediction/RDK_FTS: nan 
+test/forward_reaction_prediction/avg_loss: nan 
+test/forward_reaction_prediction/bleu_selfies: nan 
+test/forward_reaction_prediction/bleu_smiles: nan 
+test/forward_reaction_prediction/exact_match_ratio: nan 
+test/forward_reaction_prediction/levenshtein_score: nan 
+test/forward_reaction_prediction/morgan_FTS: nan 
+test/forward_reaction_prediction/validity_ratio: nan 
+test/presto-forward_reaction_prediction/MACCS_FTS: 0.9285809591424794 
+test/presto-forward_reaction_prediction/RDK_FTS: 0.9005406854523096 
+test/presto-forward_reaction_prediction/avg_loss: 2.3492283058166503 
+test/presto-forward_reaction_prediction/bleu_selfies: 90.13044555664062 
+test/presto-forward_reaction_prediction/bleu_smiles: 89.37698852539063 
+test/presto-forward_reaction_prediction/exact_match_ratio: 0.69 
+test/presto-forward_reaction_prediction/levenshtein_score: 3.47 
+test/presto-forward_reaction_prediction/morgan_FTS: 0.8667021346459248 
+test/presto-forward_reaction_prediction/validity_ratio: 1.0 
+test/presto-retrosynthesis/MACCS_FTS: 0.8190600725272194 
+test/presto-retrosynthesis/RDK_FTS: 0.7286107665804967 
+test/presto-retrosynthesis/avg_loss: 1.9692247486114502 
+test/presto-retrosynthesis/bleu_selfies: 77.06751708984375 
+test/presto-retrosynthesis/bleu_smiles: 72.80241516113281 
+test/presto-retrosynthesis/exact_match_ratio: 0.41 
+test/presto-retrosynthesis/levenshtein_score: 14.37 
+test/presto-retrosynthesis/morgan_FTS: 0.700124781182466 
+test/presto-retrosynthesis/validity_ratio: 1.0 
+test/qm9_homo/avg_loss: nan 
+test/qm9_homo/failure_rate: nan 
+test/qm9_homo/mae: nan 
+test/qm9_homo/mse: nan 
+test/qm9_homo/rmse: nan 
+test/qm9_homo_lumo_gap/avg_loss: nan 
+test/qm9_homo_lumo_gap/failure_rate: nan 
+test/qm9_homo_lumo_gap/mae: nan 
+test/qm9_homo_lumo_gap/mse: nan 
+test/qm9_homo_lumo_gap/rmse: nan 
+test/qm9_lumo/avg_loss: nan 
+test/qm9_lumo/failure_rate: nan 
+test/qm9_lumo/mae: nan 
+test/qm9_lumo/mse: nan 
+test/qm9_lumo/rmse: nan 
+test/reagent_prediction/MACCS_FTS: nan 
+test/reagent_prediction/RDK_FTS: nan 
+test/reagent_prediction/avg_loss: nan 
+test/reagent_prediction/bleu_selfies: nan 
+test/reagent_prediction/bleu_smiles: nan 
+test/reagent_prediction/exact_match_ratio: nan 
+test/reagent_prediction/levenshtein_score: nan 
+test/reagent_prediction/morgan_FTS: nan 
+test/reagent_prediction/validity_ratio: nan 
+test/retrosynthesis/MACCS_FTS: nan 
+test/retrosynthesis/RDK_FTS: nan 
+test/retrosynthesis/avg_loss: nan 
+test/retrosynthesis/bleu_selfies: nan 
+test/retrosynthesis/bleu_smiles: nan 
+test/retrosynthesis/exact_match_ratio: nan 
+test/retrosynthesis/levenshtein_score: nan 
+test/retrosynthesis/morgan_FTS: nan 
+test/retrosynthesis/validity_ratio: nan 
+test/smol-forward_synthesis/MACCS_FTS: nan 
+test/smol-forward_synthesis/RDK_FTS: nan 
+test/smol-forward_synthesis/avg_loss: nan 
+test/smol-forward_synthesis/bleu_selfies: nan 
+test/smol-forward_synthesis/bleu_smiles: nan 
+test/smol-forward_synthesis/exact_match_ratio: nan 
+test/smol-forward_synthesis/levenshtein_score: nan 
+test/smol-forward_synthesis/morgan_FTS: nan 
+test/smol-forward_synthesis/validity_ratio: nan 
+test/smol-molecule_captioning/avg_loss: nan 
+test/smol-molecule_captioning/bleu2: nan 
+test/smol-molecule_captioning/bleu4: nan 
+test/smol-molecule_captioning/meteor: nan 
+test/smol-molecule_captioning/rouge1: nan 
+test/smol-molecule_captioning/rouge2: nan 
+test/smol-molecule_captioning/rougeL: nan 
+test/smol-molecule_generation/MACCS_FTS: nan 
+test/smol-molecule_generation/RDK_FTS: nan 
+test/smol-molecule_generation/avg_loss: nan 
+test/smol-molecule_generation/bleu_selfies: nan 
+test/smol-molecule_generation/bleu_smiles: nan 
+test/smol-molecule_generation/exact_match_ratio: nan 
+test/smol-molecule_generation/levenshtein_score: nan 
+test/smol-molecule_generation/morgan_FTS: nan 
+test/smol-molecule_generation/validity_ratio: nan 
+test/smol-property_prediction-bbbp/accuracy: nan 
+test/smol-property_prediction-bbbp/avg_loss: nan 
+test/smol-property_prediction-bbbp/f1: nan 
+test/smol-property_prediction-bbbp/precision: nan 
+test/smol-property_prediction-bbbp/recall: nan 
+test/smol-property_prediction-bbbp/roc_auc: nan 
+test/smol-property_prediction-clintox/accuracy: nan 
+test/smol-property_prediction-clintox/avg_loss: nan 
+test/smol-property_prediction-clintox/f1: nan 
+test/smol-property_prediction-clintox/precision: nan 
+test/smol-property_prediction-clintox/recall: nan 
+test/smol-property_prediction-clintox/roc_auc: nan 
+test/smol-property_prediction-esol/avg_loss: nan 
+test/smol-property_prediction-esol/failure_rate: nan 
+test/smol-property_prediction-esol/mae: nan 
+test/smol-property_prediction-esol/mse: nan 
+test/smol-property_prediction-esol/rmse: nan 
+test/smol-property_prediction-hiv/accuracy: nan 
+test/smol-property_prediction-hiv/avg_loss: nan 
+test/smol-property_prediction-hiv/f1: nan 
+test/smol-property_prediction-hiv/precision: nan 
+test/smol-property_prediction-hiv/recall: nan 
+test/smol-property_prediction-hiv/roc_auc: nan 
+test/smol-property_prediction-lipo/avg_loss: nan 
+test/smol-property_prediction-lipo/failure_rate: nan 
+test/smol-property_prediction-lipo/mae: nan 
+test/smol-property_prediction-lipo/mse: nan 
+test/smol-property_prediction-lipo/rmse: nan 
+test/smol-property_prediction-sider/accuracy: nan 
+test/smol-property_prediction-sider/avg_loss: nan 
+test/smol-property_prediction-sider/f1: nan 
+test/smol-property_prediction-sider/precision: nan 
+test/smol-property_prediction-sider/recall: nan 
+test/smol-property_prediction-sider/roc_auc: nan 
+test/smol-retrosynthesis/MACCS_FTS: nan 
+test/smol-retrosynthesis/RDK_FTS: nan 
+test/smol-retrosynthesis/avg_loss: nan 
+test/smol-retrosynthesis/bleu_selfies: nan 
+test/smol-retrosynthesis/bleu_smiles: nan 
+test/smol-retrosynthesis/exact_match_ratio: nan 
+test/smol-retrosynthesis/levenshtein_score: nan 
+test/smol-retrosynthesis/morgan_FTS: nan 
+test/smol-retrosynthesis/validity_ratio: nan 
+=================================================================================
+
+Device cuda:4 on_evaluation_epoch_end end
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mHJChoi[0m at: [34mhttps://wandb.ai/hj_ai/mol-llm/runs/gwxcw6f1[0m

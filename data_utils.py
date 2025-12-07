@@ -170,6 +170,7 @@ class DataCollator(DataCollatorForSeq2Seq):
             return_tensors = self.return_tensors
 
         # tasks = [task2id(sample["task"]) for sample in batch]  # task id
+        temp = [sample for sample in batch]
         tasks = [task2id(sample["task"].split("/", 1)[0]) for sample in batch]
         task_names = [id2task(task) for task in tasks]
         prompt_text = [sample["prompt_text"] for sample in batch]
