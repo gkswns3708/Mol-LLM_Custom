@@ -194,8 +194,8 @@ def molecule_evaluate(
             print(
                 f"When evaluating, failed to convert selfies to mol, target : {target}\n",
                 f"Prediction : {prediction}\n",
-                f"Input input_mol_strings: {input_mol_strings}, \n",
-                f"Prompts: {prompts}" 
+                f"Input input_mol_strings: {input_mol_strings[i]}, \n",
+                f"Prompts: {prompts[i]}"
             )
             continue
 
