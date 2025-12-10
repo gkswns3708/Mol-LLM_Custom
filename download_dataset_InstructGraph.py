@@ -15,7 +15,6 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.data.separate import separate
 from torch_geometric.loader.dataloader import Collater
 from tqdm import tqdm
-import time
 from typing import List, Dict, Any
 
 import instructions_smol
@@ -29,7 +28,6 @@ from data_utils import (
     MOL2TEXT_BENCHMARKS,
     REGRESSION_BENCHMARKS,
     REACTION_BENCHMARKS,
-    NAME_CONVERSION_BENCHMARKS,
     TEXT2MOL_BENCHMARKS,
 )
 
@@ -42,7 +40,7 @@ from data_utils import (
 
 
 import multiprocessing as mp
-start_time = time.time() 
+
 
 
 def wrap_label(label, task):
@@ -57,7 +55,7 @@ def wrap_label(label, task):
         label_tokens = added_tokens.IUPAC
     elif task in MOL2TEXT_BENCHMARKS:
         label_tokens = added_tokens.DESCRIPTION
-    elif task in TEXT2MOL_BENCHMARKS + REACTION_BENCHMARKS or task == 'smol-name_conversion-i2s':
+    elif task in TEXT2MOL_BENCHMARKS + REACTION_BENCHMARKS:
         label_tokens = added_tokens.SELFIES
     else:
         raise NotImplementedError
@@ -94,7 +92,7 @@ def wrap_label(label, task):
         label = label[:7]
         converted_label = "".join([f"<|{char}|>" for char in label])
         return label_tokens[0] + " " + converted_label + " " + label_tokens[1]
-    elif task in REACTION_BENCHMARKS + MOL2TEXT_BENCHMARKS + TEXT2MOL_BENCHMARKS + NAME_CONVERSION_BENCHMARKS:
+    elif task in REACTION_BENCHMARKS + MOL2TEXT_BENCHMARKS + TEXT2MOL_BENCHMARKS:
         return label_tokens[0] + label + label_tokens[1]
     else:
         raise NotImplementedError
@@ -428,7 +426,6 @@ class SMolInstructDataset(Dataset):
         self.data = data
         self.task_subtask_pair = task_subtask_pair
         self.task, self.subtask = task_subtask_pair.split("/")
-        # print(f"data: {self.data}, task: {self.task}, subtask: {self.subtask}")
         if "forward_synthesis" in self.task:
             self.instruction_templates = getattr(
                 instructions_smol, "forward_reaction_prediction"
@@ -471,9 +468,9 @@ class SMolInstructDataset(Dataset):
             except Exception as e:
                 self.count_invalid_smiles += 1
         if self.count_invalid_smiles > 0:
-            print(f"{self.task}-smol_set: Number of invalid smiles: {self.count_invalid_smiles}")
+            print(f"{self.task}: Number of invalid smiles: {self.count_invalid_smiles}")
             print(
-                f"{self.task}-smol_set: Invalid smiles ratio: {1.0 - len(self.label_list)/len(self.data)}"
+                f"{self.task}: Invalid smiles ratio: {1.0 - len(self.label_list)/len(self.data)}"
             )
 
     def __len__(self):
@@ -487,7 +484,8 @@ class SMolInstructDataset(Dataset):
             self.semi_colon_count_input += 1
         if ";" in raw_output:
             self.semi_colon_count_label += 1
-        if self.task in TEXT2MOL_BENCHMARKS or self.task in NAME_CONVERSION_BENCHMARKS:
+
+        if self.task in TEXT2MOL_BENCHMARKS:
             s_token, e_token = (
                 added_tokens.IUPAC
                 if self.task in ["smol-name_conversion-i2s", "smol-name_conversion-i2f"]
@@ -497,14 +495,11 @@ class SMolInstructDataset(Dataset):
             description = s_token + description + e_token
             instruction = np.random.choice(self.instruction_templates)
             instruction = instruction.replace("<INPUT>", description)
-            # print("TEXT2MOL_BENCHMARKS: raw_input:", raw_input, " raw_output:", raw_output, " label:", label)
-            # print("instruction:", instruction, " description:", description)
             graph = smiles2data(
                 "CC"
             )  # null smiles, just input dummy graph for batch processing
             input_mol_string = "<None>"
             label = re.sub(r"\s*;\s*", ".", label)
-            
         elif self.task in REACTION_BENCHMARKS:
             instruction = np.random.choice(self.instruction_templates)
             input_mol_string = raw_input
@@ -536,7 +531,7 @@ class SMolInstructDataset(Dataset):
         input_mol_string = (
             added_tokens.SELFIES[0] + input_mol_string + added_tokens.SELFIES[1]
         )
-        
+
         return graph, label, input_mol_string, instruction
 
     # LLM input order: <instruction><qformer_output><smiles_tokens>
@@ -694,7 +689,6 @@ def get_dataset(task_name, raw_data_root):
         test_dataset = dataset.filter(lambda x: "test" in x["metadata"])
         tasks = [task_name]
     else:
-        print()
         raise NotImplementedError
 
     # dataset from deepchem
@@ -778,25 +772,11 @@ if __name__ == "__main__":
         subtasks = new_dataset[0]
         subtask_idx = task_subtask_pair[1]
         if subtask_idx == "multi_label_classification":
-            task_subtask_pair = f"{task_name}/multi_label_classification"
-        elif task_name in ["toxcast", "tox21", "qm9_additional_label", "hopv"]:
-            task_subtask_pair = f"{task_name}/{subtasks[subtask_idx]}"
+            task_subtask_pair = f"{task_name}/{subtask_idx}"
         else:
-            task_subtask_pair = f"{task_name}/0"
+            task_subtask_pair = f"{task_name}/{subtasks[subtask_idx]}"
 
         data_split = new_dataset[1:]  # train_set, val_set, test_set
-        
-        def _task_arg_for(dataset_cls):
-            # MolInstructionDatset만은 'task' 단독 문자열이어야 함
-            return task_name if dataset_cls is MolInstructionDatset else task_subtask_pair
-
-        dataset_cls = (
-            SMolInstructDataset if "smol" in task_name else
-            MoleculeNetDatasetDeepChem if task_name in ["toxcast","tox21","qm9_additional_label","hopv"] else
-            ChEBIDataset if task_name in ["chebi-20-mol2text","chebi-20-text2mol"] else
-            MolInstructionDatset
-        )
-        
         if "smol" in task_name:
             dataset = SMolInstructDataset
         elif task_name in [
@@ -821,20 +801,20 @@ if __name__ == "__main__":
             "bace",
         ]:
             dataset = MolInstructionDatset
-        print(f"Using dataset class: {dataset_cls}")
+
         valid_dataset = dataset(
             data=data_split[1],
-            task_subtask_pair=_task_arg_for(dataset_cls),
+            task_subtask_pair=task_name,
             subtask_idx=subtask_idx,
         )
         test_dataset = dataset(
             data=data_split[2],
-            task_subtask_pair=_task_arg_for(dataset_cls),
+            task_subtask_pair=task_name,
             subtask_idx=subtask_idx,
         )
         train_dataset = dataset(
             data=data_split[0],
-            task_subtask_pair=_task_arg_for(dataset_cls),
+            task_subtask_pair=task_name,
             subtask_idx=subtask_idx,
         )
         dataset_splits = {
@@ -847,50 +827,24 @@ if __name__ == "__main__":
             dataset = dataset_splits[split]
             list_dict_data = []
             for i in range(len(dataset)):
-                # 원래 튜플 해체
-                graph, label, input_mol_string, task_pair_or_name, instruction = dataset[i]
-
-                # 1) instruction 이 numpy.str_ 일 수도 있어서 문자열로 강제
-                if hasattr(instruction, "item"):
-                    instruction = instruction.item()
-                instruction = str(instruction)
-
-                # 2) reagent_prediction 등: graph 가 list[Data, Data]
-                #    -> 첫 번째를 main, 두 번째를 additional 로 넣어줍니다
-                if isinstance(graph, list):
-                    if len(graph) >= 2:
-                        g0, g1 = graph[0], graph[1]
-                    elif len(graph) == 1:
-                        g0 = g1 = graph[0]
-                    else:
-                        # 그래프가 비면 스킵
-                        continue
-                else:
-                    g0 = g1 = graph  # 단일 그래프인 대부분의 태스크
-
-                # 3) dict_data 생성
+                data = dataset[i]
                 dict_data = {
-                    "x": g0.x,
-                    "edge_index": g0.edge_index,
-                    "edge_attr": g0.edge_attr,
-                    "label": label,
-                    "input_mol_string": input_mol_string,
-                    "task_subtask_pair": task_pair_or_name,
-                    "instruction": instruction,
-                    # reagent_prediction 처럼 2개짜리인 경우를 지원
-                    "additional_x": g1.x,
-                    "additional_edge_index": g1.edge_index,
-                    "additional_edge_attr": g1.edge_attr,
+                    "x": data[0].x,
+                    "edge_index": data[0].edge_index,
+                    "edge_attr": data[0].edge_attr,
+                    "label": data[1],
+                    "input_mol_string": data[2],
+                    "task_subtask_pair": data[3],
+                    "instruction": data[4].item(),
                 }
+
                 list_dict_data.append(dict_data)
 
-            # 만약 list_dict_data 가 비면 save_to_disk 가 또 실패하니 방어
-            if not list_dict_data:
-                print(f"[warn] {task_name} split={split} produced no valid samples; skipping save.")
-                continue
-
             dataset = datasets.Dataset.from_list(list_dict_data)
-            dataset.save_to_disk(f"{raw_data_root}/{task_name}_subtask-{subtask_idx}_{split}")
+            # save datset
+            dataset.save_to_disk(
+                f"{raw_data_root}/{task_name}_subtask-{subtask_idx}_{split}"
+            )
 
 
     trainsets = []
@@ -902,7 +856,6 @@ if __name__ == "__main__":
 
     for task_subtask_pair in task_subtask_pairs:
         task, subtask_idx = task_subtask_pair
-        print(task, "-task")
         trainset = datasets.Dataset.load_from_disk(
             f"{raw_data_root}/{task}_subtask-{subtask_idx}_train"
         )
@@ -916,222 +869,14 @@ if __name__ == "__main__":
         testset = datasets.Dataset.load_from_disk(
             f"{raw_data_root}/{task}_subtask-{subtask_idx}_test"
         )
-        #! Name Conversion Task는 Test에 포함하지 않음.
-        if task in NAME_CONVERSION_BENCHMARKS:
-            print(f"[info] skipping test split for NAME CONVERSION task: {task}")
-        else:
-            testsets.append(testset)
-            testsets_dict[task_subtask_pair] = testset
+        testsets.append(testset)
+        testsets_dict[task_subtask_pair] = testset
 
         print(f"{task}_{subtask_idx} loaded")
-        print(f"{task}_{subtask_idx} loaded")
-
-    # ------------------ Step 2: Deduplication following the paper ------------------
-    from datasets import concatenate_datasets
-
-    SELFIES_START, SELFIES_END = added_tokens.SELFIES
-
-    def _extract_single_selfies_block(text: str):
-        """
-        첫 번째 <SELFIES> ... </SELFIES> 사이의 내용을 추출.
-        못 찾으면 None.
-        """
-        if text is None:
-            return None
-        try:
-            start_idx = text.index(SELFIES_START)
-            end_idx = text.index(SELFIES_END, start_idx + len(SELFIES_START))
-            inner = text[start_idx + len(SELFIES_START): end_idx]
-            return inner.strip()
-        except ValueError:
-            return None
-
-    def _mol_key_from_caption_input(input_mol_string: str):
-        """
-        Molecule Captioning 용 분자 키:
-        input_mol_string 안의 SELFIES -> SMILES -> canonical SMILES
-        """
-        selfies = _extract_single_selfies_block(input_mol_string)
-        if selfies is None:
-            return None
-        try:
-            smiles = sf.decoder(selfies)
-        except Exception:
-            return None
-        return get_canonical_smiles(smiles)
-
-    def _mol_key_from_text2mol_label(label: str):
-        """
-        Description-Guided Molecule Generation (Text2Mol) 용 분자 키:
-        label 안의 SELFIES -> SMILES -> canonical SMILES
-        """
-        selfies = _extract_single_selfies_block(label)
-        if selfies is None:
-            return None
-        try:
-            smiles = sf.decoder(selfies)
-        except Exception:
-            return None
-        return get_canonical_smiles(smiles)
-
-    def _mol_key_from_reaction_input(input_mol_string: str):
-        """
-        Forward / Retro 용 반응 키:
-        일단 전체 입력 문자열을 그대로 키로 사용 (반응 단위 dedup).
-        """
-        s = input_mol_string.strip()
-        return s or None
-
-    # 그룹 정의 (dataset 내부 field "task_subtask_pair" 기준)
-    CAPTION_TASK_TAGS = {"chebi-20-mol2text/0", "smol-molecule_captioning/0"}
-    TEXT2MOL_TASK_TAGS = {"chebi-20-text2mol/0", "smol-molecule_generation/0"}
-    RETRO_TASK_TAGS   = {"retrosynthesis", "smol-retrosynthesis/0"}
-    FORWARD_TASK_TAGS = {"forward_reaction_prediction", "smol-forward_synthesis/0"}
-
-    def _build_key_to_tag_dict(split_dict):
-        """
-        split_dict: {(task, subtask_idx) -> Dataset}
-        각 Dataset의 첫 샘플에서 'task_subtask_pair' 문자열을 읽어서
-        key -> tag(str) 매핑을 만든다.
-        """
-        mapping = {}
-        for k, ds in split_dict.items():
-            if len(ds) == 0:
-                continue
-            tag = ds[0]["task_subtask_pair"]  # 예: 'smol-molecule_captioning/0'
-            mapping[k] = tag
-        return mapping
-
-    def _collect_split_mol_keys(split_dict, key_to_tag, target_tags, mode):
-        """
-        하나의 split(dict)에 대해 분자/반응 키를 모은다.
-        mode: 'caption' | 'text2mol' | 'reaction'
-        """
-        keys = set()
-        for k, tag in key_to_tag.items():
-            if tag not in target_tags:
-                continue
-            ds = split_dict.get(k, None)
-            if ds is None or len(ds) == 0:
-                continue
-
-            if mode in ("caption", "reaction"):
-                ims_list = ds["input_mol_string"]
-                for ims in ims_list:
-                    if mode == "caption":
-                        mk = _mol_key_from_caption_input(ims)
-                    else:
-                        mk = _mol_key_from_reaction_input(ims)
-                    if mk is not None:
-                        keys.add(mk)
-
-            elif mode == "text2mol":
-                labels = ds["label"]
-                for lab in labels:
-                    mk = _mol_key_from_text2mol_label(lab)
-                    if mk is not None:
-                        keys.add(mk)
-            else:
-                raise ValueError(f"Unknown mode: {mode}")
-        return keys
-
-    def _filter_train_by_mol_keys(trainsets_dict, key_to_tag, target_tags, mode, forbidden_keys):
-        """
-        target_tags 에 해당하는 task들의 train split에서
-        forbidden_keys(= eval에서 나온 분자/반응 키)에 해당하는 샘플을 제거.
-        -> 'eval(test+val)에 나온 분자는 train에서 안 쓰인다' 보장.
-        """
-        for k, tag in list(key_to_tag.items()):
-            if tag not in target_tags:
-                continue
-            ds = trainsets_dict.get(k, None)
-            if ds is None or len(ds) == 0:
-                continue
-
-            keep_indices = []
-            if mode in ("caption", "reaction"):
-                ims_list = ds["input_mol_string"]
-                for idx, ims in enumerate(ims_list):
-                    if mode == "caption":
-                        mk = _mol_key_from_caption_input(ims)
-                    else:
-                        mk = _mol_key_from_reaction_input(ims)
-                    # mk == None 이면 기준이 애매하므로 그냥 유지
-                    if mk is None or mk not in forbidden_keys:
-                        keep_indices.append(idx)
-
-            elif mode == "text2mol":
-                labels = ds["label"]
-                for idx, lab in enumerate(labels):
-                    mk = _mol_key_from_text2mol_label(lab)
-                    if mk is None or mk not in forbidden_keys:
-                        keep_indices.append(idx)
-            else:
-                raise ValueError(f"Unknown mode: {mode}")
-
-            if len(keep_indices) != len(ds):
-                print(f"[dedup] {tag}: train size {len(ds)} -> {len(keep_indices)} "
-                      f"after removing molecules that appear in eval (test+val)")
-
-            trainsets_dict[k] = ds.select(keep_indices)
-
-    # ---- 실제 적용: test + val 모두 eval로 간주 ----
-    train_key_to_tag = _build_key_to_tag_dict(trainsets_dict)
-    test_key_to_tag  = _build_key_to_tag_dict(testsets_dict)
-    val_key_to_tag   = _build_key_to_tag_dict(valsets_dict)
-
-    def _collect_eval_keys(target_tags, mode):
-        keys = set()
-        # test에서 키 수집
-        keys |= _collect_split_mol_keys(testsets_dict, test_key_to_tag, target_tags, mode)
-        # validation에서도 동일하게 수집
-        keys |= _collect_split_mol_keys(valsets_dict,  val_key_to_tag,  target_tags, mode)
-        return keys
-
-    # 1) Molecule Captioning (ChEBI-20 + SMolInstruct)
-    caption_eval_keys = _collect_eval_keys(CAPTION_TASK_TAGS, mode="caption")
-    _filter_train_by_mol_keys(
-        trainsets_dict, train_key_to_tag, CAPTION_TASK_TAGS, mode="caption",
-        forbidden_keys=caption_eval_keys,
-    )
-
-    # 2) Description-Guided Molecule Generation (Text2Mol)
-    text2mol_eval_keys = _collect_eval_keys(TEXT2MOL_TASK_TAGS, mode="text2mol")
-    _filter_train_by_mol_keys(
-        trainsets_dict, train_key_to_tag, TEXT2MOL_TASK_TAGS, mode="text2mol",
-        forbidden_keys=text2mol_eval_keys,
-    )
-
-    # 3) Retrosynthesis (Mol-Instructions + SMolInstruct)
-    retro_eval_keys = _collect_eval_keys(RETRO_TASK_TAGS, mode="reaction")
-    _filter_train_by_mol_keys(
-        trainsets_dict, train_key_to_tag, RETRO_TASK_TAGS, mode="reaction",
-        forbidden_keys=retro_eval_keys,
-    )
-
-    # 4) Forward Reaction Prediction (Mol-Instructions + SMolInstruct)
-    forward_eval_keys = _collect_eval_keys(FORWARD_TASK_TAGS, mode="reaction")
-    _filter_train_by_mol_keys(
-        trainsets_dict, train_key_to_tag, FORWARD_TASK_TAGS, mode="reaction",
-        forbidden_keys=forward_eval_keys,
-    )
-
-    # --- dedup 반영된 dict로부터 다시 trainsets / testsets 리스트 재구성 ---
-    trainsets = []
-    testsets = []
-    for task_subtask_pair in task_subtask_pairs:
-        task, subtask_idx = task_subtask_pair
-        trainsets.append(trainsets_dict[task_subtask_pair])
-        # Name Conversion Task는 여전히 test에서 제외
-        if task in NAME_CONVERSION_BENCHMARKS:
-            continue
-        if task_subtask_pair in testsets_dict:
-            testsets.append(testsets_dict[task_subtask_pair])
 
     concat_trainset = datasets.concatenate_datasets(trainsets)
-    concat_testset  = datasets.concatenate_datasets(testsets)
-
-
+    concat_testset = datasets.concatenate_datasets(testsets)
+    #concat_testset = datasets.concatenate_datasets(testsets + trainsets + valsets)
         
     from transformers import AutoTokenizer
     system_prompt = "You are a helpful assistant for molecular chemistry, to address tasks including molecular property classification, molecular property regression, chemical reaction prediction, molecule captioning, molecule generation."
@@ -1147,38 +892,76 @@ if __name__ == "__main__":
         input_mol_string = input_mol_string.replace("<SELFIES>", "<SELFIES> ").replace("</SELFIES>", " </SELFIES>")
         input_prompt = data_instance["instruction"]
 
-
         graph_sequence = "<GRAPH>" + mol_token * num_query_tokens + "</GRAPH>"
         input_mol_string += graph_sequence
-        # assert "<INPUT>" in input_prompt, f"llm_prompt should contain <INPUT_MOL>, {input_prompt}"
-        if "<INPUT>" in input_prompt:
-            input_prompt = input_prompt.replace("<INPUT>", input_mol_string)
-        else:
-            input_prompt = input_prompt
+        assert "<INPUT>" in input_prompt, f"llm_prompt should contain <INPUT_MOL>"
 
-        formatted_prompt_text = "<s>[INST] " + system_prompt + " \n\n" + input_prompt + " [INST]"
+        input_prompt = input_prompt.replace("<INPUT>", input_mol_string)
+
+        # [수정 1] 프롬프트 끝부분을 [/INST]로 올바르게 닫아줍니다.
+        formatted_prompt_text = "<s>[INST] " + system_prompt + " \n\n" + input_prompt + " [/INST]"
         formatted_target_text = data_instance["label"] + " </s>"
 
+        # Task 이름 정리
         if "additional" in data_instance["task_subtask_pair"]:
             convert_dict = {
                 'qm9_additional_label/mu' : "qm9_dipole_moment",
                 'qm9_additional_label/alpha' : "qm9_isotropic_polarizability",
                 'qm9_additional_label/r2' : "qm9_electronic_spatial_extent",
                 'qm9_additional_label/zpve' : "qm9_zero_point_vibrational_energy",
-
             }
             task = convert_dict[data_instance["task_subtask_pair"]]
         else:
             task = data_instance["task_subtask_pair"]
+
+        # ==============================================================================
+        # [수정 2] Single Molecule Task일 때 Dummy Graph ('CC') 강제 주입 로직
+        # ==============================================================================
+        
+        # Single Task 목록 (필요에 따라 추가 가능)
+        single_molecule_tasks = [
+            "bace", "esol", "bbbp", "clintox", "tox21", "lipo", "hiv", "sider",
+            "toxcast", "mu", "alpha", "r2", "zpve", "u0", "cv", "h", "g",
+            "qm9_homo", "qm9_lumo", "qm9_homo_lumo_gap", "qm9_dipole_moment", 
+            "qm9_isotropic_polarizability", "qm9_electronic_spatial_extent", 
+            "qm9_zero_point_vibrational_energy", "qm9_heat_capacity_298K", 
+            "qm9_internal_energy_298K", "qm9_enthalpy_298K", "qm9_free_energy_298K",
+            "chebi-20-mol2text", "smol-molecule_captioning"
+        ]
+        
+        # 현재 태스크가 Single Task인지 확인 (task 문자열에 목록의 단어가 포함되어 있는지)
+        is_single_task = any(t in task for t in single_molecule_tasks)
+
+        if is_single_task:
+            # 'CC' (Ethane) 더미 그래프 생성
+            # smiles2data 함수는 코드 상단에 이미 정의되어 있으므로 바로 호출합니다.
+            dummy_graph = smiles2data("CC")
+            
+            additional_x = dummy_graph.x
+            additional_edge_index = dummy_graph.edge_index
+            additional_edge_attr = dummy_graph.edge_attr
+        else:
+            # Reagent Prediction 등 Multi-input Task는 본래 로직 유지
+            # (여기서는 원본 코드처럼 x를 복사하거나, Reagent 데이터가 있다면 그것을 사용)
+            # 만약 Reagent Prediction 데이터셋 클래스에서 additional_x를 이미 만들어준다면 그것을 써야 하지만,
+            # 현재 코드 구조상 data_instance["x"]를 복사하는 것이 기본 동작이었습니다.
+            additional_x = data_instance["x"]
+            additional_edge_index = data_instance["edge_index"]
+            additional_edge_attr = data_instance["edge_attr"]
+            
+        # ==============================================================================
 
         data ={
             "task": task,
             "x": data_instance["x"],
             "edge_index": data_instance["edge_index"],
             "edge_attr": data_instance["edge_attr"],
-            "additional_x": data_instance["additional_x"],
-            "additional_edge_index": data_instance["additional_edge_index"],
-            "additional_edge_attr": data_instance["additional_edge_attr"],
+            
+            # [수정 3] 위에서 결정한 additional_... 변수들을 할당
+            "additional_x": additional_x,
+            "additional_edge_index": additional_edge_index,
+            "additional_edge_attr": additional_edge_attr,
+            
             "prompt_text": formatted_prompt_text,
             "target_text": formatted_target_text,
         }
@@ -1226,5 +1009,3 @@ if __name__ == "__main__":
     mapped_testset.save_to_disk(f"{raw_data_root}/{processed_file_name}_validation_{cfg.data_tag}")
 
     a = 17
-    end_time = time.time()
-    print(f"End time: {(end_time - start_time) / 60} minutes {(end_time - start_time) % 60} seconds")

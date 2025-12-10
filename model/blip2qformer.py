@@ -27,6 +27,28 @@ from model.blip2 import Blip2Base
 
 # from pytorch_lightning.utilities import distributed
 
+def print_token_statistics(self, tensor, name="Tensor"):
+    """
+    텐서의 통계적 특성을 출력하여 디버깅을 돕습니다.
+    """
+    if tensor is None:
+        print(f"[{name}] is None")
+        return
+
+    # detach()를 해줘야 흐름에 영향 없이 값만 볼 수 있습니다.
+    t = tensor.detach().float() 
+    
+    print(f"\n======== Debug: {name} ========")
+    print(f"Shape: {t.shape}")
+    print(f"Mean : {t.mean().item():.6f}")
+    print(f"Std  : {t.std().item():.6f}")
+    print(f"Min  : {t.min().item():.6f}")
+    print(f"Max  : {t.max().item():.6f}")
+    print(f"NaNs : {torch.isnan(t).sum().item()}") # NaN이 있는지 확인 (중요)
+    print("Sample (first token of first batch):")
+    print(t[0, 0, :10]) # 첫 번째 배치의 첫 번째 토큰 앞부분 10개만 출력
+    print("==================================\n")
+
 
 @torch.no_grad()
 def concat_all_gather(tensor):
@@ -613,6 +635,9 @@ class Blip2Qformer(Blip2Base):
 
     def graph_forward(self, graph):
         batch_node, batch_mask = self.graph_encoder(graph)
+        # [CHECK 1] Graph Encoder가 제대로 된 값을 뱉는지 먼저 확인
+        # 여기서 이미 0이나 NaN이 나온다면 데이터셋 전처리가 잘못된 것입니다.
+        self.print_token_statistics(batch_node, "Graph Encoder Output")
         batch_node = self.ln_graph(batch_node, batch_mask)
         query_tokens = self.query_tokens.expand(batch_node.shape[0], -1, -1)
         query_output = self.Qformer.bert(
@@ -622,9 +647,15 @@ class Blip2Qformer(Blip2Base):
             use_cache=False,
             return_dict=True,
         )
+        # ==========================================================
+        # [CHECK 2] 여기가 질문하신 Q-Former 통과 후 32개 토큰 확인 지점
+        # ==========================================================
+        self.print_token_statistics(q_former_out, "Q-Former Output (32 Tokens)")
         graph_feats = self.graph_proj(
             query_output.last_hidden_state
         )  # shape = [B, num_q, D]
+        # [CHECK 3] Projection 후 값 확인 (여기도 너무 작거나 크면 문제)
+        self.print_token_statistics(graph_feats, "Projected Graph Feats")
         graph_feats = F.normalize(graph_feats, p=2, dim=-1)
         return graph_feats, batch_node, batch_mask
 

@@ -80,7 +80,7 @@ class Blip2Stage3(pl.LightningModule):
         super().__init__()
         if isinstance(args, dict):
             args = AttrDict(**args)
-
+        print(args, " - args")
         self.args = args
         self.num_beams = args.num_beams
         self.gen_max_len = args.gen_max_len
@@ -562,7 +562,7 @@ class Blip2Stage3(pl.LightningModule):
             "prompts": [],
             "input_mol_strings": [],
         }
-
+        self.debug_task_counts = {}
         self.total_avg_loss = 0.0
         self.total_seen_data_size = 0
         # self.task_subtask_name_pairs = self.trainer.datamodule.dataset_split[
@@ -619,7 +619,7 @@ class Blip2Stage3(pl.LightningModule):
                             {f"parameters/{name}": val}, step=current_step
                         )
 
-    def evaluation_step(self, batch, batch_idx, dataloader_idx, mode="val"):
+    def evaluation_step(self, batch, batch_idx, dataloader_idx, mode="val"):        
         if "graph" in self.args.mol_representation:
             graphs = batch["graphs"]
             additional_graphs = batch["additional_graphs"]
@@ -722,6 +722,61 @@ class Blip2Stage3(pl.LightningModule):
             p.replace(self.blip2model.llm_tokenizer.pad_token, "")
             for p in input_mol_strings
         ]
+       # ================= [수정된 전체 출력 코드 시작] =================
+        
+        # 1. 실제 추론용 프롬프트(정답 제외) 디코딩
+        real_inference_prompts = self.blip2model.llm_tokenizer.batch_decode(
+            batch.prompt_input_ids, skip_special_tokens=False
+        )
+
+        # [추가] 그래프 데이터를 개별 샘플 리스트로 변환 (PyG Batch -> List[Data])
+        mol_graphs_list = None
+        if "graphs" in batch and batch["graphs"] is not None:
+            try:
+                # batch["graphs"]는 하나의 큰 Batch 객체이므로 개별 그래프로 분리
+                mol_graphs_list = batch["graphs"].to_data_list()
+            except Exception as e:
+                print(f"[DEBUG Error] Failed to unbatch graphs: {e}")
+
+        additional_graphs_list = None
+        if "additional_graphs" in batch and batch["additional_graphs"] is not None:
+            try:
+                additional_graphs_list = batch["additional_graphs"].to_data_list()
+            except Exception as e:
+                print(f"[DEBUG Error] Failed to unbatch additional_graphs: {e}")
+
+        # 2. 배치 내 모든 샘플 순회
+        for k, task_name in enumerate(tasks):
+            # [Pad] 토큰 제거
+            clean_prompt = real_inference_prompts[k].replace(self.blip2model.llm_tokenizer.pad_token, "")
+            
+            print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name}")
+            print(f"Input Mol String  : {input_mol_strings[k]}")
+            
+            # [추가] 그래프 데이터 상세 출력 (Node Feature, Edge Index 등)
+            if mol_graphs_list is not None and k < len(mol_graphs_list):
+                g = mol_graphs_list[k]
+                print(f"--- Graph Data ---")
+                print(f"  x (shape={list(g.x.shape)}): {g.x.tolist()}") # 노드 피처 값 출력
+                print(f"  edge_index (shape={list(g.edge_index.shape)}): {g.edge_index.tolist()}") # 엣지 연결 정보 출력
+                if hasattr(g, 'edge_attr') and g.edge_attr is not None:
+                    print(f"  edge_attr (shape={list(g.edge_attr.shape)}): {g.edge_attr.tolist()}")
+
+            # [추가] Additional Graph (Reagent prediction 등) 데이터 상세 출력
+            if additional_graphs_list is not None and k < len(additional_graphs_list):
+                g_add = additional_graphs_list[k]
+                print(f"--- Additional Graph Data ---")
+                print(f"  x (shape={list(g_add.x.shape)}): {g_add.x.tolist()}")
+                print(f"  edge_index (shape={list(g_add.edge_index.shape)}): {g_add.edge_index.tolist()}")
+                if hasattr(g_add, 'edge_attr') and g_add.edge_attr is not None:
+                    print(f"  edge_attr (shape={list(g_add.edge_attr.shape)}): {g_add.edge_attr.tolist()}")
+
+            print(f"Prompt (Inference): {clean_prompt}")
+            print(f"Target            : {targets[k]}")
+            print(f"Prediction        : {predictions[k]}")
+            print("-" * 80)
+
+        # ================= [수정된 전체 출력 코드 끝] =================
 
         self.list_logs["predictions"].extend(predictions)
         self.list_logs["targets"].extend(targets)

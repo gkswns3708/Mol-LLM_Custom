@@ -17,7 +17,7 @@ target_benchmarks:
   # - qm9_homo
   # - qm9_homo_lumo_gap
   # - qm9_lumo
-  # - reagent_prediction
+  - reagent_prediction
   # - retrosynthesis
   # - smol-forward_synthesis
   # - smol-molecule_captioning
@@ -34,10 +34,10 @@ target_benchmarks:
   # - bace
   # - chebi-20-mol2text
   # - chebi-20-text2mol
-  - forward_reaction_prediction
-  - qm9_homo
-  - qm9_homo_lumo_gap
-  - qm9_lumo
+  # - forward_reaction_prediction
+  # - qm9_homo
+  # - qm9_homo_lumo_gap
+  # - qm9_lumo
   # - reagent_prediction
   # - retrosynthesis
   # - smol-forward_synthesis

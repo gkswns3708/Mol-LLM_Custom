@@ -11,4 +11,6 @@
     - [] 추론 코드에 LLaDA 코드 이식하기
     - [] 코드 파악하기.
 - [] LLaDA 논문 읽으면서 디테일 파악하기
+- [] graph feature statistics 출력
+- [] instruction이 다른지 확인
 

@@ -476,14 +476,15 @@ class SMolInstructDataset(Dataset):
 
 def get_dataset(task_name, raw_data_root):
     if "smol" in task_name:
-        script_path = "./InstructGraph.py"
         smol_dataset = load_dataset(
-            script_path,
-            # use_selfies=True, 
-            insert_core_tags=False,
+            "osunlp/SMolInstruct",
+            use_selfies=True,
+            insert_core_tags=False,  # loada data w/o core tags such as <SELFIES>, </SELFIES>
             trust_remote_code=True,
         )
-        _task = re.sub("smol-", "", task_name)
+        _task = re.sub("smol-", "", task_name)  # remove smol- from smol-<task_name>
+
+        # DEBUG: to avoid lengthy processing time
         train_dataset = smol_dataset["train"].filter(lambda x: x["task"] == _task)
         valid_dataset = smol_dataset["validation"].filter(lambda x: x["task"] == _task)
         test_dataset = smol_dataset["test"].filter(lambda x: x["task"] == _task)
@@ -552,7 +553,7 @@ def prepare_data_instance(
     if "<INPUT>" in input_prompt:
         input_prompt = input_prompt.replace("<INPUT>", input_mol_string)
 
-    formatted_prompt_text = "<s>[INST] " + system_prompt + " \n\n" + input_prompt + " [INST]"
+    formatted_prompt_text = "<s>[INST] " + system_prompt + " \n\n" + input_prompt + r" [/INST]"
     formatted_target_text = data_instance["label"] + " </s>"
 
     raw_task = data_instance["task_subtask_pair"]
