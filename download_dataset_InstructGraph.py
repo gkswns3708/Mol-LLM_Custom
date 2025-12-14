@@ -70,14 +70,14 @@ def wrap_label(label, task):
                 raise NotImplementedError(
                     f"Label: {label} is not supported in classification task"
                 )
-            label = label_tokens[0] + label + label_tokens[1]
+            label = label_tokens[0] + " " + label + " " + label_tokens[1]
         elif isinstance(label, list):
             label_language = ", ".join(label)
             label_boolean = "True" * len(label)
-            label = label_language + label_tokens[0] + label_boolean + label_tokens[1]
+            label = label_language + label_tokens[0] + " " + label_boolean + " " + label_tokens[1]
         else:
             label = "True" if label else "False"
-            label = label_tokens[0] + label + label_tokens[1]
+            label = label_tokens[0] + " " + label + " " + label_tokens[1]
         return label
     elif task in REGRESSION_BENCHMARKS:
         if isinstance(label, float):
@@ -93,7 +93,7 @@ def wrap_label(label, task):
         converted_label = "".join([f"<|{char}|>" for char in label])
         return label_tokens[0] + " " + converted_label + " " + label_tokens[1]
     elif task in REACTION_BENCHMARKS + MOL2TEXT_BENCHMARKS + TEXT2MOL_BENCHMARKS:
-        return label_tokens[0] + label + label_tokens[1]
+        return label_tokens[0] + " " + label + " " + label_tokens[1]
     else:
         raise NotImplementedError
 
@@ -145,7 +145,7 @@ class MoleculeNetDatasetDeepChem(Dataset):
         # set molecule string representation as selfies
         input_mol_string = sf.encoder(smiles)
         input_mol_string = (
-            added_tokens.SELFIES[0] + input_mol_string + added_tokens.SELFIES[1]
+            added_tokens.SELFIES[0] + " " + input_mol_string + " " + added_tokens.SELFIES[1]
         )
         if self.subtask_idx == "multi_label_classification":
             label = self.raw_outputs[index]
@@ -157,7 +157,9 @@ class MoleculeNetDatasetDeepChem(Dataset):
         else:
             label = self.raw_outputs[index]
             label = wrap_label(label, self.task)
-
+        input_mol_string = (
+            added_tokens.SELFIES[0] + " " + input_mol_string + " " + added_tokens.SELFIES[1]
+        )
         graph = smiles2data(smiles)
         # randomly select one instruction from list
         return graph, label, input_mol_string, instruction
@@ -318,7 +320,7 @@ class MolInstructionDatset(Dataset):
 
         label = wrap_label(label, self.task)
         input_mol_string = (
-            added_tokens.SELFIES[0] + input_mol_string + added_tokens.SELFIES[1]
+            added_tokens.SELFIES[0] + " " + input_mol_string + " " + added_tokens.SELFIES[1]
         )
 
         return graph, label, input_mol_string, instruction
@@ -407,7 +409,7 @@ class ChEBIDataset(Dataset):
 
         label = wrap_label(label, self.task)
         input_mol_string = (
-            added_tokens.SELFIES[0] + input_mol_string + added_tokens.SELFIES[1]
+            added_tokens.SELFIES[0] + " " + input_mol_string + " " + added_tokens.SELFIES[1]
         )
         return graph, label, input_mol_string, instruction
 
@@ -529,7 +531,7 @@ class SMolInstructDataset(Dataset):
 
         label = wrap_label(label, self.task)
         input_mol_string = (
-            added_tokens.SELFIES[0] + input_mol_string + added_tokens.SELFIES[1]
+            added_tokens.SELFIES[0] + " " + input_mol_string + " " + added_tokens.SELFIES[1]
         )
 
         return graph, label, input_mol_string, instruction
@@ -889,7 +891,7 @@ if __name__ == "__main__":
             num_query_tokens=32,
     ):
         input_mol_string = data_instance["input_mol_string"]
-        input_mol_string = input_mol_string.replace("<SELFIES>", "<SELFIES> ").replace("</SELFIES>", " </SELFIES>")
+        # input_mol_string = input_mol_string.replace("<SELFIES>", "<SELFIES> ").replace("</SELFIES>", " </SELFIES>")
         input_prompt = data_instance["instruction"]
 
         graph_sequence = "<GRAPH>" + mol_token * num_query_tokens + "</GRAPH>"

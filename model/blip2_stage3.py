@@ -748,7 +748,8 @@ class Blip2Stage3(pl.LightningModule):
         # 2. 배치 내 모든 샘플 순회
         for k, task_name in enumerate(tasks):
             # [Pad] 토큰 제거
-            clean_prompt = real_inference_prompts[k].replace(self.blip2model.llm_tokenizer.pad_token, "")
+            # clean_prompt = real_inference_prompts[k].replace(self.blip2model.llm_tokenizer.pad_token, "")
+            clean_prompt = real_inference_prompts[k]
             
             print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name}")
             print(f"Input Mol String  : {input_mol_strings[k]}")

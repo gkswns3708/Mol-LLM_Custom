@@ -547,8 +547,8 @@ def prepare_data_instance(
     input_mol_string = input_mol_string.replace("<SELFIES>", "<SELFIES> ").replace("</SELFIES>", " </SELFIES>")
     input_prompt = data_instance["instruction"]
 
-    graph_sequence = "<GRAPH>" + mol_token * num_query_tokens + "</GRAPH>"
-    input_mol_string += graph_sequence
+    # graph_sequence = "<GRAPH>" + mol_token * num_query_tokens + "</GRAPH>"
+    # input_mol_string += graph_sequence
     
     if "<INPUT>" in input_prompt:
         input_prompt = input_prompt.replace("<INPUT>", input_mol_string)

@@ -496,12 +496,137 @@ class Blip2OPT(Blip2Base):
             labels.append(label)
         return predictions, labels
 
+    # def inject_graph_embeds2input_embeds(self, input_embeds, is_mol_token, graphs):
+    #     mol_graphs, mol2_graphs = graphs
+
+    #     mol_token_sequence = []
+
+    #     # [DEBUG] 1. 함수 진입 알림
+    #     print(f"\n[DEBUG] inject_graph_embeds2input_embeds CALLED")
+    #     print(f"[DEBUG] input_embeds shape: {input_embeds.shape}")
+
+    #     for graphs in [mol_graphs, mol2_graphs]:
+
+    #         mol_x = graphs["x"]
+    #         mol_edge_index = graphs["edge_index"]
+    #         mol_edge_attr = graphs["edge_attr"]
+    #         mol_batch = graphs["batch"]
+
+    #         if self.args.process_disjoint:
+    #             num_graph_list = []
+    #             graph_list = []
+    #             for graph in graphs.to_data_list():
+    #                 tmp_batch = Batch.from_data_list([graph])
+    #                 tmp_batch = split_batch_by_components(tmp_batch)
+    #                 graph_list.extend(tmp_batch)
+    #                 num_graph_list.append(len(tmp_batch))
+    #             # graph_batch = split_batch_by_components(graphs)
+    #             graph_batch = Batch.from_data_list(graph_list)
+    #             graph_embeds, graph_masks = self.graph_encoder(
+    #                 graph_batch.x,
+    #                 graph_batch.edge_index,
+    #                 graph_batch.edge_attr,
+    #                 graph_batch.batch,
+    #             )
+    #             mol_embeds_list = []
+    #             mol_mask_list = []
+
+    #             graph_embeds = torch.split(graph_embeds, num_graph_list, dim=0)
+    #             graph_masks = torch.split(graph_masks, num_graph_list, dim=0)
+    #             for graph_embed, graph_mask in zip(graph_embeds, graph_masks):
+    #                 mol_embeds_list.append(graph_embed[graph_mask])
+    #                 mol_mask_list.append(graph_mask[graph_mask])
+    #             mol_embeds = pad_sequence(mol_embeds_list, batch_first=True)
+    #             mol_masks = pad_sequence(mol_mask_list, batch_first=True)
+    #         else:
+    #             mol_embeds, mol_masks = self.graph_encoder(
+    #                 mol_x, mol_edge_index, mol_edge_attr, mol_batch
+    #             )
+
+    #         mol_embeds, mol_masks = self.graph_encoder(
+    #             mol_x, mol_edge_index, mol_edge_attr, mol_batch
+    #         )
+    #         if not self.tune_gnn:
+    #             mol_embeds = mol_embeds.detach()
+    #         mol_embeds = self.ln_graph(mol_embeds, mol_masks)
+    #         graph_embedding = mol_embeds[:, 0, :]
+    #         graph_avg_norm = torch.norm(graph_embedding, p=1, dim=-1)
+
+    #         if self.args.projector_type == "qformer":
+    #             query_tokens = self.query_tokens.expand(mol_embeds.shape[0], -1, -1)
+    #             query_output = self.Qformer.bert(
+    #                 query_embeds=query_tokens,
+    #                 encoder_hidden_states=mol_embeds,
+    #                 encoder_attention_mask=mol_masks,
+    #                 return_dict=True,
+    #             )
+    #             mol_tokens = self.opt_proj(query_output.last_hidden_state)
+    #         else:
+    #             mol_tokens = self.opt_proj(mol_embeds)
+    #         mol_token_sequence.append(mol_tokens)
+
+    #         mol_tokens = torch.cat(mol_token_sequence, dim=1)
+    #         moltoken_avg_norm = torch.norm(mol_tokens, p=1, dim=-1).mean(1)
+
+    #     num_mol_tokens_per_sample = is_mol_token.sum(dim=1)  # Shape: (batch_size,)
+        
+    #     # [DEBUG] 2. 토큰 개수 및 생성된 그래프 피처 확인
+    #     print(f"[DEBUG] Num <mol> tokens per sample: {num_mol_tokens_per_sample.tolist()}")
+    #     print(f"[DEBUG] Generated mol_tokens shape: {mol_tokens.shape}")
+
+    #     if (num_mol_tokens_per_sample > 0).any():
+    #         mol_token_indices_full = (
+    #             is_mol_token.cumsum(dim=1) - 1
+    #         )  # Shape: (batch_size, seq_length)
+
+    #         # Get indices where is_mol_token is True
+    #         batch_indices, token_indices = is_mol_token.nonzero(
+    #             as_tuple=True
+    #         )  # Shape: (num_true_tokens,)
+
+    #         # Get corresponding mol_token_indices
+    #         mol_token_indices = mol_token_indices_full[
+    #             batch_indices, token_indices
+    #         ]  # Shape: (num_true_tokens,)
+            
+    #         # [DEBUG] 3. 주입 전 첫 번째 값 확인 (제대로 바뀌는지 보기 위함)
+    #         if len(batch_indices) > 0:
+    #             b_idx, t_idx = batch_indices[0].item(), token_indices[0].item()
+    #             print(f"[DEBUG] Before Injection at [{b_idx}, {t_idx}]: {input_embeds[b_idx, t_idx, :5].tolist()}")
+    #             print(f"[DEBUG] Graph Feature to inject: {mol_tokens[batch_indices[0], mol_token_indices[0], :5].tolist()}")
+
+    #         # 실제 주입
+    #         input_embeds[batch_indices, token_indices, :] = mol_tokens[
+    #             batch_indices, mol_token_indices, :
+    #         ]
+            
+    #         # [DEBUG] 4. 주입 후 값 확인
+    #         if len(batch_indices) > 0:
+    #             print(f"[DEBUG] After Injection at [{b_idx}, {t_idx}]: {input_embeds[b_idx, t_idx, :5].tolist()}")
+                
+    #             # 검증
+    #             diff = (input_embeds[b_idx, t_idx, :] - mol_tokens[batch_indices[0], mol_token_indices[0], :]).abs().sum()
+    #             if diff < 1e-5:
+    #                 print(f"[DEBUG] -> SUCCESS: Injection Matched!")
+    #             else:
+    #                 print(f"[DEBUG] -> FAIL: Injection Mismatch! (Diff: {diff})")
+
+    #     return input_embeds, graph_avg_norm, moltoken_avg_norm
     def inject_graph_embeds2input_embeds(self, input_embeds, is_mol_token, graphs):
+        # graphs 튜플 언패킹 (Main Graph, Additional Graph)
         mol_graphs, mol2_graphs = graphs
 
         mol_token_sequence = []
 
+        # [DEBUG] 로그는 유지
+        # print(f"\n[DEBUG] inject_graph_embeds2input_embeds CALLED")
+        # print(f"[DEBUG] input_embeds shape: {input_embeds.shape}")
+
         for graphs in [mol_graphs, mol2_graphs]:
+            # ▼▼▼▼▼ [수정] 그래프가 None이면(Single Task인 경우) 건너뛰기 ▼▼▼▼▼
+            if graphs is None:
+                continue
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
             mol_x = graphs["x"]
             mol_edge_index = graphs["edge_index"]
@@ -539,9 +664,9 @@ class Blip2OPT(Blip2Base):
                     mol_x, mol_edge_index, mol_edge_attr, mol_batch
                 )
 
-            mol_embeds, mol_masks = self.graph_encoder(
-                mol_x, mol_edge_index, mol_edge_attr, mol_batch
-            )
+            # (중복 호출 제거 - 기존 코드에 중복 호출이 있었다면 하나는 지우셔도 됩니다)
+            # mol_embeds, mol_masks = self.graph_encoder(...) <--- 이 부분이 중복이라면 제거
+
             if not self.tune_gnn:
                 mol_embeds = mol_embeds.detach()
             mol_embeds = self.ln_graph(mol_embeds, mol_masks)
@@ -561,8 +686,9 @@ class Blip2OPT(Blip2Base):
                 mol_tokens = self.opt_proj(mol_embeds)
             mol_token_sequence.append(mol_tokens)
 
-            mol_tokens = torch.cat(mol_token_sequence, dim=1)
-            moltoken_avg_norm = torch.norm(mol_tokens, p=1, dim=-1).mean(1)
+        # 결과 연결 (리스트에 1개만 있어도 정상 동작함)
+        mol_tokens = torch.cat(mol_token_sequence, dim=1)
+        moltoken_avg_norm = torch.norm(mol_tokens, p=1, dim=-1).mean(1)
 
         num_mol_tokens_per_sample = is_mol_token.sum(dim=1)  # Shape: (batch_size,)
         if (num_mol_tokens_per_sample > 0).any():

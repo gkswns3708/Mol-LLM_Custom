@@ -35,9 +35,12 @@ num_workers: 0
 skip_sanity_check: false
 
 # accumulate_grad_batches: 11
-total_batch_size: 512
-batch_size: 8
-inference_batch_size: 11
+# total_batch_size: 512
+# batch_size: 8
+# inference_batch_size: 11
+total_batch_size: 1
+batch_size: 1
+inference_batch_size: 1
 
 truncation: 1
 padding: max_length

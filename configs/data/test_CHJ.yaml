@@ -6,7 +6,7 @@ tasks:
   # - alchemy_homo_lumo_gap
   # - alchemy_lumo
   # - aqsol-logS
-  # - bace
+  - bace
   # - chebi-20-mol2text
   # - chebi-20-text2mol
   # - forward_reaction_prediction
@@ -17,7 +17,7 @@ tasks:
   # - qm9_homo
   # - qm9_homo_lumo_gap
   # - qm9_lumo
-  - reagent_prediction
+  # - reagent_prediction
   # - retrosynthesis
   # - smol-forward_synthesis
   # - smol-molecule_captioning

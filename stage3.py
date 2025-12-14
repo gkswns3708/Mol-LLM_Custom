@@ -14,7 +14,7 @@ from omegaconf import OmegaConf, DictConfig
 from datetime import timedelta
 import wandb
 import nltk
-
+from pprint import pprint
 nltk.download("wordnet")
 
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -72,7 +72,37 @@ def main(cfg):
         tokenizer=model.blip2model.llm_tokenizer,
         args=cfg,
     )
-
+    print("\n" + "="*50)
+    print("[DEBUG] Inspecting one batch from Dataloader...")
+    try:
+        # 실행 모드(mode)에 따라 적절한 dataloader 선택
+        if cfg.mode == "test":
+            debug_loader = dm.test_dataloader()
+            print("[DEBUG] Using Test Dataloader")
+        else:
+            debug_loader = dm.train_dataloader()
+            print("[DEBUG] Using Train Dataloader")
+        
+        # 배치 하나 가져오기
+        batch = next(iter(debug_loader))
+        
+        print(f"[DEBUG] Batch Keys: {list(batch.keys())}")
+        
+        # 키별 값 출력
+        for key, value in batch.items():
+            print(f"\n[Key]: {key}")
+            if isinstance(value, torch.Tensor):
+                pprint(f"  Type: Tensor")
+                pprint(f"  Shape: {value.shape}")
+                pprint(f"  Values:\n{value}")
+            else:
+                pprint(f"  Type: {type(value)}")
+                pprint(f"  Values:\n{value}")
+                
+    except Exception as e:
+        print(f"[DEBUG] Failed to inspect dataloader: {e}")
+    print("="*50 + "\n")
+    # [End] Dataloader Inspection Code
     callbacks = []
     callbacks.append(
         ModelCheckpoint(
