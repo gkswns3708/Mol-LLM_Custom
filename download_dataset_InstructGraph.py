@@ -107,8 +107,12 @@ class MoleculeNetDatasetDeepChem(Dataset):
     def __init__(self, data, task_subtask_pair, subtask_idx=0, prompt=None):
         self.data = data
         self.subtask_idx = subtask_idx
-        self.task_subtask_pair = task_subtask_pair
-        self.task, self.subtask = task_subtask_pair.split("/")
+        if "/" in task_subtask_pair:
+            self.task, self.subtask = task_subtask_pair.split("/", 1)
+        else:
+            # pair에 subtask가 없으면 subtask_idx로 대체(혹은 문자열로 저장)
+            self.task = task_subtask_pair
+            self.subtask = str(subtask_idx)
 
         if self.task in CLASSIFICATION_BENCHMARKS:
             self.instruction_templates = getattr(instructions_smol, self.task)
@@ -236,8 +240,12 @@ class MoleculeNetDatasetDeepChem(Dataset):
 class MolInstructionDatset(Dataset):
     def __init__(self, data, task_subtask_pair, **kwargs):
         self.data = data
-        self.task = task_subtask_pair
-        #self.task, self.subtask = task_subtask_pair.split("/")
+        if "/" in task_subtask_pair:
+            self.task, self.subtask = task_subtask_pair.split("/", 1)
+        else:
+            # pair에 subtask가 없으면 subtask_idx로 대체(혹은 문자열로 저장)
+            self.task = task_subtask_pair
+            self.subtask = str(subtask_idx)
 
         self.set_necesary_data()
 
@@ -339,7 +347,12 @@ class ChEBIDataset(Dataset):
     def __init__(self, data, task_subtask_pair, **kwargs):
         self.data = data
         self.task_subtask_pair = task_subtask_pair
-        self.task, self.subtask = task_subtask_pair.split("/")
+        if "/" in task_subtask_pair:
+            self.task, self.subtask = task_subtask_pair.split("/", 1)
+        else:
+            # pair에 subtask가 없으면 subtask_idx로 대체(혹은 문자열로 저장)
+            self.task = task_subtask_pair
+            self.subtask = str(subtask_idx)
 
         self.set_necesary_data()
 
@@ -426,8 +439,12 @@ class ChEBIDataset(Dataset):
 class SMolInstructDataset(Dataset):
     def __init__(self, data, task_subtask_pair, **kwargs):
         self.data = data
-        self.task_subtask_pair = task_subtask_pair
-        self.task, self.subtask = task_subtask_pair.split("/")
+        if "/" in task_subtask_pair:
+            self.task, self.subtask = task_subtask_pair.split("/", 1)
+        else:
+            # pair에 subtask가 없으면 subtask_idx로 대체(혹은 문자열로 저장)
+            self.task = task_subtask_pair
+            self.subtask = str(subtask_idx)
         if "forward_synthesis" in self.task:
             self.instruction_templates = getattr(
                 instructions_smol, "forward_reaction_prediction"
@@ -829,15 +846,25 @@ if __name__ == "__main__":
             dataset = dataset_splits[split]
             list_dict_data = []
             for i in range(len(dataset)):
-                data = dataset[i]
+                graph, label, input_mol_string, task_pair_or_name, instruction = dataset[i]
+                if hasattr(instruction, "item"): instruction = instruction.item()
+                instruction = str(instruction)
+
+                if isinstance(graph, list):
+                    if len(graph) >= 2: g0, g1 = graph[0], graph[1]
+                    elif len(graph) == 1: g0 = g1 = graph[0]
+                    else: continue
+                else:
+                
+                    g0 = g1 = graph
                 dict_data = {
-                    "x": data[0].x,
-                    "edge_index": data[0].edge_index,
-                    "edge_attr": data[0].edge_attr,
-                    "label": data[1],
-                    "input_mol_string": data[2],
-                    "task_subtask_pair": data[3],
-                    "instruction": data[4].item(),
+                    "x": g0.x,
+                    "edge_index": g0.edge_index,
+                    "edge_attr": g0.edge_attr,
+                    "label": label,
+                    "input_mol_string": input_mol_string,
+                    "task_subtask_pair": task_pair_or_name,
+                    "instruction": instruction,
                 }
 
                 list_dict_data.append(dict_data)
@@ -901,7 +928,7 @@ if __name__ == "__main__":
         input_prompt = input_prompt.replace("<INPUT>", input_mol_string)
 
         # [수정 1] 프롬프트 끝부분을 [/INST]로 올바르게 닫아줍니다.
-        formatted_prompt_text = "<s>[INST] " + system_prompt + " \n\n" + input_prompt + " [/INST]"
+        formatted_prompt_text = "<s>[INST] " + system_prompt + " \n\n" + input_prompt + " [/INST] "
         formatted_target_text = data_instance["label"] + " </s>"
 
         # Task 이름 정리

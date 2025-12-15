@@ -1,7 +1,7 @@
 defaults:
   - data: multi_task_stage1
   - gnn: gine_tokengt
-  - trainer: llada8b
+  - trainer: mistral7b_80gb
 
 # General settings
 filename: debugging
@@ -9,7 +9,7 @@ seed: 42
 mode: ft
 
 wandb_entity: hj_ai
-wandb_project: mol-llm
+wandb_project: mol-llm_llada
 wandb_log_freq: 100
 wandb_id: null
 

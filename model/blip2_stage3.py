@@ -5,6 +5,7 @@ from model.blip2_opt import Blip2OPT
 from model.blip2_llama import Blip2Llama
 from model.blip2_mistral import Blip2Mistral
 from model.blip2_t5 import Blip2T5
+from model.blip2_llada import Blip2LLaDA
 import pytorch_lightning as pl
 from torch import optim
 from model.scheduler import LinearWarmupCosineLRScheduler, LinearWarmupStepLRScheduler
@@ -97,6 +98,8 @@ class Blip2Stage3(pl.LightningModule):
             blip2model = Blip2Mistral
         elif "t5" in args.llm_model:
             blip2model = Blip2T5
+        elif "llada" in args.llm_model or "LLaDA" in args.llm_model: # [추가]
+            blip2model = Blip2LLaDA
         else:
             raise NotImplementedError()
 
@@ -629,6 +632,32 @@ class Blip2Stage3(pl.LightningModule):
             additional_graphs = None
             is_mol_token = None
 
+        if batch_idx == 0: 
+            print(f"\n{'='*20} [DEBUG: Input Token Analysis] {'='*20}")
+            tokenizer = self.blip2model.llm_tokenizer
+            input_ids_batch = batch.prompt_input_ids
+            
+            # 배치 내 샘플 순회 (최대 2개까지만)
+            for k in range(min(2, len(input_ids_batch))):
+                ids = input_ids_batch[k]
+                
+                # A. Raw Token IDs (모델이 보는 실제 숫자)
+                print(f"\n[Sample {k}] Input IDs (Length: {len(ids)}):")
+                print(f"{ids.tolist()}")
+                
+                # B. Token-wise Decoding (각 ID가 어떤 문자열 조각인지 확인)
+                # 이 부분이 가장 중요합니다. 토큰이 분리되어 있다면 여기서 보입니다.
+                tokens = tokenizer.convert_ids_to_tokens(ids)
+                print(f"[Sample {k}] Token-wise List:")
+                print(tokens)
+                
+                # C. Full Decoding (사람이 읽는 문장)
+                decoded_text = tokenizer.decode(ids, skip_special_tokens=False)
+                print(f"[Sample {k}] Full Decoded String:")
+                print(decoded_text)
+                print("-" * 60)
+            print(f"{'='*60}\n")
+        
         gen_outputs = self.blip2model.generate(
             graphs=(graphs, additional_graphs),
             input_ids=batch.prompt_input_ids,
