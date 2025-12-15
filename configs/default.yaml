@@ -1,7 +1,7 @@
 defaults:
   - data: multi_task_stage1
   - gnn: gine_tokengt
-  - trainer: llada8b
+  - trainer: mistral7b_80gb
 
 # General settings
 filename: debugging

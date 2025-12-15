@@ -47,6 +47,8 @@ class Stage3DM(LightningDataModule):
         builder.config.train_tasks
         self.task_subtask_name_pairs = list(builder.config.test_tasks)
 
+
+        # ! Padding 어떤건지 확인하기
         tokenizer.padding_side = "left"
         self.train_collator = DataCollator(
             tokenizer=tokenizer,

@@ -632,7 +632,7 @@ class Blip2Stage3(pl.LightningModule):
             additional_graphs = None
             is_mol_token = None
 
-        if batch_idx == 0: 
+        if batch_idx == 0 & self.args.custom_log : 
             print(f"\n{'='*20} [DEBUG: Input Token Analysis] {'='*20}")
             tokenizer = self.blip2model.llm_tokenizer
             input_ids_batch = batch.prompt_input_ids
@@ -674,11 +674,29 @@ class Blip2Stage3(pl.LightningModule):
         forward_outputs = self.blip2model(batch)
         forward_logits = forward_outputs.pop("logits")
         forward_labels = batch.labels
-        forward_loss_dict = get_instance_loss(
-            logits=forward_logits, labels=forward_labels
-        )
-        forward_instance_loss = forward_loss_dict["instance_loss"]
-        forward_loss = forward_loss_dict["loss"]
+        # forward_loss_dict = get_instance_loss(
+        #     logits=forward_logits, labels=forward_labels
+        # )
+        # forward_instance_loss = forward_loss_dict["instance_loss"]
+        # forward_loss = forward_loss_dict["loss"];
+        
+        if "llada" in self.args.llm_model.lower():
+            # LLaDA는 모델 내부에서 Diffusion Loss를 이미 계산함 (Shift 불필요)
+            forward_loss = forward_outputs.pop("loss")
+            
+            # Blip2LLaDA.forward에서 instance_loss를 리턴해주도록 구현해야 함
+            if "instance_loss" in forward_outputs:
+                forward_instance_loss = forward_outputs["instance_loss"]
+            else:
+                # 만약 없다면 loss 값을 그대로 사용 (배치 평균이므로 차원 맞춤 필요할 수 있음)
+                forward_instance_loss = torch.full((forward_logits.size(0),), forward_loss.item(), device=self.device)
+        else:
+            # 기존 Autoregressive 모델 (OPT, Llama 등)은 Shift 해서 Loss 재계산
+            forward_loss_dict = get_instance_loss(
+                logits=forward_logits, labels=forward_labels
+            )
+            forward_instance_loss = forward_loss_dict["instance_loss"]
+            forward_loss = forward_loss_dict["loss"]
 
         if self.args.eval_molpo:
             len_tuple = gen_labels.shape[0] // self.args.molpo_batch_division

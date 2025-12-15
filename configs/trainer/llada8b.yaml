@@ -8,7 +8,7 @@ projector_type: qformer
 
 llm_model: "GSAI-ML/LLaDA-8B-Instruct"
 tune_llm: lora
-peft_config: null
+peft_config: lora_config_llada.json
 peft_dir: ""
 load_in_8bit: false
 lora_r: 64
