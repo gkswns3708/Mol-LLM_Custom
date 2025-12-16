@@ -661,8 +661,17 @@ if __name__ == "__main__":
     # --- Dataset Downloading & Saving (First Stage) ---
     for task_subtask_pair in tqdm(downloading_task_subtask_pairs, desc="Downloading task_subtask_pairs"):
         task_name = task_subtask_pair[0]
+        subtask_idx = task_subtask_pair[1] # [추가] 경로 확인을 위해 미리 추출
+
+        # [수정] 이미 처리된 데이터셋(Train Split 기준)이 존재하면 건너뛰기
+        check_train_path = f"{raw_data_root}/{task_name}_subtask-{subtask_idx}_train"
+        check_val_path = f"{raw_data_root}/{task_name}_subtask-{subtask_idx}_val"
+        check_test_path = f"{raw_data_root}/{task_name}_subtask-{subtask_idx}_test"
+        if os.path.exists(check_train_path) and os.path.exists(check_val_path) and os.path.exists(check_test_path):
+            # print(f"[Skip] Dataset already exists: {check_train_path}") # 로그가 너무 많으면 주석 처리
+            continue
         try:
-            new_dataset = get_dataset(task_name=task_name, raw_data_root=raw_data_root)
+            new_dataset = get_datasㅁet(task_name=task_name, raw_data_root=raw_data_root)
         except Exception as e:
             print(f"[Error] Failed to get dataset for {task_name}: {e}")
             traceback.print_exc()
