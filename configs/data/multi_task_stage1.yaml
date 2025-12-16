@@ -1,6 +1,7 @@
 # raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/llada_train # 실제 학습 해야하는 경로
 raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/llada_train # mistral로 학습 가능성 확인하는 경로 
-data_tag: 3.3M_0415
+# data_tag: 3.3M_0415 # naive
+data_tag: 3.3M_0415_verified_filtered_512 #
 
 target_benchmarks:
   - bace
@@ -22,3 +23,7 @@ target_benchmarks:
   - smol-property_prediction-lipo
   - smol-property_prediction-sider
   - smol-retrosynthesis
+  # - smol-name_conversion-i2f
+  - smol-name_conversion-i2s
+  # - smol-name_conversion-s2f
+  - smol-name_conversion-s2i

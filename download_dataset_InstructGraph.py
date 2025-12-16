@@ -44,10 +44,13 @@ def wrap_label(label, task):
         label_tokens = added_tokens.IUPAC
     elif task in MOL2TEXT_BENCHMARKS:
         label_tokens = added_tokens.DESCRIPTION
+    # [수정] i2s 태스크 추가 (Target이 분자이므로 SELFIES 토큰 사용)
+    elif task == "smol-name_conversion-i2s":
+        label_tokens = added_tokens.SELFIES
     elif task in TEXT2MOL_BENCHMARKS + REACTION_BENCHMARKS:
         label_tokens = added_tokens.SELFIES
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Task {task} is not implemented in wrap_label")
 
     if task in CLASSIFICATION_BENCHMARKS:
         if isinstance(label, str):
@@ -80,10 +83,12 @@ def wrap_label(label, task):
         label = label[:7]
         converted_label = "".join([f"<|{char}|>" for char in label])
         return label_tokens[0] + " " + converted_label + " " + label_tokens[1]
-    elif task in REACTION_BENCHMARKS + MOL2TEXT_BENCHMARKS + TEXT2MOL_BENCHMARKS:
+    
+    elif task in REACTION_BENCHMARKS + MOL2TEXT_BENCHMARKS + TEXT2MOL_BENCHMARKS + ["smol-name_conversion-i2s"]:
         return label_tokens[0] + str(label) + label_tokens[1]
     else:
         return str(label)
+
 
 def smiles2data(smiles):
     from ogb.utils import smiles2graph
@@ -425,7 +430,12 @@ class SMolInstructDataset(Dataset):
         
         raw_inputs = self.data["raw_input"][:]
         raw_outputs = self.data["raw_output"][:]
+        
         self.count_invalid_smiles = 0
+        success_count = 0
+        
+        print(f"[{self.task}] Start Processing. Raw Data Size: {len(self.data)}")
+
         for i in tqdm(range(len(self.data)), desc=self.task):
             try:
                 graph, label, input_mol_string, instruction = self.get_necessary_data(i, raw_inputs[i], raw_outputs[i])
@@ -433,8 +443,13 @@ class SMolInstructDataset(Dataset):
                 processed_label_list.append(label)
                 processed_input_mol_string_list.append(input_mol_string)
                 processed_instruction_list.append(instruction)
+                success_count += 1
             except Exception as e:
                 self.count_invalid_smiles += 1
+                if self.count_invalid_smiles <= 5:
+                    print(f"\n[FAIL LOG] Task: {self.task} | Index: {i} | Error: {e}")
+
+        print(f"[{self.task}] Finished. Total: {len(self.data)} | Success: {success_count} | Failed: {self.count_invalid_smiles}")
         
         self.graph_list = processed_graph_list
         self.label_list = processed_label_list
@@ -442,11 +457,52 @@ class SMolInstructDataset(Dataset):
         self.instruction_list = processed_instruction_list
 
     def __len__(self): return len(self.label_list)
+    
     def get_necessary_data(self, index, raw_input, raw_output):
         label = raw_output
         
-        if self.task in TEXT2MOL_BENCHMARKS or self.task in ["smol-name_conversion-i2s", "smol-name_conversion-i2f"]:
-            s_token, e_token = (added_tokens.IUPAC if self.task in ["smol-name_conversion-i2s", "smol-name_conversion-i2f"] else added_tokens.DESCRIPTION)
+        # 1. Name Conversion (Text Input: i2s, i2f) -> Graph 생성 X (Dummy)
+        if self.task in ["smol-name_conversion-i2s", "smol-name_conversion-i2f"]:
+            s_token, e_token = added_tokens.IUPAC
+            description = s_token + str(raw_input) + e_token
+            instruction = np.random.choice(self.instruction_templates).replace("<INPUT>", description)
+            
+            try:
+                dummy_graph = smiles2data("CC")
+                graph = [dummy_graph, dummy_graph]
+            except:
+                x = torch.zeros((1, 1), dtype=torch.float)
+                edge_index = torch.zeros((2, 0), dtype=torch.long)
+                edge_attr = torch.zeros((0, 1), dtype=torch.float)
+                data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+                graph = [data, data]
+
+            input_mol_string = "<None>" 
+            label = re.sub(r"\s*;\s*", ".", str(label))
+
+        # 2. Name Conversion (SMILES Input: s2i, s2f)
+        # [수정] use_selfies=True 옵션 때문에 raw_input이 SELFIES로 들어옵니다.
+        # 따라서 sf.decoder를 통해 SMILES로 변환 후 그래프를 만들어야 합니다.
+        elif self.task in ["smol-name_conversion-s2i", "smol-name_conversion-s2f"]:
+            instruction = np.random.choice(self.instruction_templates)
+            input_mol_string = str(raw_input) # SELFIES String
+
+            try:
+                # [핵심 수정] SELFIES -> SMILES 변환 시도
+                smiles = sf.decoder(input_mol_string)
+                if smiles is None: 
+                    smiles = "CC" # 디코딩 실패 시 더미
+                
+                graph = [smiles2data(smiles), smiles2data('CC')]
+            except:
+                # 변환 실패 시 Dummy Graph 사용 (데이터 보존)
+                graph = [smiles2data("CC"), smiles2data("CC")]
+
+            label = str(label)
+
+        # 3. Other Tasks (Standard)
+        elif self.task in TEXT2MOL_BENCHMARKS:
+            s_token, e_token = added_tokens.DESCRIPTION
             description = s_token + raw_input + e_token
             instruction = np.random.choice(self.instruction_templates).replace("<INPUT>", description)
             
@@ -457,8 +513,13 @@ class SMolInstructDataset(Dataset):
         elif self.task in REACTION_BENCHMARKS:
             instruction = np.random.choice(self.instruction_templates)
             input_mol_string = raw_input
-            smiles = sf.decoder(input_mol_string)
-            graph = [smiles2data(smiles), smiles2data('CC')]
+            try:
+                smiles = sf.decoder(input_mol_string)
+                if smiles is None: raise ValueError("Decode failed")
+                graph = [smiles2data(smiles), smiles2data('CC')]
+            except:
+                # [안전장치] 반응 예측에서도 실패 시 더미 처리할지 선택
+                raise ValueError(f"Reaction decode failed: {input_mol_string}")
             
         elif self.task in ["smol-property_prediction-sider"]:
             instance_input = self.data[index]["input"]
@@ -578,7 +639,7 @@ def prepare_data_instance(
         # === LLaDA (Llama 3) Format ===
         # <|begin_of_text|><|start_header_id|>system...
         formatted_prompt_text = (
-            "<|begin_of_text|>"
+            "<|startoftext|>"
             "<|start_header_id|>system<|end_header_id|>\n\n"
             + system_prompt + "<|eot_id|>"
             "<|start_header_id|>user<|end_header_id|>\n\n"
@@ -639,8 +700,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_dir", type=str, default="./configs/download/")
     parser.add_argument("--config", type=str, default="default_llada")
-    parser.add_argument("--train_procs", type=int, default=32)
-    parser.add_argument("--test_procs", type=int, default=32)
+    parser.add_argument("--train_procs", type=int, default=64)
+    parser.add_argument("--test_procs", type=int, default=64)
     args = parser.parse_args()
 
     arg_path = os.path.join(args.config_dir, args.config) + ".yaml"
@@ -671,7 +732,7 @@ if __name__ == "__main__":
             # print(f"[Skip] Dataset already exists: {check_train_path}") # 로그가 너무 많으면 주석 처리
             continue
         try:
-            new_dataset = get_datasㅁet(task_name=task_name, raw_data_root=raw_data_root)
+            new_dataset = get_dataset(task_name=task_name, raw_data_root=raw_data_root)
         except Exception as e:
             print(f"[Error] Failed to get dataset for {task_name}: {e}")
             traceback.print_exc()
@@ -713,6 +774,10 @@ if __name__ == "__main__":
         common_features = None
 
         for split in process_order:
+            # [수정] i2s, s2i 태스크는 Validation/Test 스킵 (Train만 존재)
+            if task_name in ["smol-name_conversion-i2s", "smol-name_conversion-s2i"] and split != "train":
+                continue
+
             raw_data = dataset_splits[split]
             
             # 원본 데이터 자체가 없으면 스킵
