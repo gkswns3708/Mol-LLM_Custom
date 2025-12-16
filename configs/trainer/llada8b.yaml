@@ -34,13 +34,15 @@ second_stage_start_epoch: 0
 num_workers: 0
 skip_sanity_check: False 
 
-# accumulate_grad_batches: 11
 # total_batch_size: 1024
 # batch_size: 8
 # inference_batch_size: 11
+accumulate_grad_batches: 11
 total_batch_size: 1024
 batch_size: 6
+# Inference Conficuation
 inference_batch_size: 11
+sampling_steps: 16 #! 추후 최종적인 Metric 계산시에는 sequence 길이로 수정 예정
 
 truncation: 1
 padding: max_length
@@ -67,7 +69,7 @@ val_check_interval: 0.5
 test_on_trainset: false
 
 # multimodal training
-mol_representation: string+graph
+mol_representation: string_only
 log_attn_score: true
 eval_modality_util: null
 tune_gnn: false

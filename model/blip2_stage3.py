@@ -661,38 +661,71 @@ class Blip2Stage3(pl.LightningModule):
                 print("-" * 60)
             print(f"{'='*60}\n")
         
-        gen_outputs = self.blip2model.generate(
-            graphs=(graphs, additional_graphs),
-            input_ids=batch.prompt_input_ids,
-            attention_mask=batch.prompt_attention_mask,
-            is_mol_token=is_mol_token,
-            num_beams=self.num_beams,
-            max_length=self.gen_max_len,
-            min_length=self.min_len,
-            output_attentions=self.args.log_attn_score,
-        )
-        gen_logits = gen_outputs.logits
-        gen_labels = batch.gen_labels
-
-        forward_outputs = self.blip2model(batch)
-        forward_logits = forward_outputs.pop("logits")
-        forward_labels = batch.labels
-        # forward_loss_dict = get_instance_loss(
-        #     logits=forward_logits, labels=forward_labels
-        # )
-        # forward_instance_loss = forward_loss_dict["instance_loss"]
-        # forward_loss = forward_loss_dict["loss"];
+        is_llada = "llada" in self.args.llm_model.lower()
         
-        if "llada" in self.args.llm_model.lower():
-            # LLaDA는 모델 내부에서 Diffusion Loss를 이미 계산함 (Shift 불필요)
-            forward_loss = forward_outputs.pop("loss")
-            
-            # Blip2LLaDA.forward에서 instance_loss를 리턴해주도록 구현해야 함
-            if "instance_loss" in forward_outputs:
-                forward_instance_loss = forward_outputs["instance_loss"]
+        gen_kwargs = {
+            "graphs": (graphs, additional_graphs),
+            "input_ids": batch.prompt_input_ids,
+            "attention_mask": batch.prompt_attention_mask,
+            "is_mol_token": is_mol_token,
+            "max_length": self.gen_max_len,
+        }
+        
+        if is_llada:
+            # [LLaDA 전용 인자]
+            # LLaDA는 num_beams, min_length 등이 필요 없고, 대신 sampling step이 중요합니다.
+            # config에 sampling_steps가 있다고 가정합니다 (없으면 기본값 64 등 사용)
+            gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64) 
+            gen_kwargs["gen_length"] = self.gen_max_len # LLaDA는 고정 길이 생성이 일반적임
+            gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "low_confidence")
+        else:
+            # [기존 Autoregressive 모델 전용 인자]
+            gen_kwargs["num_beams"] = self.num_beams
+            gen_kwargs["min_length"] = self.min_len
+            gen_kwargs["output_attentions"] = self.args.log_attn_score
+        
+        gen_outputs = self.blip2model.generate(**gen_kwargs)
+        
+        # LLaDA의 경우 gen_outputs 구조가 다를 수 있으므로 체크 필요
+        # 보통 HuggingFace generate는 ModelOutput 객체를 반환하거나 Tensor를 반환함
+        if hasattr(gen_outputs, "logits"):
+            gen_logits = gen_outputs.logits
+        else:
+            # LLaDA generate가 텍스트만 뱉거나 logits를 안 주는 경우에 대한 예외처리
+            # 평가만 할 때는 logits가 없어도 되지만, 밑에서 binary_prob 계산할 때 필요할 수 있음
+            gen_logits = None 
+
+        gen_labels = batch.gen_labels
+        # Forward Loss 
+        forward_outputs = self.blip2model(batch)
+
+        if is_llada:
+            # LLaDA는 내부적으로 Diffusion Loss를 계산하여 반환함
+            # forward_outputs가 딕셔너리인지, 튜플인지 모델 구현에 따라 다름 (여기선 dict 가정)
+            if isinstance(forward_outputs, dict):
+                forward_loss = forward_outputs.get("loss")
+                forward_logits = forward_outputs.get("logits", None) # 디버깅용
+                
+                # Instance loss 처리
+                if "instance_loss" in forward_outputs:
+                    forward_instance_loss = forward_outputs["instance_loss"]
+                else:
+                    # instance_loss가 없으면 배치 평균 loss를 확장해서 사용
+                    forward_instance_loss = torch.full(
+                        (batch.prompt_input_ids.shape[0],), 
+                        forward_loss.item(), 
+                        device=self.device
+                    )
             else:
-                # 만약 없다면 loss 값을 그대로 사용 (배치 평균이므로 차원 맞춤 필요할 수 있음)
-                forward_instance_loss = torch.full((forward_logits.size(0),), forward_loss.item(), device=self.device)
+                # Output이 단순 Loss scalar인 경우 (드문 케이스)
+                forward_loss = forward_outputs
+                forward_instance_loss = torch.full(
+                        (batch.prompt_input_ids.shape[0],), 
+                        forward_loss.item(), 
+                        device=self.device
+                    )
+                forward_logits = None
+                    
         else:
             # 기존 Autoregressive 모델 (OPT, Llama 등)은 Shift 해서 Loss 재계산
             forward_loss_dict = get_instance_loss(
@@ -802,11 +835,11 @@ class Blip2Stage3(pl.LightningModule):
             print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name}")
             
             # 1. Prompt 검증 (가장 중요: 끝부분 확인)
-            print(f"Prompt (Raw String)   : {clean_prompt[-50:]}") 
+            print(f"Prompt (Raw String)   : {clean_prompt}") 
             
             # 2. Tokenizer 검증 (변수명 수정됨!)
             check_ids = self.blip2model.llm_tokenizer(clean_prompt, add_special_tokens=False)['input_ids']
-            print(f"Prompt (Last 5 Tokens): {check_ids[-5:]}") 
+            print(f"Prompt : {check_ids}") 
             # 여기서 마지막 토큰들이 [ ... , INST, ] 인지 확인해야 함.
             
             # 3. Graph Data 통계 검증
@@ -1314,6 +1347,7 @@ class Blip2Stage3(pl.LightningModule):
                     sync_dist=True,
                 )
     """
+    
 
 
 def check_model_parameters(model, keyword):
@@ -1482,6 +1516,7 @@ def get_batch_logps(
     else:
         return (per_token_logps * loss_mask).sum(-1)
 
+    
 
 # def concatenated_forward(
 #     all_logits: torch.FloatTensor,

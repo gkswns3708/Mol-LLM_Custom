@@ -81,7 +81,8 @@ tasks = (
 )
 
 input_mol_string_pattern = re.compile("<SELFIES>.*?</SELFIES>")
-graph_sequence = re.compile("<GRAPH>[<mol>]+?</GRAPH>")
+# [\s\S]는 공백과 공백이 아닌 모든 문자를 의미하므로 줄바꿈 포함 모든 것을 잡습니다.
+graph_sequence = re.compile(r"<GRAPH>.*?</GRAPH>", re.DOTALL)
 
 
 def task2id(task):
@@ -128,6 +129,7 @@ class DataCollator(DataCollatorForSeq2Seq):
             self.graph_collator = GraphCollater([], [])
 
     def select_mol_representation(self, prompt_text, mol_representation="string+graph"):
+        print(mol_representation, "- data_utils/mol_representation")
         if mol_representation == "string+graph":
             return prompt_text
         elif mol_representation == "string_only":

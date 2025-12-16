@@ -8,5 +8,3 @@ filename=${file_name} \
 trainer=llada8b \
 trainer.mol_representation=string_only \
 trainer.skip_sanity_check=false \
-
-
