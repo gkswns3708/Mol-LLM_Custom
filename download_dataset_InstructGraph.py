@@ -630,7 +630,7 @@ def prepare_data_instance(
         input_prompt = input_prompt.replace("<INPUT>", input_mol_string)
 
     graph_sequence = "<GRAPH> " + mol_token * num_query_tokens + " </GRAPH>"
-    input_mol_string += graph_sequence
+    input_prompt += graph_sequence
 
     # [수정] 모델 이름에 따라 포맷 자동 선택
     is_llada = "llada" in llm_model_name.lower() or "llama-3" in llm_model_name.lower()

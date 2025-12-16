@@ -129,7 +129,6 @@ class DataCollator(DataCollatorForSeq2Seq):
             self.graph_collator = GraphCollater([], [])
 
     def select_mol_representation(self, prompt_text, mol_representation="string+graph"):
-        print(mol_representation, "- data_utils/mol_representation")
         if mol_representation == "string+graph":
             return prompt_text
         elif mol_representation == "string_only":
@@ -177,7 +176,11 @@ class DataCollator(DataCollatorForSeq2Seq):
         task_names = [id2task(task) for task in tasks]
         prompt_text = [sample["prompt_text"] for sample in batch]
         target_text = [sample["target_text"] for sample in batch]
-        input_mol_strings = [sample["input_mol_string"] for sample in batch]
+        # input_mol_strings = [sample["input_mol_string"] for sample in batch]
+        raw_input_mol_strings = [sample["input_mol_string"] for sample in batch]
+        input_mol_strings = self.select_mol_representation(
+            raw_input_mol_strings, mol_representation=self.mol_representation
+        )
         list_selfies = [
             i.replace("<SELFIES> ", "").replace(" </SELFIES>", "")
             for i in input_mol_strings

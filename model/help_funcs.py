@@ -191,22 +191,6 @@ def molecule_evaluate(
         except:
             failure_idxs.append(i)
             prediction_mol = None
-            # [수정됨] 리스트 전체가 아니라 현재 인덱스 i의 값만 출력
-            print(f"\n=== [Conversion Error at index {i}] ===") 
-            print(f"Target      : {target}")
-            print(f"Prediction  : {prediction}")
-            # input_mol_strings가 리스트인지 확인하고 인덱싱
-            if isinstance(input_mol_strings, list) and len(input_mol_strings) > i:
-                print(f"Input Mol   : {input_mol_strings[i]}") 
-            else:
-                print(f"Input Mol   : {input_mol_strings}") # 리스트가 아닐 경우 대비
-            
-            if isinstance(prompts, list) and len(prompts) > i:
-                print(f"Prompt      : {prompts[i]}")
-            else:
-                print(f"Prompt      : {prompts}")
-            print("======================================\n")
-            continue
 
         if prediction_mol is not None:
 

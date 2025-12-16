@@ -46,8 +46,8 @@ sampling_steps: 16 #! 추후 최종적인 Metric 계산시에는 sequence 길이
 
 truncation: 1
 padding: max_length
-max_length: 384
-inference_max_length: 384
+max_length: 512
+inference_max_length: 512
 
 gen_max_len: 192
 min_len: 8
@@ -65,7 +65,7 @@ optimizer: adamw
 log_every_n_steps: 50
 gradient_clip_val: 0.5
 
-val_check_interval: 0.5
+val_check_interval: 2
 test_on_trainset: false
 
 # multimodal training

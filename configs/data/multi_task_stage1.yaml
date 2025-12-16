@@ -1,9 +1,9 @@
 raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/train # 실제 학습 해야하는 경로
 # raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/llada_train # mistral로 학습 가능성 확인하는 경로 
 # data_tag: 3.3M_0415 # naive
-# data_tag: 3.3M_0415_verified_filtered_512 # verified version으로 학습할 경우(512로 Truncation됨)
+data_tag: 3.3M_0415_verified_filtered_512 # verified version으로 학습할 경우(512로 Truncation됨)
 # data_tag: 3.3M_0415_verified_filtered_512_temp # 학습이 잘 되는지 확인하기 위한 Tag, Train set을 기존 original Test set이며, 추후 실제 학습은 다른 Tag로 진행해야함.
-data_tag: 3.3M_0415_verified_filtered_512_sampled_100 # 학습이 잘 되는지 확인하기 위한 Tag, Train set을 기존 original Test set이며, 추후 실제 학습은 다른 Tag로 진행해야함.
+# data_tag: 3.3M_0415_verified_filtered_512_sampled_100 # 학습이 잘 되는지 확인하기 위한 Tag, Train set을 기존 original Test set이며, 추후 실제 학습은 다른 Tag로 진행해야함.
 
 target_benchmarks:
   - bace

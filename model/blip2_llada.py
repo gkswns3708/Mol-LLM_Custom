@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer, logging
+from transformers import AutoModelForCausalLM, AutoTokenizer, logging
 from model.blip2_opt import Blip2OPT, split_batch_by_components
 from torch_geometric.data import Batch
 from torch.nn.utils.rnn import pad_sequence
@@ -28,7 +28,7 @@ class Blip2LLaDA(Blip2OPT):
         return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
     def set_llm_model(self, llm_model):
-        self.llm_model = AutoModel.from_pretrained(
+        self.llm_model = AutoModelForCausalLM.from_pretrained(
             llm_model, 
             trust_remote_code=True, 
             torch_dtype=torch.bfloat16
@@ -57,11 +57,11 @@ class Blip2LLaDA(Blip2OPT):
         self.check_and_add_special_tokens()
         
     def check_and_add_special_tokens(self):
-        # 1. 추가할 토큰 리스트 취합
+        # 1. 기본 특수 토큰 리스트 취합
         special_tokens_list = (
             added_tokens.BOOL + 
             added_tokens.FLOAT + 
-            added_tokens.DESCRIPTION +
+            added_tokens.DESCRIPTION + 
             added_tokens.SELFIES +
             added_tokens.MOL_2D + 
             added_tokens.MOL_3D + 
@@ -72,19 +72,70 @@ class Blip2LLaDA(Blip2OPT):
             added_tokens.IUPAC + 
             added_tokens.MOLFORMULA
         )
-        
-        # 2. 토크나이저에 추가
-        num_added_toks = self.llm_tokenizer.add_tokens(special_tokens_list)
-        if num_added_toks > 0:
-            logger.info(f"[Token Check] Added {num_added_toks} special tokens to tokenizer.")
-        else:
-            logger.info("[Token Check] Special tokens already exist.")
 
-        # 3. 모델 임베딩 크기 조정 (필수)
-        self.llm_model.resize_token_embeddings(len(self.llm_tokenizer))
+        # 2. SELFIES Dictionary 파일에서 토큰 읽어오기
+        if getattr(self.args, "add_selfies_tokens", False):
+            if hasattr(self.args, "selfies_token_path") and self.args.selfies_token_path:
+                try:
+                    with open(self.args.selfies_token_path, "r") as f:
+                        selfies_tokens = f.readlines()
+                        selfies_tokens = [token.strip() for token in selfies_tokens]
+                    
+                    special_tokens_list.extend(selfies_tokens)
+                    logger.info(f"[Token Check] Loaded {len(selfies_tokens)} SELFIES tokens from {self.args.selfies_token_path}")
+                    self.llm_tokenizer.added_selfies_tokens = selfies_tokens
+                    
+                except Exception as e:
+                    logger.error(f"[Token Check] Failed to load SELFIES tokens from file: {e}")
         
-        # 4. <mol> 토큰 ID 저장 (임베딩 주입 시 사용)
+        # 3. 토크나이저에 모든 토큰 추가
+        num_added_toks = self.llm_tokenizer.add_tokens(special_tokens_list)
+        logger.info(f"[Token Check] Added {num_added_toks} special tokens to tokenizer.")
+
+        # 4. 모델 임베딩 크기 조정 (Input Embedding)
+        new_vocab_size = len(self.llm_tokenizer)
+        logger.info(f"[DEBUG] Resizing Input Embeddings to {new_vocab_size}")
+        self.llm_model.resize_token_embeddings(new_vocab_size)
+        
+        # ==============================================================================
+        # [중요] 5. 출력 레이어(LM Head) 강제 리사이징 (이 부분이 핵심 해결책입니다)
+        # ==============================================================================
+        output_embeddings = self.llm_model.get_output_embeddings()
+        
+        if output_embeddings is not None and output_embeddings.weight.shape[0] != new_vocab_size:
+            logger.info(f"[DEBUG] Output embedding size mismatch! Input: {new_vocab_size}, Output: {output_embeddings.weight.shape[0]}")
+            logger.info("[DEBUG] Forcing resize of output embeddings (lm_head)...")
+            
+            # 새로운 출력 헤드 생성 (기존 가중치 복사)
+            new_lm_head = nn.Linear(
+                output_embeddings.in_features, 
+                new_vocab_size, 
+                bias=output_embeddings.bias is not None
+            ).to(self.llm_model.device).to(output_embeddings.weight.dtype)
+            
+            # 기존 가중치 복사
+            n_orig = output_embeddings.weight.shape[0]
+            with torch.no_grad():
+                new_lm_head.weight[:n_orig, :] = output_embeddings.weight
+                if output_embeddings.bias is not None:
+                    new_lm_head.bias[:n_orig] = output_embeddings.bias
+            
+            # 모델에 새로운 헤드 설정
+            self.llm_model.set_output_embeddings(new_lm_head)
+            logger.info(f"[DEBUG] Output embedding force resize complete. New shape: {new_lm_head.weight.shape}")
+        else:
+            logger.info(f"[DEBUG] Output embedding size is correct: {output_embeddings.weight.shape[0]}")
+        # ==============================================================================
+
+        # 6. <mol> 토큰 ID 저장
         self.mol_token_id = self.llm_tokenizer.convert_tokens_to_ids(added_tokens.MOL_EMBEDDING)[0]
+
+        # 7. SELFIES Token ID 저장
+        if getattr(self.args, "add_selfies_tokens", False) and hasattr(self.llm_tokenizer, "added_selfies_tokens"):
+            self.llm_tokenizer.selfies_token_ids = [
+                self.llm_tokenizer.convert_tokens_to_ids(token)
+                for token in self.llm_tokenizer.added_selfies_tokens
+            ]
     
     # [Stage 1 에러 수정] 그래프가 None일 경우 예외 처리 추가된 버전
     def inject_graph_embeds2input_embeds(self, input_embeds, is_mol_token, graphs):
