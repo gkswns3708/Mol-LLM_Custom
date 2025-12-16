@@ -11,7 +11,7 @@ import numpy as np
 logger = logging.get_logger(__name__)
 
 # LLaDA MASK Token ID
-MASK_TOKEN_ID = 126336
+MASK_TOKEN_ID = 126336 # <|mdm_mask|> id
 
 class Blip2LLaDA(Blip2OPT):
     def __init__(self, args):
@@ -72,7 +72,7 @@ class Blip2LLaDA(Blip2OPT):
             added_tokens.IUPAC + 
             added_tokens.MOLFORMULA
         )
-
+        
         # 2. 토크나이저에 추가
         num_added_toks = self.llm_tokenizer.add_tokens(special_tokens_list)
         if num_added_toks > 0:

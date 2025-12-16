@@ -802,11 +802,11 @@ class Blip2Stage3(pl.LightningModule):
             print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name}")
             
             # 1. Prompt 검증 (가장 중요: 끝부분 확인)
-            print(f"Prompt (Raw String)   : {clean_prompt[-50:]}") # 뒤쪽 50자만 확인해서 [INST]가 짤렸는지 확인
+            print(f"Prompt (Raw String)   : {clean_prompt[-50:]}") 
             
-            # 2. Tokenizer 검증
-            input_ids = self.blip2model.llm_tokenizer(clean_prompt, add_special_tokens=False)['input_ids']
-            print(f"Prompt (Last 5 Tokens): {input_ids[-5:]}") 
+            # 2. Tokenizer 검증 (변수명 수정됨!)
+            check_ids = self.blip2model.llm_tokenizer(clean_prompt, add_special_tokens=False)['input_ids']
+            print(f"Prompt (Last 5 Tokens): {check_ids[-5:]}") 
             # 여기서 마지막 토큰들이 [ ... , INST, ] 인지 확인해야 함.
             
             # 3. Graph Data 통계 검증
@@ -815,14 +815,12 @@ class Blip2Stage3(pl.LightningModule):
                 has_nan = torch.isnan(g.x).any() or torch.isnan(g.edge_index).any()
                 print(f"--- Graph Data ---")
                 print(f"  x shape: {list(g.x.shape)} | Has NaN: {has_nan}")
-                # 값이 너무 튀는지 확인 (GNN 발산 체크)
                 print(f"  x stats: min={g.x.min():.2f}, max={g.x.max():.2f}, mean={g.x.mean():.2f}") 
 
             # 4. 정답 및 예측 비교
             print(f"Target            : {targets[k]}")
             print(f"Prediction        : {predictions[k]}")
             
-            # 5. 예측이 이상할 경우 모델 상태 체크 (옵션)
             if predictions[k].strip() == "]":
                 print("  [ALERT] Prediction is only closing bracket. Check prompt formatting!")
 
@@ -838,6 +836,7 @@ class Blip2Stage3(pl.LightningModule):
         self.list_logs["input_mol_strings"].extend(input_mol_strings)
 
         # address forward loss
+        # 여기서 
         batch_size = input_ids.shape[0]
 
         new_data_weight = batch_size / (self.total_seen_data_size + batch_size)
@@ -1568,31 +1567,29 @@ def concatenated_forward(
 
     We do this to avoid doing two forward passes, because it's faster for FSDP.
     """
+    is_llada = (config is not None) and hasattr(config, "llm_model") and ("llada" in config.llm_model.lower())
 
-    # 기본은 AR 경로: log-prob 기반
-    all_logps = get_batch_logps(
-        logits=all_logits,
-        labels=all_labels,
-        average_log_prob=True,
-        is_encoder_decoder=False,
-        label_pad_token_id=label_pad_token_id,
-    )
+    if is_llada:
+        # [LLaDA Path]
+        # Diffusion 모델은 get_batch_logps(AR 방식)를 수행하지 않고 instance_loss를 바로 사용
+        if instance_loss is None:
+            raise ValueError("LLaDA requires instance_loss for MolPO in concatenated_forward().")
+        
+        # Loss는 낮을수록 좋으므로, Reward 관점에서는 (-)를 붙여야 함
+        all_logps = -instance_loss 
+    else:
+        # [Autoregressive Path]
+        # 기존 모델들은 Log Probability 계산 (Shift 연산 포함)
+        all_logps = get_batch_logps(
+            logits=all_logits,
+            labels=all_labels,
+            average_log_prob=True,
+            is_encoder_decoder=False,
+            label_pad_token_id=label_pad_token_id,
+        )
 
     len_tuple = all_labels.shape[0] // molpo_batch_division
     sft_instance_loss = instance_loss[:len_tuple] if instance_loss is not None else None
-
-    # =========================
-    # LLaDA 분기 (최소 수정)
-    # =========================
-    is_llada = (config is not None) and hasattr(config, "llm_model") and ("llada" in config.llm_model.lower())
-    if is_llada:
-        if instance_loss is None:
-            raise ValueError("LLaDA requires instance_loss for MolPO in concatenated_forward().")
-
-        # LLaDA: diffusion loss는 낮을수록 좋음 → MolPO가 '높을수록 좋음'을 가정하므로 부호 반전
-        # 즉, chosen_logps/rejected_logps 자리에 사실상 score(-loss)를 넣는다.
-        all_logps = -instance_loss  # (B,) or (B,)
-
     # =========================
     # 아래는 원본 구조/변수명 최대한 유지
     # =========================

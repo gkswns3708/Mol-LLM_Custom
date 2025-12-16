@@ -647,13 +647,11 @@ def prepare_data_instance(
             "<|start_header_id|>assistant<|end_header_id|>\n\n"
         )
         # Target EOS: <|end_of_text|>
-        formatted_target_text = data_instance["label"] + "<|end_of_text|>"
+        formatted_target_text = data_instance["label"] + "<|eot_id|>"
         
     else:
         # === Mistral Format (Default) ===
-        # <s>[INST] System \n\n User [/INST]
         formatted_prompt_text = "<s>[INST] " + system_prompt + " \n\n" + input_prompt + " [/INST] "
-        # Target EOS: </s>
         formatted_target_text = data_instance["label"] + " </s>"
 
     raw_task = data_instance["task_subtask_pair"]
@@ -726,9 +724,7 @@ if __name__ == "__main__":
 
         # [수정] 이미 처리된 데이터셋(Train Split 기준)이 존재하면 건너뛰기
         check_train_path = f"{raw_data_root}/{task_name}_subtask-{subtask_idx}_train"
-        check_val_path = f"{raw_data_root}/{task_name}_subtask-{subtask_idx}_val"
-        check_test_path = f"{raw_data_root}/{task_name}_subtask-{subtask_idx}_test"
-        if os.path.exists(check_train_path) and os.path.exists(check_val_path) and os.path.exists(check_test_path):
+        if os.path.exists(check_train_path):
             # print(f"[Skip] Dataset already exists: {check_train_path}") # 로그가 너무 많으면 주석 처리
             continue
         try:

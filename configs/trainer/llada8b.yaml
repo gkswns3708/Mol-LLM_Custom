@@ -32,7 +32,7 @@ logging_dir: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA
 llava_pretraining: 0
 second_stage_start_epoch: 0
 num_workers: 0
-skip_sanity_check: false
+skip_sanity_check: False 
 
 # accumulate_grad_batches: 11
 # total_batch_size: 1024

@@ -1,7 +1,7 @@
 defaults:
   - data: multi_task_stage1
   - gnn: gine_tokengt
-  - trainer: mistral7b_80gb
+  - trainer: llada8b
 
 # General settings
 filename: mol_llada_lora_run
