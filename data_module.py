@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 import os
-
+import copy
 from torch.utils.data import DataLoader
 from pytorch_lightning import LightningDataModule
 
@@ -49,17 +49,23 @@ class Stage3DM(LightningDataModule):
 
 
         # ! Padding 어떤건지 확인하기
-        tokenizer.padding_side = "left"
+        tokenizer.padding_side = self.args.padding
+        train_tokenizer = copy.deepcopy(tokenizer)
+        train_tokenizer.padding_side = "right"
+        
         self.train_collator = DataCollator(
-            tokenizer=tokenizer,
+            tokenizer=train_tokenizer, # 수정된 토크나이저 사용
             padding=True,
             max_length=args.max_length,
             return_tensors="pt",
             train=True,
             args=args,
         )
+        eval_tokenizer = copy.deepcopy(tokenizer)
+        eval_tokenizer.padding_side = "left"
+        
         self.eval_collator = DataCollator(
-            tokenizer=tokenizer,
+            tokenizer=eval_tokenizer, # 수정된 토크나이저 사용
             padding=True,
             max_length=args.max_length,
             return_tensors="pt",
@@ -135,7 +141,7 @@ def get_dataset(split, tokenizer, args):
             dataset = dataset.filter(lambda x: x["task"] in args.tasks)
             dataset.save_to_disk(taged_preprocessed_data_path)
         else:
-            raise ValueError(f"preprocessed data not found: {preprocessed_data_path}")
+            raise ValueError(f"preprocessed data not found: {taged_preprocessed_data_path}")
     else:
         dataset = load_from_disk(preprocessed_data_path)
 

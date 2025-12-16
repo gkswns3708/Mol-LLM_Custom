@@ -8,7 +8,7 @@ projector_type: qformer
 
 llm_model: "GSAI-ML/LLaDA-8B-Instruct"
 tune_llm: lora
-peft_config: lora_config_llada.json
+peft_config: "Mol-LLM_Custom/lora_config_llada.json"
 peft_dir: ""
 load_in_8bit: false
 lora_r: 64
@@ -16,7 +16,7 @@ lora_alpha: 32
 lora_dropout: 0.1
 selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt
 add_selfies_tokens: true
-prompt: "[START_I_SMILES]{}[END_I_SMILES]"
+prompt: "[START_I_SMILES]{}[END_I_SMILES]" #! 이거 안 쓰기는 하는데, 일단 사용 중
 
 num_beams: 1
 
@@ -30,24 +30,24 @@ every_n_epochs: 1
 task: null
 logging_dir: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA
 llava_pretraining: 0
-second_stage_start_epoch: 4
+second_stage_start_epoch: 0
 num_workers: 0
 skip_sanity_check: false
 
 # accumulate_grad_batches: 11
-# total_batch_size: 512
+# total_batch_size: 1024
 # batch_size: 8
 # inference_batch_size: 11
-total_batch_size: 1
-batch_size: 1
-inference_batch_size: 1
+total_batch_size: 1024
+batch_size: 6
+inference_batch_size: 11
 
 truncation: 1
 padding: max_length
-max_length: 512
-inference_max_length: 512
+max_length: 384
+inference_max_length: 384
 
-gen_max_len: 256
+gen_max_len: 192
 min_len: 8
 
 apply_sequence_packing: false
@@ -70,7 +70,7 @@ test_on_trainset: false
 mol_representation: string+graph
 log_attn_score: true
 eval_modality_util: null
-tune_gnn: true
+tune_gnn: false
 
 # molpo
 train_molpo: false
@@ -82,3 +82,7 @@ selfies_enumeration: false
 isomericSmiles: false
 canonical: false
 allHsExplicit: false
+
+
+# Special LLaDA Configuration
+remasking_strategy: 'random' # low_confidence도 존재.

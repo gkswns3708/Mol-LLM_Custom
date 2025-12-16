@@ -573,8 +573,14 @@ def convert_logit2binary_prob(logits, predictions, tokenizer):
     True_token_id = tokenizer.encode("True")[-1]
     False_token_id = tokenizer.encode("False")[-1]
 
-    bos_token, eos_token = added_tokens.BOOL
-    boolean_bos_id = tokenizer.encode([bos_token])[-1]
+    bos_token, eos_token = added_tokens.BOOL    
+    # [수정] LLaDA와 기존 모델(Mistral) 모두 지원하도록 예외 처리 추가
+    try:
+        # 1. 표준 방식 (LLaDA, Llama-3 등 최신 토크나이저용: 문자열 입력)
+        boolean_bos_id = tokenizer.encode(bos_token)[-1]
+    except TypeError:
+        # 2. 구형/특수 방식 (기존 코드 호환용: 리스트 입력)
+        boolean_bos_id = tokenizer.encode([bos_token])[-1]
 
     prediction_position_ids = torch.zeros(logits.shape[:-1], dtype=torch.bool)
     is_using_prediction_position_ids = torch.zeros(

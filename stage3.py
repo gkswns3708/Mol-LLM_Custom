@@ -50,7 +50,7 @@ class MyDDPStrategy(strategies.DDPStrategy):
         self.lightning_module.load_state_dict(checkpoint["state_dict"], strict=strict)
 
 
-@hydra.main(config_path="configs", config_name="test_CHJ.yaml", version_base=None)
+@hydra.main(config_path="configs", config_name="train_llada.yaml", version_base=None)
 def main(cfg):
     cfg = flatten_dictconfig(cfg)
     pl.seed_everything(cfg.seed)
@@ -178,7 +178,7 @@ def main(cfg):
 
     if cfg.mode in {"ft"}:
         trainer.fit(model, datamodule=dm, ckpt_path=cfg.ckpt_path)
-        # outputs = trainer.test(model, datamodule=dm)
+        outputs = trainer.test(model, datamodule=dm)
         assert "Training done"
     elif cfg.mode == "test":
         ckpt = torch.load(cfg.ckpt_path, map_location="cpu", weights_only=False)

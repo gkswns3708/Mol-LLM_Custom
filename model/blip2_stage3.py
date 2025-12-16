@@ -253,6 +253,7 @@ class Blip2Stage3(pl.LightningModule):
         tasks,
         is_train=True,
         molpo_batch_division=2,
+        config=None
     ):
         out = concatenated_forward(
             all_logits=logits,
@@ -260,6 +261,7 @@ class Blip2Stage3(pl.LightningModule):
             label_pad_token_id=-100,
             instance_loss=instance_loss,
             molpo_batch_division=molpo_batch_division,
+            config=config
         )
         sft_instance_loss = out["sft_instance_loss"]
 
@@ -423,6 +425,7 @@ class Blip2Stage3(pl.LightningModule):
                     tasks=tasks,
                     is_train=True,
                     molpo_batch_division=self.args.molpo_batch_division,
+                    config=self.args
                 )
             outputs.update(metrics)
 
@@ -794,34 +797,35 @@ class Blip2Stage3(pl.LightningModule):
 
         # 2. 배치 내 모든 샘플 순회
         for k, task_name in enumerate(tasks):
-            # [Pad] 토큰 제거
-            # clean_prompt = real_inference_prompts[k].replace(self.blip2model.llm_tokenizer.pad_token, "")
             clean_prompt = real_inference_prompts[k]
             
             print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name}")
-            print(f"Input Mol String  : {input_mol_strings[k]}")
             
-            # [추가] 그래프 데이터 상세 출력 (Node Feature, Edge Index 등)
+            # 1. Prompt 검증 (가장 중요: 끝부분 확인)
+            print(f"Prompt (Raw String)   : {clean_prompt[-50:]}") # 뒤쪽 50자만 확인해서 [INST]가 짤렸는지 확인
+            
+            # 2. Tokenizer 검증
+            input_ids = self.blip2model.llm_tokenizer(clean_prompt, add_special_tokens=False)['input_ids']
+            print(f"Prompt (Last 5 Tokens): {input_ids[-5:]}") 
+            # 여기서 마지막 토큰들이 [ ... , INST, ] 인지 확인해야 함.
+            
+            # 3. Graph Data 통계 검증
             if mol_graphs_list is not None and k < len(mol_graphs_list):
                 g = mol_graphs_list[k]
+                has_nan = torch.isnan(g.x).any() or torch.isnan(g.edge_index).any()
                 print(f"--- Graph Data ---")
-                print(f"  x (shape={list(g.x.shape)}): {g.x.tolist()}") # 노드 피처 값 출력
-                print(f"  edge_index (shape={list(g.edge_index.shape)}): {g.edge_index.tolist()}") # 엣지 연결 정보 출력
-                if hasattr(g, 'edge_attr') and g.edge_attr is not None:
-                    print(f"  edge_attr (shape={list(g.edge_attr.shape)}): {g.edge_attr.tolist()}")
+                print(f"  x shape: {list(g.x.shape)} | Has NaN: {has_nan}")
+                # 값이 너무 튀는지 확인 (GNN 발산 체크)
+                print(f"  x stats: min={g.x.min():.2f}, max={g.x.max():.2f}, mean={g.x.mean():.2f}") 
 
-            # [추가] Additional Graph (Reagent prediction 등) 데이터 상세 출력
-            if additional_graphs_list is not None and k < len(additional_graphs_list):
-                g_add = additional_graphs_list[k]
-                print(f"--- Additional Graph Data ---")
-                print(f"  x (shape={list(g_add.x.shape)}): {g_add.x.tolist()}")
-                print(f"  edge_index (shape={list(g_add.edge_index.shape)}): {g_add.edge_index.tolist()}")
-                if hasattr(g_add, 'edge_attr') and g_add.edge_attr is not None:
-                    print(f"  edge_attr (shape={list(g_add.edge_attr.shape)}): {g_add.edge_attr.tolist()}")
-
-            print(f"Prompt (Inference): {clean_prompt}")
+            # 4. 정답 및 예측 비교
             print(f"Target            : {targets[k]}")
             print(f"Prediction        : {predictions[k]}")
+            
+            # 5. 예측이 이상할 경우 모델 상태 체크 (옵션)
+            if predictions[k].strip() == "]":
+                print("  [ALERT] Prediction is only closing bracket. Check prompt formatting!")
+
             print("-" * 80)
 
         # ================= [수정된 전체 출력 코드 끝] =================
@@ -1480,18 +1484,92 @@ def get_batch_logps(
         return (per_token_logps * loss_mask).sum(-1)
 
 
+# def concatenated_forward(
+#     all_logits: torch.FloatTensor,
+#     all_labels: torch.LongTensor,
+#     instance_loss: torch.FloatTensor = None,
+#     label_pad_token_id: int = -100,
+#     molpo_batch_division: int = 2,
+#     config=None
+# ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+#     """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
+
+#     We do this to avoid doing two forward passes, because it's faster for FSDP.
+#     """
+
+#     all_logps = get_batch_logps(
+#         logits=all_logits,
+#         labels=all_labels,
+#         average_log_prob=True,
+#         is_encoder_decoder=False,
+#         label_pad_token_id=label_pad_token_id,
+#     )
+#     len_tuple = all_labels.shape[0] // molpo_batch_division
+
+#     sft_instance_loss = instance_loss[:len_tuple]
+
+#     if 'llada' in config.llm_model.lower():
+#         ...
+        
+    
+#     if molpo_batch_division == 2:
+#         chosen_logps = all_logps[:len_tuple]
+#         chosen_labels = all_labels[:len_tuple]
+#         chosen_loss_mask = chosen_labels[:, 1:].clone() != -100
+
+#         rejected_logps = all_logps[len_tuple:]
+#         rejected_labels = all_labels[len_tuple:]
+#         rejected_loss_mask = rejected_labels[:, 1:].clone() != -100
+
+#         out_dict = {
+#             "sft_instance_loss": sft_instance_loss,
+#             "chosen_logps": chosen_logps,
+#             "chosen_loss_mask": chosen_loss_mask,
+#             "rejected_logps": rejected_logps,
+#             "rejected_loss_mask": rejected_loss_mask,
+#         }
+#     elif molpo_batch_division == 3:
+#         sft_logps = all_logps[:len_tuple]
+#         sft_labels = all_labels[:len_tuple]
+#         sft_loss_mask = sft_labels[:, 1:].clone() != -100
+
+#         chosen_logps = all_logps[len_tuple : 2 * len_tuple]
+#         chosen_labels = all_labels[len_tuple : 2 * len_tuple]
+#         chosen_loss_mask = chosen_labels[:, 1:].clone() != -100
+
+#         rejected_logps = all_logps[2 * len_tuple :]
+#         rejected_labels = all_labels[2 * len_tuple :]
+#         rejected_loss_mask = rejected_labels[:, 1:].clone() != -100
+
+#         out_dict = {
+#             "sft_instance_loss": sft_instance_loss,
+#             "sft_logps": sft_logps,
+#             "sft_loss_mask": sft_loss_mask,
+#             "chosen_logps": chosen_logps,
+#             "chosen_loss_mask": chosen_loss_mask,
+#             "rejected_logps": rejected_logps,
+#             "rejected_loss_mask": rejected_loss_mask,
+#         }
+
+#     return out_dict
+
+from typing import Tuple
+import torch
+
 def concatenated_forward(
     all_logits: torch.FloatTensor,
     all_labels: torch.LongTensor,
     instance_loss: torch.FloatTensor = None,
     label_pad_token_id: int = -100,
     molpo_batch_division: int = 2,
+    config=None
 ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
     """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
     We do this to avoid doing two forward passes, because it's faster for FSDP.
     """
 
+    # 기본은 AR 경로: log-prob 기반
     all_logps = get_batch_logps(
         logits=all_logits,
         labels=all_labels,
@@ -1499,18 +1577,39 @@ def concatenated_forward(
         is_encoder_decoder=False,
         label_pad_token_id=label_pad_token_id,
     )
+
     len_tuple = all_labels.shape[0] // molpo_batch_division
+    sft_instance_loss = instance_loss[:len_tuple] if instance_loss is not None else None
 
-    sft_instance_loss = instance_loss[:len_tuple]
+    # =========================
+    # LLaDA 분기 (최소 수정)
+    # =========================
+    is_llada = (config is not None) and hasattr(config, "llm_model") and ("llada" in config.llm_model.lower())
+    if is_llada:
+        if instance_loss is None:
+            raise ValueError("LLaDA requires instance_loss for MolPO in concatenated_forward().")
 
+        # LLaDA: diffusion loss는 낮을수록 좋음 → MolPO가 '높을수록 좋음'을 가정하므로 부호 반전
+        # 즉, chosen_logps/rejected_logps 자리에 사실상 score(-loss)를 넣는다.
+        all_logps = -instance_loss  # (B,) or (B,)
+
+    # =========================
+    # 아래는 원본 구조/변수명 최대한 유지
+    # =========================
     if molpo_batch_division == 2:
         chosen_logps = all_logps[:len_tuple]
         chosen_labels = all_labels[:len_tuple]
-        chosen_loss_mask = chosen_labels[:, 1:].clone() != -100
 
         rejected_logps = all_logps[len_tuple:]
         rejected_labels = all_labels[len_tuple:]
-        rejected_loss_mask = rejected_labels[:, 1:].clone() != -100
+
+        # AR은 shift 마스크(기존 유지), LLaDA는 shift 없이 labels 기준이 더 자연스러움
+        if is_llada:
+            chosen_loss_mask = chosen_labels.clone() != label_pad_token_id
+            rejected_loss_mask = rejected_labels.clone() != label_pad_token_id
+        else:
+            chosen_loss_mask = chosen_labels[:, 1:].clone() != label_pad_token_id
+            rejected_loss_mask = rejected_labels[:, 1:].clone() != label_pad_token_id
 
         out_dict = {
             "sft_instance_loss": sft_instance_loss,
@@ -1519,18 +1618,25 @@ def concatenated_forward(
             "rejected_logps": rejected_logps,
             "rejected_loss_mask": rejected_loss_mask,
         }
+
     elif molpo_batch_division == 3:
         sft_logps = all_logps[:len_tuple]
         sft_labels = all_labels[:len_tuple]
-        sft_loss_mask = sft_labels[:, 1:].clone() != -100
 
         chosen_logps = all_logps[len_tuple : 2 * len_tuple]
         chosen_labels = all_labels[len_tuple : 2 * len_tuple]
-        chosen_loss_mask = chosen_labels[:, 1:].clone() != -100
 
         rejected_logps = all_logps[2 * len_tuple :]
         rejected_labels = all_labels[2 * len_tuple :]
-        rejected_loss_mask = rejected_labels[:, 1:].clone() != -100
+
+        if is_llada:
+            sft_loss_mask = sft_labels.clone() != label_pad_token_id
+            chosen_loss_mask = chosen_labels.clone() != label_pad_token_id
+            rejected_loss_mask = rejected_labels.clone() != label_pad_token_id
+        else:
+            sft_loss_mask = sft_labels[:, 1:].clone() != label_pad_token_id
+            chosen_loss_mask = chosen_labels[:, 1:].clone() != label_pad_token_id
+            rejected_loss_mask = rejected_labels[:, 1:].clone() != label_pad_token_id
 
         out_dict = {
             "sft_instance_loss": sft_instance_loss,
@@ -1541,5 +1647,7 @@ def concatenated_forward(
             "rejected_logps": rejected_logps,
             "rejected_loss_mask": rejected_loss_mask,
         }
+    else:
+        raise ValueError(f"Invalid molpo_batch_division={molpo_batch_division}")
 
     return out_dict
