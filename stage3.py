@@ -160,6 +160,7 @@ def main(cfg):
         "max_epochs": cfg.max_epochs,
         "val_check_interval": cfg.val_check_interval,
         "accumulate_grad_batches": cfg.accumulate_grad_batches,
+        "check_val_every_n_epoch": cfg.check_val_every_n_epoch, # 2epoch마다 validation 하도록 설정함.
         "log_every_n_steps": cfg.log_every_n_steps,
         "gradient_clip_val": cfg.gradient_clip_val,
     }
