@@ -32,7 +32,8 @@ logging_dir: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA
 llava_pretraining: 0
 second_stage_start_epoch: 0
 num_workers: 0
-skip_sanity_check: True 
+skip_sanity_check: false 
+num_sanity_val_steps: 10
 
 # total_batch_size: 1024
 # batch_size: 8
@@ -62,7 +63,7 @@ warmup_lr: 0.00001
 warmup_epochs: 0.25
 scheduler: linear_warmup_cosine_lr
 optimizer: adamw
-log_every_n_steps: 50
+log_every_n_steps: 50 # 
 gradient_clip_val: 0.5
 
 # 

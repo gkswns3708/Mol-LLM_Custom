@@ -163,6 +163,7 @@ def main(cfg):
         "check_val_every_n_epoch": cfg.check_val_every_n_epoch, # 2epoch마다 validation 하도록 설정함.
         "log_every_n_steps": cfg.log_every_n_steps,
         "gradient_clip_val": cfg.gradient_clip_val,
+        "num_sanity_val_steps": cfg.num_sanity_val_steps
     }
 
     if cfg.skip_sanity_check:
