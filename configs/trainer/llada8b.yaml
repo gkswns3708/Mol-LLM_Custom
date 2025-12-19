@@ -32,7 +32,7 @@ logging_dir: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA
 llava_pretraining: 0
 second_stage_start_epoch: 0
 num_workers: 0
-skip_sanity_check: false 
+skip_sanity_check: true 
 num_sanity_val_steps: 10
 
 # total_batch_size: 1024
@@ -42,7 +42,7 @@ accumulate_grad_batches: 11
 total_batch_size: 1024
 batch_size: 4
 # Inference Conficuation
-inference_batch_size: 11
+inference_batch_size: 8
 sampling_steps: 16 #! 추후 최종적인 Metric 계산시에는 sequence 길이로 수정 예정
 
 truncation: 1
@@ -67,8 +67,8 @@ log_every_n_steps: 50 #
 gradient_clip_val: 0.5
 
 # 
-val_check_interval: 1.0
-check_val_every_n_epoch: 2
+val_check_interval: 0.5
+check_val_every_n_epoch: 1
 test_on_trainset: false
 
 # multimodal training
