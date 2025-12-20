@@ -33,7 +33,16 @@ torch.set_float32_matmul_precision(
     "medium"
 )  # can be medium (bfloat16), high (tensorfloat32), highest (float32)
 
+class SaveInitCheckpointCallback(Callback):
+    def __init__(self, filename="initial_checkpoint.ckpt"):
+        self.filename = filename
 
+    def on_fit_start(self, trainer, pl_module):
+        # 저장 경로 생성
+        save_path = os.path.join(trainer.logger.log_dir, self.filename)
+        print(f"\n[INFO] Saving initial checkpoint before training/validation to: {save_path}")
+        trainer.save_checkpoint(save_path)
+        
 class MyDDPStrategy(strategies.DDPStrategy):
     def __init__(
         self,
@@ -58,7 +67,55 @@ def main(cfg):
     pl.seed_everything(cfg.seed)
     model = Blip2Stage3(cfg)
     print("total params:", sum(p.numel() for p in model.parameters()))
-
+    
+    
+    # [디버깅 코드 시작] 학습 가능한 파라미터 상세 분석
+    print("\n" + "="*80)
+    print("[DEBUG] Inspecting Trainable Parameters")
+    
+    trainable_params = 0
+    all_params = 0
+    lora_modules = {}
+    
+    print(f"{'Module Name':<60} | {'Shape':<20} | {'Trainable'}")
+    print("-" * 95)
+    
+    for name, param in model.named_parameters():
+        all_params += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+            # LoRA 모듈인지 확인 (이름에 lora가 포함되는지)
+            if "lora" in name:
+                module_name = name.split(".lora_")[0] # 모듈 이름만 추출
+                if module_name not in lora_modules:
+                    lora_modules[module_name] = 0
+                lora_modules[module_name] += param.numel()
+            
+            # 너무 길면 일부만 출력하거나 LoRA 관련만 출력
+            if "lora" in name or "Qformer" in name or "graph" in name:
+                print(f"{name:<60} | {str(list(param.shape)):<20} | True")
+    
+    print("-" * 95)
+    print(f"Total Params: {all_params:,}")
+    print(f"Trainable Params: {trainable_params:,} ({trainable_params/all_params:.2%})")
+    
+    if trainable_params < 10_000_000:
+        print("\n[WARNING] Trainable parameters are extremely low (< 10M).")
+        print("Possible causes:")
+        print("1. Q-Former is FROZEN. (Should be trainable in Stage 3?)")
+        print("2. LoRA target modules mismatch. Check 'lora_config_llada.json' vs Model Layer Names.")
+        
+    print("\n[LoRA Applied Modules Summary]")
+    if not lora_modules:
+        print("  No LoRA modules found! Check target_modules config.")
+    else:
+        for mod, count in list(lora_modules.items())[:5]: # 5개만 예시로 출력
+            print(f"  {mod}: {count:,} params")
+        print(f"  ... (Total {len(lora_modules)} modules applied)")
+    
+    print("="*80 + "\n")
+    # [디버깅 코드 끝]
+        
     # when resuming training, load the current epoch information and argparse to datamodule
     if cfg.ckpt_path is not None:
         ckpt = torch.load(cfg.ckpt_path, map_location="cpu", weights_only=False)
@@ -106,6 +163,7 @@ def main(cfg):
     print("="*50 + "\n")
     # [End] Dataloader Inspection Code
     callbacks = []
+    callbacks.append(SaveInitCheckpointCallback(filename="init_before_val.ckpt"))
     callbacks.append(
         ModelCheckpoint(
             dirpath=os.path.join(cfg.logging_dir, cfg.filename),
@@ -115,6 +173,7 @@ def main(cfg):
             save_top_k=-1,
         )
     )
+    
 
     if len(cfg.devices.split(",")) > 1:
         if cfg.strategy_name == "fsdp":
@@ -163,7 +222,8 @@ def main(cfg):
         "check_val_every_n_epoch": cfg.check_val_every_n_epoch, # 2epoch마다 validation 하도록 설정함.
         "log_every_n_steps": cfg.log_every_n_steps,
         "gradient_clip_val": cfg.gradient_clip_val,
-        "num_sanity_val_steps": cfg.num_sanity_val_steps
+        "num_sanity_val_steps": cfg.num_sanity_val_steps,
+        "limit_val_batches": cfg.limit_val_batches if hasattr(cfg, "limit_val_batches") else 1.0
     }
 
     if cfg.skip_sanity_check:

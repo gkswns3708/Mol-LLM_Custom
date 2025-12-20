@@ -795,6 +795,29 @@ class Blip2Stage3(pl.LightningModule):
             predictions=predictions,
             tokenizer=self.blip2model.llm_tokenizer,
         )
+        
+        # ================= [메모리 누수 방지 핵심 코드] =================
+        
+        # [2] 거대한 Logits 텐서 즉시 삭제 (GPU 메모리 해제)
+        # gen_logits가 probs 계산에 쓰였으므로 이제 필요 없습니다.
+        del gen_logits
+        if 'forward_logits' in locals() and forward_logits is not None:
+            del forward_logits
+            
+        # [3] Probs를 GPU 텐서에서 -> 가벼운 Python List(float)로 변환
+        # 이것을 안 하면 probs가 GPU 메모리를 계속 붙잡고 있게 됩니다.
+        if isinstance(probs, torch.Tensor):
+            probs = probs.detach().cpu().tolist()
+        elif isinstance(probs, list) and len(probs) > 0 and isinstance(probs[0], torch.Tensor):
+            # 리스트 안에 텐서가 들어있는 경우 하나씩 변환
+            probs = [p.detach().cpu().item() for p in probs]
+            
+        # =============================================================
+
+        prompts = [
+            p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in prompts
+        ]
+        
         prompts = [
             p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in prompts
         ]
@@ -830,18 +853,35 @@ class Blip2Stage3(pl.LightningModule):
 
         # 2. 배치 내 모든 샘플 순회
         for k, task_name in enumerate(tasks):
+            
+            # [추가됨] Task 별 출력 횟수 초기화
+            if task_name not in self.debug_task_counts:
+                self.debug_task_counts[task_name] = 0
+            
+            # [추가됨] 100개가 넘으면 출력하지 않고 건너뜀
+            if self.debug_task_counts[task_name] >= 100:
+                continue
+            
+            # [추가됨] 카운트 증가
+            self.debug_task_counts[task_name] += 1
+
             clean_prompt = real_inference_prompts[k]
             
-            print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name}")
+            # [수정됨] 현재 카운트 정보도 같이 출력하도록 수정
+            print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name} | Count: {self.debug_task_counts[task_name]}")
             
             # 1. Prompt 검증 (가장 중요: 끝부분 확인)
             print(f"Prompt (Raw String)   : {clean_prompt}") 
             
             # 2. Tokenizer 검증 (변수명 수정됨!)
             check_ids = self.blip2model.llm_tokenizer(clean_prompt, add_special_tokens=False)['input_ids']
-            print(f"Prompt : {check_ids}") 
-            # 여기서 마지막 토큰들이 [ ... , INST, ] 인지 확인해야 함.
-            
+            print(f"Prompt IDs : {check_ids}") 
+
+            # [추가됨] Tokenizer가 실제로 어떻게 자르는지 || 로 구분하여 확인
+            # convert_ids_to_tokens를 사용하여 ID를 토큰 문자열로 변환합니다.
+            tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(check_ids)
+            print(f"Tokens split by || : {' || '.join(tokens)}")
+
             # 3. Graph Data 통계 검증
             if mol_graphs_list is not None and k < len(mol_graphs_list):
                 g = mol_graphs_list[k]
@@ -853,13 +893,22 @@ class Blip2Stage3(pl.LightningModule):
             # 4. 정답 및 예측 비교
             print(f"Target            : {targets[k]}")
             print(f"Prediction        : {predictions[k]}")
-            
+            # [추가됨] Prediction 문자열에 대한 Token ID 및 분리 확인
+            try:
+                # 생성된 문자열을 다시 토크나이징하여 ID 추출
+                pred_ids = self.blip2model.llm_tokenizer(predictions[k], add_special_tokens=False)['input_ids']
+                print(f"Prediction IDs    : {pred_ids}")
+                
+                # ID를 다시 토큰으로 변환하여 || 로 구분 출력
+                pred_tokens_decoded = self.blip2model.llm_tokenizer.convert_ids_to_tokens(pred_ids)
+                print(f"Pred Tokens split : {' || '.join(pred_tokens_decoded)}")
+            except Exception as e:
+                print(f"  [ERROR] Failed to tokenize prediction: {e}")
+
             if predictions[k].strip() == "]":
                 print("  [ALERT] Prediction is only closing bracket. Check prompt formatting!")
 
             print("-" * 80)
-
-        # ================= [수정된 전체 출력 코드 끝] =================
 
         self.list_logs["predictions"].extend(predictions)
         self.list_logs["targets"].extend(targets)

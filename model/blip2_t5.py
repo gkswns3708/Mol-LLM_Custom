@@ -101,6 +101,8 @@ class Blip2T5(Blip2Base):
                 )
             else:
                 if self.args.peft_config:
+                    if self.args.debug:
+                        print(self.args.pref_config, "- self.args.peft_config")
                     peft_config = LoraConfig(
                         **LoraConfig.from_json_file(self.args.peft_config)
                     )

@@ -239,9 +239,12 @@ class Blip2OPT(Blip2Base):
                 )
             else:
                 if self.args.peft_config:
+                    if self.args.debug:
+                        print(self.args.peft_config, "- self.args.peft_config")
                     peft_config = LoraConfig(
                         **LoraConfig.from_json_file(self.args.peft_config)
                     )
+                    print(peft_config, "- peft_config")
                 else:
                     peft_config = LoraConfig(
                         target_modules=self.get_lora_target_modules(),
