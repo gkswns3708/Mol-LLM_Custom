@@ -625,7 +625,11 @@ class Blip2Stage3(pl.LightningModule):
                             {f"parameters/{name}": val}, step=current_step
                         )
 
-    def evaluation_step(self, batch, batch_idx, dataloader_idx, mode="val"):        
+    def evaluation_step(self, batch, batch_idx, dataloader_idx, mode="val"):
+        # ----------------------------------------------------------------------
+        # [Step 1] 초기 데이터 및 변수 설정
+        # ----------------------------------------------------------------------
+        # Graph 데이터 분리
         if "graph" in self.args.mol_representation:
             graphs = batch["graphs"]
             additional_graphs = batch["additional_graphs"]
@@ -635,26 +639,28 @@ class Blip2Stage3(pl.LightningModule):
             additional_graphs = None
             is_mol_token = None
 
-        if batch_idx == 0 & self.args.custom_log : 
+        # 변수 안전 초기화 (UnboundLocalError 방지)
+        gen_logits = None
+        forward_logits = None
+        attentions = None
+        
+        # ----------------------------------------------------------------------
+        # [Step 2] 디버깅 로그 출력 (첫 번째 배치만)
+        # ----------------------------------------------------------------------
+        if batch_idx == 0 and self.args.custom_log: 
             print(f"\n{'='*20} [DEBUG: Input Token Analysis] {'='*20}")
             tokenizer = self.blip2model.llm_tokenizer
             input_ids_batch = batch.prompt_input_ids
             
-            # 배치 내 샘플 순회 (최대 2개까지만)
             for k in range(min(2, len(input_ids_batch))):
                 ids = input_ids_batch[k]
-                
-                # A. Raw Token IDs (모델이 보는 실제 숫자)
                 print(f"\n[Sample {k}] Input IDs (Length: {len(ids)}):")
                 print(f"{ids.tolist()}")
                 
-                # B. Token-wise Decoding (각 ID가 어떤 문자열 조각인지 확인)
-                # 이 부분이 가장 중요합니다. 토큰이 분리되어 있다면 여기서 보입니다.
                 tokens = tokenizer.convert_ids_to_tokens(ids)
                 print(f"[Sample {k}] Token-wise List:")
                 print(tokens)
                 
-                # C. Full Decoding (사람이 읽는 문장)
                 decoded_text = tokenizer.decode(ids, skip_special_tokens=False)
                 print(f"[Sample {k}] Full Decoded String:")
                 print(decoded_text)
@@ -663,6 +669,9 @@ class Blip2Stage3(pl.LightningModule):
         
         is_llada = "llada" in self.args.llm_model.lower()
         
+        # ----------------------------------------------------------------------
+        # [Step 3] Generation (추론) - 메모리 절약을 위해 no_grad 필수
+        # ----------------------------------------------------------------------
         gen_kwargs = {
             "graphs": (graphs, additional_graphs),
             "input_ids": batch.prompt_input_ids,
@@ -672,100 +681,134 @@ class Blip2Stage3(pl.LightningModule):
         }
         
         if is_llada:
-            # [LLaDA 전용 인자]
-            # LLaDA는 num_beams, min_length 등이 필요 없고, 대신 sampling step이 중요합니다.
-            # config에 sampling_steps가 있다고 가정합니다 (없으면 기본값 64 등 사용)
+            # LLaDA 전용 옵션
             gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64) 
-            gen_kwargs["gen_length"] = self.gen_max_len # LLaDA는 고정 길이 생성이 일반적임
+            gen_kwargs["gen_length"] = self.gen_max_len
             gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "low_confidence")
         else:
-            # [기존 Autoregressive 모델 전용 인자]
+            # AR 모델 전용 옵션
             gen_kwargs["num_beams"] = self.num_beams
             gen_kwargs["min_length"] = self.min_len
             gen_kwargs["output_attentions"] = self.args.log_attn_score
         
-        gen_outputs = self.blip2model.generate(**gen_kwargs)
+        # Generation 실행
+        with torch.no_grad():
+            gen_outputs = self.blip2model.generate(**gen_kwargs)
         
-        # LLaDA의 경우 gen_outputs 구조가 다를 수 있으므로 체크 필요
-        # 보통 HuggingFace generate는 ModelOutput 객체를 반환하거나 Tensor를 반환함
+        # Logits 안전하게 추출
         if hasattr(gen_outputs, "logits"):
             gen_logits = gen_outputs.logits
         else:
-            # LLaDA generate가 텍스트만 뱉거나 logits를 안 주는 경우에 대한 예외처리
-            # 평가만 할 때는 logits가 없어도 되지만, 밑에서 binary_prob 계산할 때 필요할 수 있음
             gen_logits = None 
 
         gen_labels = batch.gen_labels
-        # Forward Loss 
-        forward_outputs = self.blip2model(batch)
-
+        
+        # ----------------------------------------------------------------------
+        # [Step 4] Forward Pass (Loss 계산)
+        # ----------------------------------------------------------------------
+        with torch.no_grad():
+            forward_outputs = self.blip2model(batch)
+        
+        # 모델 타입별 Output 처리
         if is_llada:
-            # LLaDA는 내부적으로 Diffusion Loss를 계산하여 반환함
-            # forward_outputs가 딕셔너리인지, 튜플인지 모델 구현에 따라 다름 (여기선 dict 가정)
             if isinstance(forward_outputs, dict):
                 forward_loss = forward_outputs.get("loss")
-                forward_logits = forward_outputs.get("logits", None) # 디버깅용
+                forward_logits = forward_outputs.get("logits", None)
                 
-                # Instance loss 처리
                 if "instance_loss" in forward_outputs:
                     forward_instance_loss = forward_outputs["instance_loss"]
                 else:
-                    # instance_loss가 없으면 배치 평균 loss를 확장해서 사용
                     forward_instance_loss = torch.full(
                         (batch.prompt_input_ids.shape[0],), 
                         forward_loss.item(), 
                         device=self.device
                     )
             else:
-                # Output이 단순 Loss scalar인 경우 (드문 케이스)
+                # 딕셔너리가 아닌 경우 (Loss 스칼라만 반환된 경우)
                 forward_loss = forward_outputs
                 forward_instance_loss = torch.full(
                         (batch.prompt_input_ids.shape[0],), 
                         forward_loss.item(), 
                         device=self.device
                     )
-                forward_logits = None
-                    
         else:
-            # 기존 Autoregressive 모델 (OPT, Llama 등)은 Shift 해서 Loss 재계산
+            # Autoregressive 모델 처리
+            if isinstance(forward_outputs, dict) and "logits" in forward_outputs:
+                 forward_logits = forward_outputs["logits"]
+            
+            # forward_logits가 없으면 outputs에서 get 시도
+            logits_to_use = forward_logits if forward_logits is not None else forward_outputs.get("logits")
+            
             forward_loss_dict = get_instance_loss(
-                logits=forward_logits, labels=forward_labels
+                logits=logits_to_use, 
+                labels=batch.labels
             )
             forward_instance_loss = forward_loss_dict["instance_loss"]
             forward_loss = forward_loss_dict["loss"]
 
+        # ----------------------------------------------------------------------
+        # [Step 5] MolPO Metrics 계산 (메모리 누수 방지 로직 적용)
+        # ----------------------------------------------------------------------
+        metrics = {}
         if self.args.eval_molpo:
             len_tuple = gen_labels.shape[0] // self.args.molpo_batch_division
             tasks = [id2task(task_id.item()) for task_id in batch.tasks][:len_tuple]
 
             compute_loss_context_manager = torch.amp.autocast
-            with compute_loss_context_manager(device_type="cuda"):
-                forward_loss, metrics = self.get_total_molpo_loss(
-                    logits=forward_logits,
-                    labels=batch.labels,
-                    molpo_labels=batch.molpo_labels,
-                    tasks=tasks,
-                    instance_loss=forward_instance_loss,
-                    is_train=False,
-                    molpo_batch_division=self.args.molpo_batch_division,
-                )
+            
+            # MolPO Loss 계산
+            with torch.no_grad():
+                with compute_loss_context_manager(device_type="cuda"):
+                    _, raw_metrics = self.get_total_molpo_loss(
+                        logits=forward_logits,
+                        labels=batch.labels,
+                        molpo_labels=batch.molpo_labels,
+                        tasks=tasks,
+                        instance_loss=forward_instance_loss,
+                        is_train=False,
+                        molpo_batch_division=self.args.molpo_batch_division,
+                        config=self.args
+                    )
+            
+            # [핵심] Metrics 내부의 모든 텐서를 스칼라(Python float)로 변환
+            # 이렇게 해야 GPU 그래프가 끊기고 메모리가 해제됩니다.
+            for k, v in raw_metrics.items():
+                if isinstance(v, torch.Tensor):
+                    metrics[k] = v.item()
+                else:
+                    metrics[k] = v
 
-            gen_logits = gen_logits[:len_tuple]
+            # Visualization을 위한 Slicing (앞부분 데이터만 사용)
+            if gen_logits is not None:
+                gen_logits = gen_logits[:len_tuple]
+            
             gen_labels = gen_labels[:len_tuple]
             forward_instance_loss = forward_instance_loss[:len_tuple]
 
-            attentions = gen_outputs.attentions
+            if hasattr(gen_outputs, "attentions"):
+                attentions = gen_outputs.attentions
+            else:
+                attentions = None
+                
             predictions = gen_outputs.predictions[:len_tuple]
             prompt_input_ids = batch.prompt_input_ids[:len_tuple]
             input_ids = batch.input_ids[:len_tuple]
         else:
             tasks = [id2task(task_id.item()) for task_id in batch.tasks]
-            attentions = gen_outputs.attentions
+            
+            if hasattr(gen_outputs, "attentions"):
+                attentions = gen_outputs.attentions
+            else:
+                attentions = None
+                
             predictions = gen_outputs.predictions
             prompt_input_ids = batch.prompt_input_ids
             input_ids = batch.input_ids
 
-        if self.args.log_attn_score:
+        # ----------------------------------------------------------------------
+        # [Step 6] Attention Score Logging (옵션)
+        # ----------------------------------------------------------------------
+        if self.args.log_attn_score and attentions is not None:
             self.log_attn_score(
                 prompt_input_ids=prompt_input_ids,
                 mode=mode,
@@ -773,7 +816,9 @@ class Blip2Stage3(pl.LightningModule):
                 attentions=attentions,
             )
 
-        # address generation input and output for evaluation metric calculation
+        # ----------------------------------------------------------------------
+        # [Step 7] Decoding 및 Prediction 정리
+        # ----------------------------------------------------------------------
         prompts = self.blip2model.llm_tokenizer.batch_decode(
             input_ids, skip_special_tokens=False
         )
@@ -790,34 +835,31 @@ class Blip2Stage3(pl.LightningModule):
             t.replace(self.blip2model.llm_tokenizer.pad_token, "") for t in targets
         ]
 
-        probs = convert_logit2binary_prob(
-            logits=gen_logits,
-            predictions=predictions,
-            tokenizer=self.blip2model.llm_tokenizer,
-        )
+        # ----------------------------------------------------------------------
+        # [Step 8] Probs 계산 및 거대 텐서 즉시 삭제 (메모리 확보 핵심)
+        # ----------------------------------------------------------------------
+        with torch.no_grad():
+            probs = convert_logit2binary_prob(
+                logits=gen_logits,
+                predictions=predictions,
+                tokenizer=self.blip2model.llm_tokenizer,
+            )
         
-        # ================= [메모리 누수 방지 핵심 코드] =================
-        
-        # [2] 거대한 Logits 텐서 즉시 삭제 (GPU 메모리 해제)
-        # gen_logits가 probs 계산에 쓰였으므로 이제 필요 없습니다.
+        # [중요] 사용 끝난 거대 텐서 즉시 삭제
         del gen_logits
-        if 'forward_logits' in locals() and forward_logits is not None:
+        del forward_outputs
+        if forward_logits is not None:
             del forward_logits
-            
-        # [3] Probs를 GPU 텐서에서 -> 가벼운 Python List(float)로 변환
-        # 이것을 안 하면 probs가 GPU 메모리를 계속 붙잡고 있게 됩니다.
-        if isinstance(probs, torch.Tensor):
-            probs = probs.detach().cpu().tolist()
-        elif isinstance(probs, list) and len(probs) > 0 and isinstance(probs[0], torch.Tensor):
-            # 리스트 안에 텐서가 들어있는 경우 하나씩 변환
-            probs = [p.detach().cpu().item() for p in probs]
-            
-        # =============================================================
-
-        prompts = [
-            p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in prompts
-        ]
         
+        # [중요] Probs를 Python List로 변환 (GPU 메모리 해제)
+        if isinstance(probs, torch.Tensor):
+            probs_list = probs.detach().cpu().tolist()
+        elif isinstance(probs, list) and len(probs) > 0 and isinstance(probs[0], torch.Tensor):
+            probs_list = [p.item() for p in probs]
+        else:
+            probs_list = probs
+
+        # 입력 문자열 Decoding
         prompts = [
             p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in prompts
         ]
@@ -828,129 +870,77 @@ class Blip2Stage3(pl.LightningModule):
             p.replace(self.blip2model.llm_tokenizer.pad_token, "")
             for p in input_mol_strings
         ]
-       # ================= [수정된 전체 출력 코드 시작] =================
-        
-        # 1. 실제 추론용 프롬프트(정답 제외) 디코딩
-        real_inference_prompts = self.blip2model.llm_tokenizer.batch_decode(
-            batch.prompt_input_ids, skip_special_tokens=False
-        )
 
-        # [추가] 그래프 데이터를 개별 샘플 리스트로 변환 (PyG Batch -> List[Data])
-        mol_graphs_list = None
-        if "graphs" in batch and batch["graphs"] is not None:
-            try:
-                # batch["graphs"]는 하나의 큰 Batch 객체이므로 개별 그래프로 분리
-                mol_graphs_list = batch["graphs"].to_data_list()
-            except Exception as e:
-                print(f"[DEBUG Error] Failed to unbatch graphs: {e}")
-
-        additional_graphs_list = None
-        if "additional_graphs" in batch and batch["additional_graphs"] is not None:
-            try:
-                additional_graphs_list = batch["additional_graphs"].to_data_list()
-            except Exception as e:
-                print(f"[DEBUG Error] Failed to unbatch additional_graphs: {e}")
-
-        # 2. 배치 내 모든 샘플 순회
+        # ----------------------------------------------------------------------
+        # [Step 9] 디버깅용 샘플 출력
+        # ----------------------------------------------------------------------
         for k, task_name in enumerate(tasks):
-            
-            # [추가됨] Task 별 출력 횟수 초기화
             if task_name not in self.debug_task_counts:
                 self.debug_task_counts[task_name] = 0
             
-            # [추가됨] 100개가 넘으면 출력하지 않고 건너뜀
-            if self.debug_task_counts[task_name] >= 100:
+            # 너무 많은 로그 방지 (Task 당 5개까지만)
+            if self.debug_task_counts[task_name] >= 5:
                 continue
             
-            # [추가됨] 카운트 증가
             self.debug_task_counts[task_name] += 1
+            print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name}")
+            print(f"Prompt_Text : {prompts[k]}")
+            print(f"Target      : {targets[k]}")
+            print(f"Prediction  : {predictions[k]}")
+            print("-" * 40)
 
-            clean_prompt = real_inference_prompts[k]
-            
-            # [수정됨] 현재 카운트 정보도 같이 출력하도록 수정
-            print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name} | Count: {self.debug_task_counts[task_name]}")
-            
-            # 1. Prompt 검증 (가장 중요: 끝부분 확인)
-            print(f"Prompt (Raw String)   : {clean_prompt}") 
-            
-            # 2. Tokenizer 검증 (변수명 수정됨!)
-            check_ids = self.blip2model.llm_tokenizer(clean_prompt, add_special_tokens=False)['input_ids']
-            print(f"Prompt IDs : {check_ids}") 
-
-            # [추가됨] Tokenizer가 실제로 어떻게 자르는지 || 로 구분하여 확인
-            # convert_ids_to_tokens를 사용하여 ID를 토큰 문자열로 변환합니다.
-            tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(check_ids)
-            print(f"Tokens split by || : {' || '.join(tokens)}")
-
-            # 3. Graph Data 통계 검증
-            if mol_graphs_list is not None and k < len(mol_graphs_list):
-                g = mol_graphs_list[k]
-                has_nan = torch.isnan(g.x).any() or torch.isnan(g.edge_index).any()
-                print(f"--- Graph Data ---")
-                print(f"  x shape: {list(g.x.shape)} | Has NaN: {has_nan}")
-                print(f"  x stats: min={g.x.min():.2f}, max={g.x.max():.2f}, mean={g.x.mean():.2f}") 
-
-            # 4. 정답 및 예측 비교
-            print(f"Target            : {targets[k]}")
-            print(f"Prediction        : {predictions[k]}")
-            # [추가됨] Prediction 문자열에 대한 Token ID 및 분리 확인
-            try:
-                # 생성된 문자열을 다시 토크나이징하여 ID 추출
-                pred_ids = self.blip2model.llm_tokenizer(predictions[k], add_special_tokens=False)['input_ids']
-                print(f"Prediction IDs    : {pred_ids}")
-                
-                # ID를 다시 토큰으로 변환하여 || 로 구분 출력
-                pred_tokens_decoded = self.blip2model.llm_tokenizer.convert_ids_to_tokens(pred_ids)
-                print(f"Pred Tokens split : {' || '.join(pred_tokens_decoded)}")
-            except Exception as e:
-                print(f"  [ERROR] Failed to tokenize prediction: {e}")
-
-            if predictions[k].strip() == "]":
-                print("  [ALERT] Prediction is only closing bracket. Check prompt formatting!")
-
-            print("-" * 80)
-
+        # ----------------------------------------------------------------------
+        # [Step 10] 로그 리스트 누적 (CPU 메모리만 사용)
+        # ----------------------------------------------------------------------
         self.list_logs["predictions"].extend(predictions)
         self.list_logs["targets"].extend(targets)
         self.list_logs["tasks"].extend(tasks)
-        self.list_logs["probs"].extend(probs)
+        self.list_logs["probs"].extend(probs_list)
         self.list_logs["prompts"].extend(prompts)
         self.list_logs["input_mol_strings"].extend(input_mol_strings)
 
-        # address forward loss
-        # 여기서 
-        batch_size = input_ids.shape[0]
-
+        # ----------------------------------------------------------------------
+        # [Step 11] Loss 누적 (반드시 .item() 사용)
+        # ----------------------------------------------------------------------
+        batch_size = len(input_ids)
         new_data_weight = batch_size / (self.total_seen_data_size + batch_size)
-        self.total_avg_loss += (
-            forward_loss.item() - self.total_avg_loss
-        ) * new_data_weight
+        
+        # [중요] .item()을 사용하여 스칼라 값으로 변환 후 누적
+        loss_val = forward_loss.item() if isinstance(forward_loss, torch.Tensor) else forward_loss
+        self.total_avg_loss += (loss_val - self.total_avg_loss) * new_data_weight
         self.total_seen_data_size += batch_size
 
-        for i in range(forward_instance_loss.shape[0]):
-            # if i th item is nan, skip
-            if forward_instance_loss[i] != forward_instance_loss[i]:
+        # Instance Loss 처리
+        # 텐서를 CPU로 옮겨서 처리 (GPU 접근 최소화)
+        if isinstance(forward_instance_loss, torch.Tensor):
+            inst_loss_cpu = forward_instance_loss.detach().cpu()
+        else:
+            inst_loss_cpu = forward_instance_loss
+
+        for i in range(len(inst_loss_cpu)):
+            val = inst_loss_cpu[i]
+            if isinstance(val, torch.Tensor):
+                val = val.item() # 스칼라 변환
+            
+            if val != val: # NaN check
                 continue
+
             task_subtask_pair = tasks[i]
             if task_subtask_pair not in self.eval_dataset_losses:
                 self.eval_dataset_losses[task_subtask_pair] = {
                     "avg_loss": 0.0,
                     "num_instances": 0,
                 }
-            # calculate average loss
-            self.eval_dataset_losses[task_subtask_pair][
-                "avg_loss"
-            ] *= self.eval_dataset_losses[task_subtask_pair]["num_instances"] / (
-                self.eval_dataset_losses[task_subtask_pair]["num_instances"] + 1
-            )
-            self.eval_dataset_losses[task_subtask_pair][
-                "avg_loss"
-            ] += forward_instance_loss[i] / (
-                self.eval_dataset_losses[task_subtask_pair]["num_instances"] + 1
-            )
+            
+            # 평균 업데이트
+            curr_dict = self.eval_dataset_losses[task_subtask_pair]
+            curr_dict["avg_loss"] *= curr_dict["num_instances"] / (curr_dict["num_instances"] + 1)
+            curr_dict["avg_loss"] += val / (curr_dict["num_instances"] + 1)
+            curr_dict["num_instances"] += 1
 
-            self.eval_dataset_losses[task_subtask_pair]["num_instances"] += 1
-
+        # ----------------------------------------------------------------------
+        # [Step 12] MolPO Logging
+        # ----------------------------------------------------------------------
         if self.args.eval_molpo:
             self.task_specific_logging(
                 outputs=metrics,
@@ -968,9 +958,21 @@ class Blip2Stage3(pl.LightningModule):
                     batch_size=self.args.batch_size,
                     sync_dist=False,
                 )
+        
+        # ----------------------------------------------------------------------
+        # [Step 13] 최종 로깅 및 리턴
+        # ----------------------------------------------------------------------
+        # Loss 로깅
+        self.log("val_total_loss", loss_val, sync_dist=True, prog_bar=True, logger=True)
+        
+        # [강제 메모리 정리]
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
 
-        return forward_loss
-
+        # [중요] Return None: PyTorch Lightning이 결과를 저장하지 않도록 함 (OOM 방지 최후의 수단)
+        return None
+    
     def log_attn_score(self, prompt_input_ids, mode, is_mol_token, attentions):
         num_steps = len(attentions)
         seq_lengths = prompt_input_ids.shape[1]

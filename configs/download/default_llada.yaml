@@ -1,5 +1,5 @@
-raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/train
-data_tag: 3.3M_0415
+raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official
+data_tag: 3.3M_0415_deduplicate
 llm_model: "GSAI-ML/LLaDA-8B-Instruct"
 
 target_benchmarks:

@@ -47,7 +47,7 @@ accumulate_grad_batches: 11
 total_batch_size: 1024
 batch_size: 4
 # Inference Conficuation
-inference_batch_size: 2
+inference_batch_size: 8
 sampling_steps: 16 #! 추후 최종적인 Metric 계산시에는 sequence 길이로 수정 예정
 
 truncation: 1
@@ -78,7 +78,7 @@ test_on_trainset: false
 
 # Test Inference Configuration
 # val_check_interval: 0.0001
-# check_val_every_n_epoch: 1.0
+# check_val_every_n_epoch: 1
 # test_on_trainset: false
 # limit_val_batches: 0.01
 

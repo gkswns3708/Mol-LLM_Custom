@@ -17,6 +17,7 @@ from datetime import timedelta
 import wandb
 import nltk
 from pprint import pprint
+from datetime import datetime
 nltk.download("wordnet")
 
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -163,17 +164,28 @@ def main(cfg):
     print("="*50 + "\n")
     # [End] Dataloader Inspection Code
     callbacks = []
-    callbacks.append(SaveInitCheckpointCallback(filename="init_before_val.ckpt"))
-    callbacks.append(
-        ModelCheckpoint(
-            dirpath=os.path.join(cfg.logging_dir, cfg.filename),
-            filename="{epoch:02d}-{step}",
-            every_n_epochs=cfg.every_n_epochs,
-            save_last=True,
-            save_top_k=-1,
-        )
+    today_date = datetime.now().strftime("%Y%m%d")
+    train_checkpoint_callback = ModelCheckpoint(
+        dirpath=os.path.join(cfg.logging_dir, cfg.filename),
+        filename="{epoch:02d}-{step}-train", # 파일명 구분
+        every_n_epochs=cfg.every_n_epochs,   # 설정된 epoch 마다
+        save_last=True,                      # last.ckpt (최신 상태) 저장
+        save_top_k=-1,                       # 모든 epoch 저장 (필요 없으면 0으로 설정)
+        save_on_train_epoch_end=True         # [핵심] Validation 시작 전에 저장함
     )
-    
+    callbacks.append(train_checkpoint_callback)
+    # 2. [Best Validation Checkpoint] Validation Loss 기준 최고 성능 모델 저장
+    # 파일명 예시: best_20240520_val_loss=0.1234.ckpt
+    best_checkpoint_callback = ModelCheckpoint(
+        dirpath=os.path.join(cfg.logging_dir, cfg.filename),
+        filename=f"best_{today_date}_{{val_total_loss:.4f}}", # 중괄호 두 개{{}}는 f-string escape
+        monitor="val_total_loss",  # [중요] 모델에서 log하는 metric 이름과 같아야 함
+        mode="min",                # Loss니까 작을수록 좋음 (min)
+        save_top_k=1,              # 가장 좋은 것 1개만 유지
+        save_last=False,
+        auto_insert_metric_name=False # 파일명에 'val_total_loss=' 자동 추가 방지 (원하는 포맷 유지를 위해)
+    )
+    callbacks.append(best_checkpoint_callback)
 
     if len(cfg.devices.split(",")) > 1:
         if cfg.strategy_name == "fsdp":
@@ -219,7 +231,7 @@ def main(cfg):
         "max_epochs": cfg.max_epochs,
         "val_check_interval": cfg.val_check_interval,
         "accumulate_grad_batches": cfg.accumulate_grad_batches,
-        "check_val_every_n_epoch": cfg.check_val_every_n_epoch, # 2epoch마다 validation 하도록 설정함.
+        "check_val_every_n_epoch": cfg.check_val_every_n_epoch, 
         "log_every_n_steps": cfg.log_every_n_steps,
         "gradient_clip_val": cfg.gradient_clip_val,
         "num_sanity_val_steps": cfg.num_sanity_val_steps,
