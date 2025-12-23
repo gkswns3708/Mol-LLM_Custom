@@ -483,7 +483,11 @@ class Blip2Stage3(pl.LightningModule):
             
             print("="*60 + "\n")
             # 필요 시 에러를 발생시켜 학습 중단: raise ValueError("Training stopped due to NaN")
-
+        for i, t in enumerate(tasks):
+            if "bace" in t or "chebi" in t:
+                valid_len = (batch.labels[i] != -100).sum()
+                if valid_len == 0:
+                    print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
         if hasattr(self.args, "train_molpo") and self.args.train_molpo:
             compute_loss_context_manager = torch.amp.autocast
             len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
@@ -598,6 +602,8 @@ class Blip2Stage3(pl.LightningModule):
 
                 for i in range(v.shape[0]):
                     if torch.isnan(v[i]):
+                        if i < 5:  # 로그 폭주 방지용
+                            print(f"[DEBUG] NaN detected for task: {tasks[i]} in metric: {metric}")
                         continue
 
                     task = tasks[i]

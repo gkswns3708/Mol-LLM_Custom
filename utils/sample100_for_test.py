@@ -4,7 +4,7 @@ from datasets import load_from_disk
 
 # 1. 설정
 dataset_path = "/home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_test_512_Truncation"
-save_path = dataset_path + "_10_sampled"
+save_path = dataset_path + "_100_sampled"
 
 print(f"Loading dataset from: {dataset_path}")
 dataset = load_from_disk(dataset_path)
@@ -17,7 +17,7 @@ df_task = dataset.select_columns(['task']).to_pandas()
 # 3. Pandas Groupby를 사용하여 Task별 상위 100개 인덱스 추출
 print("Grouping and selecting indices...")
 # 각 task 그룹에서 상위 100개의 인덱스(행 번호)를 가져옵니다.
-selected_indices = df_task.groupby('task').head(10).index.tolist()
+selected_indices = df_task.groupby('task').head(100).index.tolist()
 # 인덱스 정렬 (선택 사항, 저장 순서 유지를 위해)
 selected_indices.sort()
 

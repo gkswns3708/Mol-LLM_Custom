@@ -63,7 +63,7 @@ class MyDDPStrategy(strategies.DDPStrategy):
         self.lightning_module.load_state_dict(checkpoint["state_dict"], strict=strict)
 
 
-@hydra.main(config_path="configs", config_name="test_llada.yaml", version_base=None)
+@hydra.main(config_path="configs", config_name="train_llada.yaml", version_base=None)
 def main(cfg):
     print(f"Loaded Config Name: {HydraConfig.get().job.config_name}")
     cfg = flatten_dictconfig(cfg)
@@ -170,7 +170,8 @@ def main(cfg):
     train_checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(cfg.logging_dir, cfg.filename),
         filename="{epoch:02d}-{step}-train", # 파일명 구분
-        every_n_epochs=cfg.every_n_epochs,   # 설정된 epoch 마다
+        # every_n_epochs=cfg.every_n_epochs,   # 설정된 epoch 마다
+        every_n_train_steps=cfg.save_on_n_steps,
         save_last=True,                      # last.ckpt (최신 상태) 저장
         save_top_k=-1,                       # 모든 epoch 저장 (필요 없으면 0으로 설정)
         save_on_train_epoch_end=True         # [핵심] Validation 시작 전에 저장함
