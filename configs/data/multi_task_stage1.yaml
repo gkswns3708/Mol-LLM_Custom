@@ -4,7 +4,8 @@ raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official # 실제 �
 # data_tag: 3.3M_0415_verified_filtered_512 # verified version으로 학습할 경우(512로 Truncation됨)
 # data_tag: 3.3M_0415_verified_filtered_512_temp # 학습이 잘 되는지 확인하기 위한 Tag, Train set을 기존 original Test set이며, 추후 실제 학습은 다른 Tag로 진행해야함.
 # data_tag: 3.3M_0415_verified_filtered_512_sampled_100 # 학습이 잘 되는지 확인하기 위한 Tag, Train set을 기존 original Test set이며, 추후 실제 학습은 다른 Tag로 진행해야함.
-data_tag: 3.3M_0415_deduplicate_CLEANED # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
+# data_tag: 3.3M_0415_deduplicate_CLEANED # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
+data_tag: 512_Truncation # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
 
 target_benchmarks:
   - bace
