@@ -35,16 +35,16 @@ every_n_epochs: 1
 task: null
 logging_dir: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA
 llava_pretraining: 0
-second_stage_start_epoch: 0
+second_stage_start_epoch: 4
 num_workers: 0
 skip_sanity_check: true 
-num_sanity_val_steps: 10
+num_sanity_val_steps: 0 # 10이 default
 
 # total_batch_size: 1024
 # batch_size: 8
 # inference_batch_size: 11
-accumulate_grad_batches: 11
-total_batch_size: 1024
+# accumulate_grad_batches: 11
+total_batch_size: 16
 batch_size: 4
 # Inference Conficuation
 inference_batch_size: 8
@@ -66,8 +66,9 @@ min_lr: 0.0000025
 init_lr: 0.000025
 warmup_lr: 0.0
 # warmup_epochs: 0.25
-warmup_steps: 500
-scheduler: constant_with_warmup
+warmup_steps: 50
+warmup_epochs: 0.5
+scheduler: warmup_stable_decay_lr
 optimizer: adamw
 log_every_n_steps: 10
 gradient_clip_val: 1.0

@@ -125,3 +125,74 @@ def step_lr_schedule(optimizer, epoch, init_lr, min_lr, decay_rate):
     lr = max(min_lr, init_lr * (decay_rate**epoch))
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
+        
+@registry.register_lr_scheduler("linear_warmup_constant_lr")
+class LinearWarmupConstantLRScheduler:
+    def __init__(
+        self,
+        optimizer,
+        init_lr,
+        warmup_steps=0,
+        warmup_start_lr=-1,
+        **kwargs
+    ):
+        self.optimizer = optimizer
+        self.init_lr = init_lr
+        self.warmup_steps = warmup_steps
+        self.warmup_start_lr = warmup_start_lr if warmup_start_lr >= 0 else init_lr
+
+    def step(self, cur_step):
+        if cur_step < self.warmup_steps:
+            warmup_lr_schedule(
+                step=cur_step,
+                optimizer=self.optimizer,
+                max_step=self.warmup_steps,
+                init_lr=self.warmup_start_lr,
+                max_lr=self.init_lr,
+            )
+        else:
+            # Warmup 이후에는 init_lr로 고정 (Decay 없음)
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = self.init_lr
+                
+# [model/scheduler.py] 파일 하단에 추가
+
+@registry.register_lr_scheduler("warmup_stable_decay_lr")
+class WarmupStableDecayLRScheduler:
+    def __init__(
+        self,
+        optimizer,
+        max_step,
+        init_lr,
+        min_lr,
+        warmup_steps=50,
+        decay_ratio=0.1,
+        **kwargs
+    ):
+        self.optimizer = optimizer
+        self.max_step = max_step
+        self.init_lr = init_lr
+        self.min_lr = min_lr
+        self.warmup_steps = warmup_steps
+        
+        # 전체 step의 마지막 decay_ratio 만큼만 감쇠 (논문은 10%)
+        self.decay_start_step = int(max_step * (1 - decay_ratio))
+
+    def step(self, cur_step):
+        # 1. Warmup Phase (0 -> init_lr)
+        if cur_step < self.warmup_steps:
+            lr = self.init_lr * (cur_step / max(1, self.warmup_steps))
+            
+        # 2. Stable Phase (init_lr 유지)
+        elif cur_step < self.decay_start_step:
+            lr = self.init_lr
+            
+        # 3. Decay Phase (init_lr -> min_lr, Linear Decay)
+        else:
+            # 남은 스텝 수 계산
+            decay_steps = self.max_step - self.decay_start_step
+            progress = (cur_step - self.decay_start_step) / max(1, decay_steps)
+            lr = self.init_lr - (self.init_lr - self.min_lr) * min(1.0, progress)
+
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr

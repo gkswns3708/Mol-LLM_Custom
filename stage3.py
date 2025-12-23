@@ -13,6 +13,7 @@ from model.blip2_stage3 import Blip2Stage3
 import json
 import hydra
 from omegaconf import OmegaConf, DictConfig
+from hydra.core.hydra_config import HydraConfig 
 from datetime import timedelta
 import wandb
 import nltk
@@ -62,8 +63,9 @@ class MyDDPStrategy(strategies.DDPStrategy):
         self.lightning_module.load_state_dict(checkpoint["state_dict"], strict=strict)
 
 
-@hydra.main(config_path="configs", config_name="train_llada.yaml", version_base=None)
+@hydra.main(config_path="configs", config_name="test_llada.yaml", version_base=None)
 def main(cfg):
+    print(f"Loaded Config Name: {HydraConfig.get().job.config_name}")
     cfg = flatten_dictconfig(cfg)
     pl.seed_everything(cfg.seed)
     model = Blip2Stage3(cfg)

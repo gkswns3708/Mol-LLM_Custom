@@ -278,7 +278,29 @@ class Blip2LLaDA(Blip2OPT):
             answer_lengths = is_answer.sum(dim=1, keepdim=True).float()
             loss = weighted_loss.sum() / (answer_lengths.sum() + 1e-8) 
             instance_loss = weighted_loss.sum(dim=1) / (answer_lengths.squeeze(-1) + 1e-8)
-
+        if torch.isnan(loss) or torch.isinf(loss):
+            # 1. 어떤 Task인지 식별 (samples에 task 정보가 있다면)
+            task_info = samples.get("task", samples.get("dataset_name", "Unknown_Task"))
+            
+            logger.error("\n" + "="*40)
+            logger.error(f"🚨 [NaN DETECTED] Task: {task_info}")
+            logger.error(f"Loss Value: {loss.item()}")
+            
+            # 2. Logit 값 확인 (폭발했는지?)
+            logger.error(f"Logits Stats - Max: {logits.max().item():.4f}, Min: {logits.min().item():.4f}, Mean: {logits.mean().item():.4f}")
+            
+            # 3. 분모 확인 (Zero Division?)
+            valid_token_count = is_answer.sum().item()
+            logger.error(f"Valid Answer Tokens (Denominator): {valid_token_count}")
+            
+            # 4. Graph Norm 확인 (GNN 문제인지?)
+            logger.error(f"Graph Avg Norm: {graph_avg_norm.mean().item():.4f}")
+            logger.error("="*40 + "\n")
+            
+            # [임시 조치] 학습이 터지는 것을 막기 위해 Loss를 0으로 강제 변환
+            # (이렇게 하면 로그에는 0.0으로 찍히겠지만, 적어도 다른 Task 학습은 계속됩니다)
+            loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+        # ==============================================================================
         return {
             "loss": loss,
             "instance_loss": instance_loss,

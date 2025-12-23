@@ -8,7 +8,12 @@ from model.blip2_t5 import Blip2T5
 from model.blip2_llada import Blip2LLaDA
 import pytorch_lightning as pl
 from torch import optim
-from model.scheduler import LinearWarmupCosineLRScheduler, LinearWarmupStepLRScheduler
+from model.scheduler import (
+    LinearWarmupCosineLRScheduler, 
+    LinearWarmupStepLRScheduler, 
+    LinearWarmupConstantLRScheduler, 
+    WarmupStableDecayLRScheduler
+)
 import json
 from model.help_funcs import (
     per_device_evaluate,
@@ -145,8 +150,15 @@ class Blip2Stage3(pl.LightningModule):
             )
 
             max_step = int(self.args.max_epochs * self.steps_per_epoch)
-            warmup_steps = self.steps_per_epoch * self.args.warmup_epochs
-
+            if hasattr(self.args, "warmup_steps") and self.args.warmup_steps > 0:
+                warmup_steps = self.args.warmup_steps
+            # 2. 아니면 args.warmup_epochs를 기준으로 계산
+            elif hasattr(self.args, "warmup_epochs") and self.args.warmup_epochs > 0:
+                warmup_steps = int(self.steps_per_epoch * self.args.warmup_epochs)
+            # 3. 둘 다 없으면 0
+            else:
+                warmup_steps = 0
+            
             if self.args.scheduler == "linear_warmup_cosine_lr":
                 self.scheduler = LinearWarmupCosineLRScheduler(
                     optimizer=optimizer,
@@ -168,6 +180,15 @@ class Blip2Stage3(pl.LightningModule):
                 )
             elif self.args.scheduler == "None":
                 self.scheduler = None
+            elif self.args.scheduler == "warmup_stable_decay_lr":
+                self.scheduler = WarmupStableDecayLRScheduler(
+                    optimizer=optimizer,
+                    max_step=max_step,
+                    init_lr=self.args.init_lr,
+                    min_lr=self.args.min_lr,
+                    warmup_steps=self.args.warmup_steps,
+                    decay_ratio=0.1, # 논문과 동일하게 마지막 10% 구간에서 Decay
+                )
             else:
                 raise NotImplementedError()
         return optimizer
@@ -405,11 +426,63 @@ class Blip2Stage3(pl.LightningModule):
         if self.scheduler:
             self.scheduler.step(cur_step=self.trainer.global_step)
 
+        # [중요] 전역 id2task 함수 사용 (함수 내 import 제거)
         tasks = [id2task(task_id.item()) for task_id in batch.tasks]
 
         outputs = self.blip2model(batch)
-        logits = outputs.pop("logits")
-        loss = outputs.pop("loss")
+        
+        # [요청하신 값 추출 방식]
+        # 안전한 처리를 위해 dict 여부 확인 후 pop 수행
+        if isinstance(outputs, dict):
+            logits = outputs.pop("logits", None)
+            loss = outputs.pop("loss", None)
+            # instance_loss는 MolPO 계산에 필요하므로 보존하거나 get으로 접근
+        else:
+            logits = None
+            loss = outputs
+
+        # =================================================================
+        # [DEBUG] NaN / Inf 발생 시 상세 디버깅 정보 및 샘플 출력
+        # =================================================================
+        if loss is not None and (torch.isnan(loss) or torch.isinf(loss)):
+            print(f"\n{'='*20} [CRITICAL ERROR] Loss is NaN/Inf {'='*20}")
+            print(f"Global Step: {self.global_step}, Batch Index: {batch_idx}")
+            print(f"Current Batch Tasks: {tasks}")
+            
+            print("\n[Possible Causes Candidates]")
+            print("1. Learning Rate Explosion: 초기 LR이 너무 높거나 Warmup이 부족할 수 있습니다.")
+            print("2. Gradient Explosion: gradient_clip_val 설정을 확인하세요.")
+            print("3. Invalid Data/Labels: Label이 전부 -100이거나 Input에 NaN이 있을 수 있습니다.")
+            print("4. Logit Instability: 모델 출력 Logit이 발산했는지 확인하세요.")
+
+            # 1. Label 통계 확인
+            if "labels" in batch:
+                labels = batch.labels
+                valid_labels = (labels != -100).sum()
+                print(f"\n[Label Statistics] Total: {labels.numel()}, Valid(!=-100): {valid_labels.item()}")
+                if valid_labels == 0:
+                    print("!!! Warning: All labels are -100 (Ignore Index). Loss becomes 0 or NaN. !!!")
+            
+            # 2. Logits 통계 확인
+            if logits is not None:
+                print(f"\n[Logits Statistics] Max: {logits.max().item()}, Min: {logits.min().item()}, Mean: {logits.mean().item()}")
+                if torch.isnan(logits).any():
+                    print("!!! Logits contain NaN values !!!")
+            
+            # 3. 입력 샘플 디코딩하여 출력 (데이터 문제 확인용)
+            try:
+                print("\n[Sample Input Decoding]")
+                tokenizer = self.blip2model.llm_tokenizer
+                # batch 객체 구조에 따라 input_ids 가져오기
+                input_ids = batch.input_ids if hasattr(batch, 'input_ids') else batch.prompt_input_ids
+                if input_ids is not None:
+                    decoded = tokenizer.decode(input_ids[0], skip_special_tokens=False)
+                    print(f"Decoded Input (truncated 500 chars): {decoded[:500]} ...")
+            except Exception as e:
+                print(f"Failed to decode sample: {e}")
+            
+            print("="*60 + "\n")
+            # 필요 시 에러를 발생시켜 학습 중단: raise ValueError("Training stopped due to NaN")
 
         if hasattr(self.args, "train_molpo") and self.args.train_molpo:
             compute_loss_context_manager = torch.amp.autocast
@@ -417,11 +490,14 @@ class Blip2Stage3(pl.LightningModule):
             tasks = tasks[:len_tuple]
 
             with compute_loss_context_manager(device_type="cuda"):
+                # outputs가 dict인 경우 instance_loss 가져오기
+                inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
+                
                 loss, metrics = self.get_total_molpo_loss(
                     logits=logits,
                     labels=batch.labels,
                     molpo_labels=batch.molpo_labels,
-                    instance_loss=outputs["instance_loss"],
+                    instance_loss=inst_loss,
                     tasks=tasks,
                     is_train=True,
                     molpo_batch_division=self.args.molpo_batch_division,
@@ -455,15 +531,19 @@ class Blip2Stage3(pl.LightningModule):
 
         self.log(
             f"train_total_loss",
-            loss.clone().detach().item(),
+            loss.clone().detach().item() if loss is not None else 0.0,
             batch_size=self.args.batch_size,
             sync_dist=False,
         )
 
         for k, v in outputs.items():
+            # 이미 pop 했거나 처리한 키 제외
+            if k in ["logits", "loss", "instance_loss"]: continue
+            
+            val_to_log = v.mean() if isinstance(v, torch.Tensor) else v
             self.log(
                 f"train/{k}",
-                float(v if len(v.shape) == 0 else v.mean()),
+                float(val_to_log),
                 batch_size=self.args.batch_size,
                 sync_dist=False,
             )
