@@ -63,8 +63,15 @@ class Blip2Stage3(pl.LightningModule):
                 or "lora" in key
             ):
                 continue
+
+            # [CRITICAL FIX] modules_to_save (embed_tokens, lm_head)는 frozen이어도 저장
+            # Stage 2 (Q-Former pretraining)에서 LLM이 frozen이어도, 새 vocab이 추가된
+            # embed_tokens/lm_head는 반드시 보존해야 Stage 3에서 계속 학습 가능
+            is_module_to_save = "embed_tokens" in key or "lm_head" in key
+
             try:
-                if not self.get_parameter(key).requires_grad:
+                # modules_to_save가 아니고, frozen이면 삭제
+                if not self.get_parameter(key).requires_grad and not is_module_to_save:
                     to_be_removed.append(key)
             except AttributeError:
                 to_be_removed.append(key)
@@ -95,6 +102,10 @@ class Blip2Stage3(pl.LightningModule):
         self.on_second_stage = False
         # set strict_loading to False to load model in a lightweight way
         self.strict_loading = False
+
+        # [Fix 2.2] Gradient 로깅을 위한 파라미터 캐싱 (오버헤드 최소화)
+        self._embed_tokens_param = None
+        self._lm_head_param = None
         if "galactica" in args.llm_model:
             blip2model = Blip2OPT
         elif "llama" in args.llm_model:
@@ -200,6 +211,7 @@ class Blip2Stage3(pl.LightningModule):
         tasks,
         prompts,
         input_mol_strings,
+        token_ids, #! 추가해봄.
         probs=None,
         filename="predictions.json",
     ):
@@ -217,6 +229,7 @@ class Blip2Stage3(pl.LightningModule):
                 "target": targets[i],
                 "prompt": prompts[i],
                 "input_mol_strings": input_mol_strings[i],
+                "token_ids": token_ids[i], 
             }
             if tasks[i] in CLASSIFICATION_BENCHMARKS and probs is not None:
                 instance["prob"] = probs[i]
@@ -484,10 +497,10 @@ class Blip2Stage3(pl.LightningModule):
             print("="*60 + "\n")
             # 필요 시 에러를 발생시켜 학습 중단: raise ValueError("Training stopped due to NaN")
         for i, t in enumerate(tasks):
-            if "bace" in t or "chebi" in t:
-                valid_len = (batch.labels[i] != -100).sum()
-                if valid_len == 0:
-                    print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
+    if "bace" in t or "chebi" in t:
+        valid_len = (batch.labels[i] != -100).sum()
+        if valid_len == 0:
+            print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
         if hasattr(self.args, "train_molpo") and self.args.train_molpo:
             compute_loss_context_manager = torch.amp.autocast
             len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
@@ -572,7 +585,194 @@ class Blip2Stage3(pl.LightningModule):
                     sync_dist=False,
                 )
 
+        # [Fix 2.2] embed_tokens 및 lm_head gradient 로깅
+        self._log_embedding_gradients()
+
+        # [Fix 2.3] Training sample token-level logging
+        if self.global_step % self.trainer.log_every_n_steps == 0:
+            self._log_sample_predictions(batch, outputs, tasks, batch_idx, mode="train")
+
         return loss
+
+    def _cache_critical_params(self):
+        """첫 실행 시 한 번만 embed_tokens/lm_head 파라미터 찾기 (오버헤드 최소화)"""
+        if not hasattr(self.blip2model, 'llm_model'):
+            return
+
+        for name, param in self.blip2model.llm_model.named_parameters():
+            if 'embed_tokens' in name and self._embed_tokens_param is None:
+                self._embed_tokens_param = param
+            if 'lm_head' in name and self._lm_head_param is None:
+                self._lm_head_param = param
+
+    def _log_embedding_gradients(self):
+        """embed_tokens 및 lm_head의 gradient norm 로깅"""
+        # 첫 실행 시에만 파라미터 캐싱
+        if self._embed_tokens_param is None or self._lm_head_param is None:
+            self._cache_critical_params()
+            if self._embed_tokens_param is None:  # 여전히 None이면 스킵
+                return
+
+        # Gradient norm 계산
+        embed_grad_norm = 0.0
+        lm_head_grad_norm = 0.0
+
+        if self._embed_tokens_param.grad is not None:
+            embed_grad_norm = self._embed_tokens_param.grad.norm(2).item()
+
+        if self._lm_head_param.grad is not None:
+            lm_head_grad_norm = self._lm_head_param.grad.norm(2).item()
+
+        # WandB/TensorBoard에 로깅
+        self.log("train/embed_tokens_grad_norm", embed_grad_norm,
+                 batch_size=self.args.batch_size, sync_dist=False)
+        self.log("train/lm_head_grad_norm", lm_head_grad_norm,
+                 batch_size=self.args.batch_size, sync_dist=False)
+
+    def _log_sample_predictions(self, batch, outputs, tasks, batch_idx, mode="train",
+                                 num_samples=2, predictions=None, targets=None, prompts=None):
+        """통합 샘플 예측 로깅 (Training & Validation)"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Mode별 제목
+        mode_str = "Training" if mode == "train" else "Validation"
+
+        logger.info("\n" + "="*80)
+        logger.info(f"[{mode_str} Sample Log] Step {self.global_step}, Batch {batch_idx}")
+        logger.info("="*80)
+
+        # Training mode: logits에서 예측 생성
+        if mode == "train":
+            if isinstance(outputs, dict):
+                logits = outputs.get('logits')
+            else:
+                logits = getattr(outputs, 'logits', None)
+
+            if logits is None or not hasattr(batch, 'labels'):
+                return
+
+            pred_ids = torch.argmax(logits, dim=-1)  # [batch, seq_len]
+            labels = batch.labels
+            num_samples_to_log = min(num_samples, len(tasks))
+
+            for i in range(num_samples_to_log):
+                task_name = tasks[i] if isinstance(tasks[i], str) else f"task_{tasks[i]}"
+                logger.info(f"\n--- Sample {i} | Task: {task_name} ---")
+
+                # [NEW] Input Token IDs
+                if hasattr(batch, 'input_ids'):
+                    input_ids_list = batch.input_ids[i].tolist()
+                    logger.info(f"Input Token IDs (len={len(input_ids_list)}): {input_ids_list}")
+
+                    try:
+                        input_text = self.blip2model.llm_tokenizer.decode(
+                            batch.input_ids[i], skip_special_tokens=False
+                        )
+                        logger.info(f"Input Text: {input_text[:200]}...")
+                    except Exception as e:
+                        logger.warning(f"Could not decode input: {e}")
+
+                # Token-by-token breakdown
+                label_seq = labels[i]
+                pred_seq = pred_ids[i]
+                answer_mask = (label_seq != -100)
+                answer_indices = answer_mask.nonzero(as_tuple=True)[0]
+
+                if len(answer_indices) > 0:
+                    # [NEW] Prediction Token IDs
+                    pred_answer_ids = pred_seq[answer_mask].tolist()
+                    logger.info(f"\nPrediction Token IDs (len={len(pred_answer_ids)}): {pred_answer_ids}")
+
+                    logger.info("\nToken-by-Token Breakdown:")
+                    logger.info(f"{'Pos':<5} {'Label':<10} {'Pred':<10} {'Label Tok':<25} {'Pred Tok':<25} {'Match':<5}")
+                    logger.info("-" * 90)
+
+                    max_tokens_to_show = min(20, len(answer_indices))
+                    for j in range(max_tokens_to_show):
+                        pos = answer_indices[j].item()
+                        label_id = label_seq[pos].item()
+                        pred_id = pred_seq[pos].item()
+
+                        try:
+                            label_tok = self.blip2model.llm_tokenizer.decode([label_id])
+                            pred_tok = self.blip2model.llm_tokenizer.decode([pred_id])
+                        except Exception:
+                            label_tok = f"<id:{label_id}>"
+                            pred_tok = f"<id:{pred_id}>"
+
+                        match = "✓" if label_id == pred_id else "✗"
+                        logger.info(f"{pos:<5} {label_id:<10} {pred_id:<10} {label_tok:<25} {pred_tok:<25} {match:<5}")
+
+                    if len(answer_indices) > max_tokens_to_show:
+                        logger.info(f"... (showing {max_tokens_to_show}/{len(answer_indices)} tokens)")
+
+                    # 정확도
+                    correct = (pred_seq[answer_mask] == label_seq[answer_mask]).sum().item()
+                    total = answer_mask.sum().item()
+                    acc = 100.0 * correct / total if total > 0 else 0.0
+                    logger.info(f"\nSample Accuracy: {acc:.1f}% ({correct}/{total} tokens)")
+
+                    # Instance loss
+                    if isinstance(outputs, dict) and 'instance_loss' in outputs:
+                        try:
+                            inst_loss = outputs['instance_loss'][i].item()
+                            logger.info(f"Instance Loss: {inst_loss:.4f}")
+                        except Exception:
+                            pass
+
+        # Validation mode: 이미 생성된 predictions 사용
+        else:  # mode == "val"
+            if predictions is None or targets is None or prompts is None:
+                return
+
+            # Task별 카운팅 (validation은 5개 제한)
+            if not hasattr(self, 'debug_task_counts'):
+                self.debug_task_counts = {}
+
+            num_samples_to_log = min(num_samples, len(tasks))
+
+            for i in range(num_samples_to_log):
+                task_name = tasks[i] if isinstance(tasks[i], str) else f"task_{tasks[i]}"
+
+                # Task별 제한 (validation)
+                if task_name not in self.debug_task_counts:
+                    self.debug_task_counts[task_name] = 0
+
+                if self.debug_task_counts[task_name] >= 5:
+                    continue
+
+                self.debug_task_counts[task_name] += 1
+                logger.info(f"\n--- Sample {i} | Task: {task_name} ---")
+
+                # Prompt (Input)
+                logger.info(f"Prompt Text: {prompts[i]}")
+
+                # [NEW] Prompt Token IDs
+                try:
+                    prompt_ids = self.blip2model.llm_tokenizer.encode(prompts[i], add_special_tokens=False)
+                    logger.info(f"Prompt Token IDs (len={len(prompt_ids)}): {prompt_ids}")
+                except Exception as e:
+                    logger.warning(f"Could not encode prompt: {e}")
+
+                # Target
+                logger.info(f"\nTarget: {targets[i]}")
+
+                # Prediction
+                logger.info(f"Prediction: {predictions[i]}")
+
+                # [NEW] Prediction Token IDs
+                try:
+                    pred_ids = self.blip2model.llm_tokenizer.encode(predictions[i], add_special_tokens=False)
+                    logger.info(f"Prediction Token IDs (len={len(pred_ids)}): {pred_ids}")
+
+                    # Token breakdown
+                    pred_tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(pred_ids)
+                    logger.info(f"Prediction Tokens: {' || '.join(pred_tokens)}")
+                except Exception as e:
+                    logger.warning(f"Token debug error: {e}")
+
+        logger.info("="*80 + "\n")
 
     def task_specific_logging(
         self,
@@ -644,6 +844,87 @@ class Blip2Stage3(pl.LightningModule):
         )
 
         self.log_model_parameters()
+
+        # [Fix 2.1] Epoch 0에서 LoRA 설정 검증
+        if self.current_epoch == 0 and self.global_step == 0:
+            self._log_lora_verification()
+
+    def _log_lora_verification(self):
+        """Epoch 0에서 LoRA 및 modules_to_save 설정 검증"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info("\n" + "="*70)
+        logger.info("[LoRA Verification] Checking modules_to_save setup...")
+        logger.info("="*70)
+
+        # 1. PEFT config 확인
+        if not hasattr(self.blip2model, 'llm_model'):
+            logger.warning("❌ blip2model has no llm_model attribute!")
+            logger.info("="*70 + "\n")
+            return
+
+        if not hasattr(self.blip2model.llm_model, 'peft_config'):
+            logger.warning("❌ Model does not have PEFT config! (Not using LoRA?)")
+            logger.info("="*70 + "\n")
+            return
+
+        peft_cfg = self.blip2model.llm_model.peft_config
+        if hasattr(peft_cfg, 'modules_to_save') and peft_cfg.modules_to_save:
+            logger.info(f"✅ modules_to_save configured: {peft_cfg.modules_to_save}")
+        else:
+            logger.warning("⚠️  No modules_to_save in PEFT config!")
+
+        # 2. embed_tokens 및 lm_head 상태 확인
+        embed_tokens_found = False
+        lm_head_found = False
+        embed_tokens_trainable = False
+        lm_head_trainable = False
+        embed_size = None
+        lm_head_size = None
+
+        for name, param in self.blip2model.llm_model.named_parameters():
+            if 'embed_tokens' in name:
+                embed_tokens_found = True
+                embed_tokens_trainable = param.requires_grad
+                embed_size = param.shape
+                logger.info(f"  📊 {name}")
+                logger.info(f"      Shape: {param.shape}, requires_grad: {param.requires_grad}")
+            if 'lm_head' in name:
+                lm_head_found = True
+                lm_head_trainable = param.requires_grad
+                lm_head_size = param.shape
+                logger.info(f"  📊 {name}")
+                logger.info(f"      Shape: {param.shape}, requires_grad: {param.requires_grad}")
+
+        # 3. 상태 요약
+        if embed_tokens_found and lm_head_found:
+            if embed_tokens_trainable and lm_head_trainable:
+                logger.info("✅ Both embed_tokens and lm_head are TRAINABLE")
+            else:
+                logger.warning(f"⚠️  Training status - embed_tokens: {embed_tokens_trainable}, lm_head: {lm_head_trainable}")
+        else:
+            logger.error(f"❌ Missing modules! embed_tokens: {embed_tokens_found}, lm_head: {lm_head_found}")
+
+        # 4. Vocab size 일관성 확인
+        try:
+            tokenizer_size = len(self.blip2model.llm_tokenizer)
+            model_embed_size = self.blip2model.llm_model.get_input_embeddings().weight.shape[0]
+            model_lm_head_size = self.blip2model.llm_model.get_output_embeddings().weight.shape[0]
+
+            logger.info(f"\n  Vocabulary Sizes:")
+            logger.info(f"    Tokenizer:   {tokenizer_size}")
+            logger.info(f"    Embed layer: {model_embed_size}")
+            logger.info(f"    LM head:     {model_lm_head_size}")
+
+            if tokenizer_size == model_embed_size == model_lm_head_size:
+                logger.info("✅ Size consistency check PASSED")
+            else:
+                logger.error("❌ Size MISMATCH detected! This will cause training issues.")
+        except Exception as e:
+            logger.warning(f"⚠️  Could not verify vocab sizes: {e}")
+
+        logger.info("="*70 + "\n")
 
     def on_evaluation_epoch_start(self):
         self.list_logs = {
@@ -958,22 +1239,20 @@ class Blip2Stage3(pl.LightningModule):
         ]
 
         # ----------------------------------------------------------------------
-        # [Step 9] 디버깅용 샘플 출력
+        # [Step 9] 디버깅용 샘플 출력 (통합 로깅 함수 사용)
         # ----------------------------------------------------------------------
-        for k, task_name in enumerate(tasks):
-            if task_name not in self.debug_task_counts:
-                self.debug_task_counts[task_name] = 0
+        self._log_sample_predictions(
+            batch=batch,
+            outputs=None,  # Validation은 이미 생성된 predictions 사용
+            tasks=tasks,
+            batch_idx=batch_idx,
+            mode="val",
+            num_samples=len(tasks),  # 모든 샘플 시도 (함수 내부에서 task당 5개 제한)
+            predictions=predictions,
+            targets=targets,
+            prompts=prompts
+        )
             
-            # 너무 많은 로그 방지 (Task 당 5개까지만)
-            if self.debug_task_counts[task_name] >= 5:
-                continue
-            
-            self.debug_task_counts[task_name] += 1
-            print(f"\n[DEBUG] Rank {self.global_rank} | Batch {batch_idx} | Sample {k} | Task: {task_name}")
-            print(f"Prompt_Text : {prompts[k]}")
-            print(f"Target      : {targets[k]}")
-            print(f"Prediction  : {predictions[k]}")
-            print("-" * 40)
 
         # ----------------------------------------------------------------------
         # [Step 10] 로그 리스트 누적 (CPU 메모리만 사용)
