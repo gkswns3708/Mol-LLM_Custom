@@ -122,7 +122,14 @@ class Blip2LLaDA(Blip2OPT):
             
             # 모델에 새로운 헤드 설정
             self.llm_model.set_output_embeddings(new_lm_head)
+
+            # [CRITICAL FIX] 교체된 lm_head를 학습 가능하도록 설정
+            # PEFT의 modules_to_save에 포함되어 있어도, 교체 후에는 requires_grad가 명시적으로 필요
+            new_lm_head.weight.requires_grad = True
+            if new_lm_head.bias is not None:
+                new_lm_head.bias.requires_grad = True
             logger.info(f"[DEBUG] Output embedding force resize complete. New shape: {new_lm_head.weight.shape}")
+            logger.info(f"[DEBUG] Set lm_head.weight.requires_grad = True")
         else:
             logger.info(f"[DEBUG] Output embedding size is correct: {output_embeddings.weight.shape[0]}")
         # ==============================================================================
