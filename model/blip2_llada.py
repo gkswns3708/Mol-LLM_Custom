@@ -126,6 +126,7 @@ class Blip2LLaDA(Blip2OPT):
             # NOTE: requires_grad 설정은 PEFT 적용 후에 blip2_opt.py에서 처리됨
             # 여기서 설정해도 get_peft_model() 호출 시 래핑되면서 무시될 수 있음
             logger.info(f"[DEBUG] Output embedding force resize complete. New shape: {new_lm_head.weight.shape}")
+            logger.info(f"[DEBUG] Set lm_head.weight.requires_grad = True")
         else:
             logger.info(f"[DEBUG] Output embedding size is correct: {output_embeddings.weight.shape[0]}")
         # ==============================================================================

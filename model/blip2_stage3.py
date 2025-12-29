@@ -505,48 +505,50 @@ class Blip2Stage3(pl.LightningModule):
             
             print("="*60 + "\n")
             # 필요 시 에러를 발생시켜 학습 중단: raise ValueError("Training stopped due to NaN")
+
         for i, t in enumerate(tasks):
             if "bace" in t or "chebi" in t:
                 valid_len = (batch.labels[i] != -100).sum()
                 if valid_len == 0:
                     print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
-                if hasattr(self.args, "train_molpo") and self.args.train_molpo:
-                    compute_loss_context_manager = torch.amp.autocast
-                    len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
-                    tasks = tasks[:len_tuple]
 
-                    with compute_loss_context_manager(device_type="cuda"):
-                        # outputs가 dict인 경우 instance_loss 가져오기
-                        inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
-                        
-                        loss, metrics = self.get_total_molpo_loss(
-                            logits=logits,
-                            labels=batch.labels,
-                            molpo_labels=batch.molpo_labels,
-                            instance_loss=inst_loss,
-                            tasks=tasks,
-                            is_train=True,
-                            molpo_batch_division=self.args.molpo_batch_division,
-                            config=self.args
-                        )
-                    outputs.update(metrics)
+        if hasattr(self.args, "train_molpo") and self.args.train_molpo:
+            compute_loss_context_manager = torch.amp.autocast
+            len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
+            tasks = tasks[:len_tuple]
 
-                    if "graph_avg_norm" in outputs:
-                        graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
-                        for k in graph_keys:
-                            avg_norm = outputs.pop(k)
-                            if self.args.molpo_batch_division == 2:
-                                chosen_avg_norm = avg_norm[:len_tuple]
-                                reject_avg_norm = avg_norm[len_tuple:]
-                            elif self.args.molpo_batch_division == 3:
-                                sft_avg_norm = avg_norm[:len_tuple]
-                                chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
-                                reject_avg_norm = avg_norm[2 * len_tuple :]
+            with compute_loss_context_manager(device_type="cuda"):
+                # outputs가 dict인 경우 instance_loss 가져오기
+                inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
 
-                                outputs[f"{k}/sft"] = sft_avg_norm
+                loss, metrics = self.get_total_molpo_loss(
+                    logits=logits,
+                    labels=batch.labels,
+                    molpo_labels=batch.molpo_labels,
+                    instance_loss=inst_loss,
+                    tasks=tasks,
+                    is_train=True,
+                    molpo_batch_division=self.args.molpo_batch_division,
+                    config=self.args
+                )
+            outputs.update(metrics)
 
-                            outputs[f"{k}/chosen"] = chosen_avg_norm
-                            outputs[f"{k}/reject"] = reject_avg_norm
+            if "graph_avg_norm" in outputs:
+                graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
+                for k in graph_keys:
+                    avg_norm = outputs.pop(k)
+                    if self.args.molpo_batch_division == 2:
+                        chosen_avg_norm = avg_norm[:len_tuple]
+                        reject_avg_norm = avg_norm[len_tuple:]
+                    elif self.args.molpo_batch_division == 3:
+                        sft_avg_norm = avg_norm[:len_tuple]
+                        chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
+                        reject_avg_norm = avg_norm[2 * len_tuple :]
+
+                        outputs[f"{k}/sft"] = sft_avg_norm
+
+                    outputs[f"{k}/chosen"] = chosen_avg_norm
+                    outputs[f"{k}/reject"] = reject_avg_norm
 
         self.log(
             "lr",
@@ -1082,6 +1084,87 @@ class Blip2Stage3(pl.LightningModule):
         else:
             logger.error(f"❌ Missing modules! embed_tokens: {embed_tokens_found}, lm_head: {lm_head_found}")
             logger.error("❌ CRITICAL: 이 상태에서는 새로운 토큰을 학습할 수 없습니다!")
+
+        # 4. Vocab size 일관성 확인
+        try:
+            tokenizer_size = len(self.blip2model.llm_tokenizer)
+            model_embed_size = self.blip2model.llm_model.get_input_embeddings().weight.shape[0]
+            model_lm_head_size = self.blip2model.llm_model.get_output_embeddings().weight.shape[0]
+
+            logger.info(f"\n  Vocabulary Sizes:")
+            logger.info(f"    Tokenizer:   {tokenizer_size}")
+            logger.info(f"    Embed layer: {model_embed_size}")
+            logger.info(f"    LM head:     {model_lm_head_size}")
+
+            if tokenizer_size == model_embed_size == model_lm_head_size:
+                logger.info("✅ Size consistency check PASSED")
+            else:
+                logger.error("❌ Size MISMATCH detected! This will cause training issues.")
+        except Exception as e:
+            logger.warning(f"⚠️  Could not verify vocab sizes: {e}")
+
+        logger.info("="*70 + "\n")
+
+        # [Fix 2.1] Epoch 0에서 LoRA 설정 검증
+        if self.current_epoch == 0 and self.global_step == 0:
+            self._log_lora_verification()
+
+    def _log_lora_verification(self):
+        """Epoch 0에서 LoRA 및 modules_to_save 설정 검증"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info("\n" + "="*70)
+        logger.info("[LoRA Verification] Checking modules_to_save setup...")
+        logger.info("="*70)
+
+        # 1. PEFT config 확인
+        if not hasattr(self.blip2model, 'llm_model'):
+            logger.warning("❌ blip2model has no llm_model attribute!")
+            logger.info("="*70 + "\n")
+            return
+
+        if not hasattr(self.blip2model.llm_model, 'peft_config'):
+            logger.warning("❌ Model does not have PEFT config! (Not using LoRA?)")
+            logger.info("="*70 + "\n")
+            return
+
+        peft_cfg = self.blip2model.llm_model.peft_config
+        if hasattr(peft_cfg, 'modules_to_save') and peft_cfg.modules_to_save:
+            logger.info(f"✅ modules_to_save configured: {peft_cfg.modules_to_save}")
+        else:
+            logger.warning("⚠️  No modules_to_save in PEFT config!")
+
+        # 2. embed_tokens 및 lm_head 상태 확인
+        embed_tokens_found = False
+        lm_head_found = False
+        embed_tokens_trainable = False
+        lm_head_trainable = False
+        embed_size = None
+        lm_head_size = None
+
+        for name, param in self.blip2model.llm_model.named_parameters():
+            if 'embed_tokens' in name:
+                embed_tokens_found = True
+                embed_tokens_trainable = param.requires_grad
+                embed_size = param.shape
+                logger.info(f"  📊 {name}")
+                logger.info(f"      Shape: {param.shape}, requires_grad: {param.requires_grad}")
+            if 'lm_head' in name:
+                lm_head_found = True
+                lm_head_trainable = param.requires_grad
+                lm_head_size = param.shape
+                logger.info(f"  📊 {name}")
+                logger.info(f"      Shape: {param.shape}, requires_grad: {param.requires_grad}")
+
+        # 3. 상태 요약
+        if embed_tokens_found and lm_head_found:
+            if embed_tokens_trainable and lm_head_trainable:
+                logger.info("✅ Both embed_tokens and lm_head are TRAINABLE")
+            else:
+                logger.warning(f"⚠️  Training status - embed_tokens: {embed_tokens_trainable}, lm_head: {lm_head_trainable}")
+        else:
+            logger.error(f"❌ Missing modules! embed_tokens: {embed_tokens_found}, lm_head: {lm_head_found}")
 
         # 4. Vocab size 일관성 확인
         try:
