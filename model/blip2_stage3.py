@@ -89,6 +89,13 @@ class Blip2Stage3(pl.LightningModule):
         if "task_specific_chosen_reward" in checkpoint:
             self.task_specific_chosen_reward = checkpoint["task_specific_chosen_reward"]
 
+        # [CRITICAL FIX] 체크포인트 로드 후 modules_to_save 모듈을 강제로 trainable 설정
+        # 이전 체크포인트가 requires_grad=False로 저장되었을 수 있으므로
+        logger.info("\n" + "="*70)
+        logger.info("[CHECKPOINT LOAD FIX] Re-enabling gradients for modules_to_save...")
+        self._fix_modules_to_save_gradients()
+        logger.info("="*70 + "\n")
+
     def __init__(self, args):
         super().__init__()
         if isinstance(args, dict):
@@ -497,47 +504,47 @@ class Blip2Stage3(pl.LightningModule):
             print("="*60 + "\n")
             # 필요 시 에러를 발생시켜 학습 중단: raise ValueError("Training stopped due to NaN")
         for i, t in enumerate(tasks):
-    if "bace" in t or "chebi" in t:
-        valid_len = (batch.labels[i] != -100).sum()
-        if valid_len == 0:
-            print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
-        if hasattr(self.args, "train_molpo") and self.args.train_molpo:
-            compute_loss_context_manager = torch.amp.autocast
-            len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
-            tasks = tasks[:len_tuple]
+            if "bace" in t or "chebi" in t:
+                valid_len = (batch.labels[i] != -100).sum()
+                if valid_len == 0:
+                    print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
+                if hasattr(self.args, "train_molpo") and self.args.train_molpo:
+                    compute_loss_context_manager = torch.amp.autocast
+                    len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
+                    tasks = tasks[:len_tuple]
 
-            with compute_loss_context_manager(device_type="cuda"):
-                # outputs가 dict인 경우 instance_loss 가져오기
-                inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
-                
-                loss, metrics = self.get_total_molpo_loss(
-                    logits=logits,
-                    labels=batch.labels,
-                    molpo_labels=batch.molpo_labels,
-                    instance_loss=inst_loss,
-                    tasks=tasks,
-                    is_train=True,
-                    molpo_batch_division=self.args.molpo_batch_division,
-                    config=self.args
-                )
-            outputs.update(metrics)
+                    with compute_loss_context_manager(device_type="cuda"):
+                        # outputs가 dict인 경우 instance_loss 가져오기
+                        inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
+                        
+                        loss, metrics = self.get_total_molpo_loss(
+                            logits=logits,
+                            labels=batch.labels,
+                            molpo_labels=batch.molpo_labels,
+                            instance_loss=inst_loss,
+                            tasks=tasks,
+                            is_train=True,
+                            molpo_batch_division=self.args.molpo_batch_division,
+                            config=self.args
+                        )
+                    outputs.update(metrics)
 
-            if "graph_avg_norm" in outputs:
-                graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
-                for k in graph_keys:
-                    avg_norm = outputs.pop(k)
-                    if self.args.molpo_batch_division == 2:
-                        chosen_avg_norm = avg_norm[:len_tuple]
-                        reject_avg_norm = avg_norm[len_tuple:]
-                    elif self.args.molpo_batch_division == 3:
-                        sft_avg_norm = avg_norm[:len_tuple]
-                        chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
-                        reject_avg_norm = avg_norm[2 * len_tuple :]
+                    if "graph_avg_norm" in outputs:
+                        graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
+                        for k in graph_keys:
+                            avg_norm = outputs.pop(k)
+                            if self.args.molpo_batch_division == 2:
+                                chosen_avg_norm = avg_norm[:len_tuple]
+                                reject_avg_norm = avg_norm[len_tuple:]
+                            elif self.args.molpo_batch_division == 3:
+                                sft_avg_norm = avg_norm[:len_tuple]
+                                chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
+                                reject_avg_norm = avg_norm[2 * len_tuple :]
 
-                        outputs[f"{k}/sft"] = sft_avg_norm
+                                outputs[f"{k}/sft"] = sft_avg_norm
 
-                    outputs[f"{k}/chosen"] = chosen_avg_norm
-                    outputs[f"{k}/reject"] = reject_avg_norm
+                            outputs[f"{k}/chosen"] = chosen_avg_norm
+                            outputs[f"{k}/reject"] = reject_avg_norm
 
         self.log(
             "lr",
@@ -826,10 +833,51 @@ class Blip2Stage3(pl.LightningModule):
                             sync_dist=False,
                         )
 
+    def _fix_modules_to_save_gradients(self):
+        """
+        [CRITICAL FIX] modules_to_save (embed_tokens, lm_head)를 강제로 trainable 설정
+
+        체크포인트 로드 후 또는 초기화 후에 호출하여
+        PEFT modules_to_save로 지정된 모듈들이 실제로 학습 가능한지 확인하고 수정합니다.
+        """
+        if not hasattr(self.blip2model, 'llm_model'):
+            logger.warning("No llm_model found, skipping gradient fix")
+            return
+
+        # LoRA 모드가 아니면 스킵
+        if self.tune_llm != "lora":
+            return
+
+        fixed_params = []
+
+        # 모든 파라미터를 순회하면서 embedding/output layer를 찾아서 trainable 설정
+        # LLaDA: wte, ff_out / Standard: embed_tokens, lm_head
+        for name, param in self.blip2model.llm_model.named_parameters():
+            name_lower = name.lower()
+            if ('embed' in name_lower or 'lm_head' in name_lower or
+                'wte' in name_lower or 'ff_out' in name_lower):
+                if not param.requires_grad:
+                    param.requires_grad = True
+                    fixed_params.append(name)
+
+        if fixed_params:
+            logger.info(f"  Fixed {len(fixed_params)} parameters to requires_grad=True:")
+            for name in fixed_params[:5]:  # 처음 5개만 출력
+                logger.info(f"    - {name}")
+            if len(fixed_params) > 5:
+                logger.info(f"    ... and {len(fixed_params) - 5} more")
+        else:
+            logger.info("  All embed/lm_head parameters already have requires_grad=True")
+
     def on_train_epoch_start(self) -> None:
         self.task_specific_outputs = {}
         # if not hasattr(self, "task_specific_chosen_reward"):
         self.task_specific_chosen_reward = {}
+
+        # [CRITICAL FIX] 매 epoch 시작마다 modules_to_save gradients 재확인
+        # 특히 epoch 0에서 체크포인트가 로드된 경우 필수
+        if self.current_epoch == 0:
+            self._fix_modules_to_save_gradients()
 
         self.train_list_predictions = []
         self.train_list_targets = []
@@ -869,33 +917,81 @@ class Blip2Stage3(pl.LightningModule):
             logger.info("="*70 + "\n")
             return
 
-        peft_cfg = self.blip2model.llm_model.peft_config
-        if hasattr(peft_cfg, 'modules_to_save') and peft_cfg.modules_to_save:
-            logger.info(f"✅ modules_to_save configured: {peft_cfg.modules_to_save}")
+        # peft_config는 dict[adapter_name, PeftConfig] 형태
+        peft_config_dict = self.blip2model.llm_model.peft_config
+        if isinstance(peft_config_dict, dict):
+            # 기본 어댑터는 "default" 키를 사용
+            adapter_name = list(peft_config_dict.keys())[0] if peft_config_dict else None
+            if adapter_name:
+                peft_cfg = peft_config_dict[adapter_name]
+                if hasattr(peft_cfg, 'modules_to_save') and peft_cfg.modules_to_save:
+                    logger.info(f"✅ modules_to_save configured: {peft_cfg.modules_to_save}")
+                    logger.info(f"   (LLaDA uses: model.transformer.wte, model.transformer.ff_out)")
+                else:
+                    logger.warning("⚠️  No modules_to_save in PEFT config!")
+            else:
+                logger.warning("⚠️  No adapters found in peft_config!")
         else:
-            logger.warning("⚠️  No modules_to_save in PEFT config!")
+            # 이전 버전 호환성
+            peft_cfg = peft_config_dict
+            if hasattr(peft_cfg, 'modules_to_save') and peft_cfg.modules_to_save:
+                logger.info(f"✅ modules_to_save configured: {peft_cfg.modules_to_save}")
+            else:
+                logger.warning("⚠️  No modules_to_save in PEFT config!")
 
         # 2. embed_tokens 및 lm_head 상태 확인
-        embed_tokens_found = False
-        lm_head_found = False
-        embed_tokens_trainable = False
-        lm_head_trainable = False
-        embed_size = None
-        lm_head_size = None
+        # PEFT 모델에서는 직접 get_input_embeddings / get_output_embeddings 사용이 더 안전
+        try:
+            embed_layer = self.blip2model.llm_model.get_input_embeddings()
+            lm_head_layer = self.blip2model.llm_model.get_output_embeddings()
 
-        for name, param in self.blip2model.llm_model.named_parameters():
-            if 'embed_tokens' in name:
-                embed_tokens_found = True
-                embed_tokens_trainable = param.requires_grad
-                embed_size = param.shape
-                logger.info(f"  📊 {name}")
-                logger.info(f"      Shape: {param.shape}, requires_grad: {param.requires_grad}")
-            if 'lm_head' in name:
-                lm_head_found = True
-                lm_head_trainable = param.requires_grad
-                lm_head_size = param.shape
-                logger.info(f"  📊 {name}")
-                logger.info(f"      Shape: {param.shape}, requires_grad: {param.requires_grad}")
+            embed_tokens_found = embed_layer is not None
+            lm_head_found = lm_head_layer is not None
+
+            if embed_tokens_found:
+                embed_tokens_trainable = embed_layer.weight.requires_grad
+                embed_size = embed_layer.weight.shape
+                logger.info(f"  📊 Input Embeddings (embed_tokens)")
+                logger.info(f"      Shape: {embed_size}, requires_grad: {embed_tokens_trainable}")
+                logger.info(f"      Type: {type(embed_layer).__name__}")
+
+            if lm_head_found:
+                lm_head_trainable = lm_head_layer.weight.requires_grad
+                lm_head_size = lm_head_layer.weight.shape
+                logger.info(f"  📊 Output Embeddings (lm_head)")
+                logger.info(f"      Shape: {lm_head_size}, requires_grad: {lm_head_trainable}")
+                logger.info(f"      Type: {type(lm_head_layer).__name__}")
+
+            # 추가: named_parameters로 실제 저장된 이름 확인
+            logger.info("\n  Checking parameter names containing 'embed' or 'lm_head':")
+            found_params = []
+            for name, param in self.blip2model.llm_model.named_parameters():
+                if 'embed' in name.lower() or 'lm_head' in name.lower():
+                    found_params.append(f"{name} (grad={param.requires_grad})")
+
+            if found_params:
+                for param_info in found_params[:10]:  # 최대 10개만 출력
+                    logger.info(f"    - {param_info}")
+                if len(found_params) > 10:
+                    logger.info(f"    ... and {len(found_params) - 10} more")
+            else:
+                logger.info("    No parameters found with 'embed' or 'lm_head' in name")
+
+        except Exception as e:
+            logger.error(f"  Error checking embeddings: {e}")
+            # Fallback: 이전 방식 사용
+            embed_tokens_found = False
+            lm_head_found = False
+            embed_tokens_trainable = False
+            lm_head_trainable = False
+
+            for name, param in self.blip2model.llm_model.named_parameters():
+                if 'embed_tokens' in name or 'embed_token' in name:
+                    embed_tokens_found = True
+                    embed_tokens_trainable = embed_tokens_trainable or param.requires_grad
+                if 'lm_head' in name:
+                    lm_head_found = True
+                    lm_head_trainable = lm_head_trainable or param.requires_grad
 
         # 3. 상태 요약
         if embed_tokens_found and lm_head_found:
@@ -903,8 +999,11 @@ class Blip2Stage3(pl.LightningModule):
                 logger.info("✅ Both embed_tokens and lm_head are TRAINABLE")
             else:
                 logger.warning(f"⚠️  Training status - embed_tokens: {embed_tokens_trainable}, lm_head: {lm_head_trainable}")
+                if not embed_tokens_trainable or not lm_head_trainable:
+                    logger.error("❌ CRITICAL: modules_to_save 모듈이 학습 불가능 상태입니다!")
         else:
             logger.error(f"❌ Missing modules! embed_tokens: {embed_tokens_found}, lm_head: {lm_head_found}")
+            logger.error("❌ CRITICAL: 이 상태에서는 새로운 토큰을 학습할 수 없습니다!")
 
         # 4. Vocab size 일관성 확인
         try:

@@ -43,10 +43,10 @@ num_sanity_val_steps: 0
 # total_batch_size: 1024
 # batch_size: 8
 # inference_batch_size: 11
-accumulate_grad_batches: 16
-total_batch_size: 256
-batch_size: 1
-save_on_n_steps: 100 # 100일 때 막 1epoch에 50개씩 저장됨.
+accumulate_grad_batches: 11
+total_batch_size: 512
+batch_size: 4
+save_on_n_steps: 1000 # 100일 때 막 1epoch에 50개씩 저장됨.
 # Inference Conficuation
 inference_batch_size: 11
 sampling_steps: 16 #! 추후 최종적인 Metric 계산시에는 sequence 길이로 수정 예정

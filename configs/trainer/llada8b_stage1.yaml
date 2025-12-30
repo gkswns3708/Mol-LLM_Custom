@@ -1,0 +1,84 @@
+# ============================================
+# [필수] Stage 식별자
+# ============================================
+llava_pretraining: 0        # ❌ Q-Former 학습 비활성화
+train_molpo: false          # ❌ MolPO 비활성화
+second_stage_start_epoch: 0 # Stage 내 전환 없음
+
+# ============================================
+# [필수] 모델 아키텍처
+# ============================================
+llm_model: "GSAI-ML/LLaDA-8B-Instruct"
+tune_llm: lora                   # ✅ LoRA 학습
+tune_gnn: false                  # ❌ GNN 없음 (Text-only)
+mol_representation: string_only  # ✅ SMILES/SELFIES만 사용
+
+# ============================================
+# [필수] LoRA 설정
+# ============================================
+peft_config: "/home/jovyan/CHJ/Mol-LLM_Custom/lora_config_llada.json"
+peft_dir: ""                # 처음부터 학습
+lora_r: 16                  # JSON과 일치시켜야 함
+lora_alpha: 32
+lora_dropout: 0.05
+
+# ============================================
+# [필수] Projector (Stage 1에서는 미사용)
+# ============================================
+projector_type: qformer     # 초기화만 되고 학습 안 됨
+num_query_token: 32
+bert_name: scibert
+cross_attention_freq: 2
+bert_num_hidden_layers: 5
+
+# ============================================
+# [필수] 토크나이저
+# ============================================
+add_selfies_tokens: true
+selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt
+
+# ============================================
+# [필수] 학습 설정
+# ============================================
+max_epochs: 3               # Stage 1은 짧게 (3-5 epoch)
+batch_size: 4
+total_batch_size: 512       # = batch_size * devices * accumulate
+accumulate_grad_batches: 16 # 512/(4*8) = 16
+
+# Optimizer
+optimizer: adamw
+init_lr: 0.0001             # Stage 1은 높은 LR
+min_lr: 0.00001
+warmup_steps: 100
+scheduler: warmup_stable_decay_lr
+weight_decay: 0.05
+gradient_clip_val: 1.0
+
+# ============================================
+# [필수] LLaDA 전용 설정
+# ============================================
+remasking_strategy: 'random'     # low_confidence or random
+sampling_steps: 16               # Generation 시 diffusion steps
+
+# ============================================
+# [필수] 데이터
+# ============================================
+# defaults:
+#   - data: multi_task_stage1  # SMILES/SELFIES 기반 Task
+max_length: 512
+inference_max_length: 512
+gen_max_len: 256
+min_len: 8
+
+# ============================================
+# [필수] 로깅
+# ============================================
+logging_dir: /home/jovyan/CHJ/checkpoint/LLaDA_Stage1
+filename: llada_stage1_text_only
+save_on_n_steps: 500
+val_check_interval: 0.5     # 0.5 epoch마다 validation
+
+# ============================================
+# [주의] 반드시 False로 설정
+# ============================================
+log_attn_score: false       # ⚠️ LLaDA는 Attention logging 미지원

@@ -255,6 +255,12 @@ def main(cfg):
         model.load_state_dict(ckpt["state_dict"], strict=False)
         print(f"loaded pretrained model from {cfg.pretrained_ckpt_path}")
 
+        # [CRITICAL FIX] 체크포인트 로드 후 modules_to_save를 강제로 trainable 설정
+        print("\n" + "="*70)
+        print("[CHECKPOINT LOAD] Fixing modules_to_save gradients after checkpoint load...")
+        model._fix_modules_to_save_gradients()
+        print("="*70 + "\n")
+
     if cfg.mode in {"ft"}:
         trainer.fit(model, datamodule=dm, ckpt_path=cfg.ckpt_path)
         outputs = trainer.test(model, datamodule=dm)

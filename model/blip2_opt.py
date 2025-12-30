@@ -265,10 +265,47 @@ class Blip2OPT(Blip2Base):
         else:
             raise NotImplementedError()
 
-        # # 이 코드로 인해 embedding layer(embed_tokens)를 학습 가능하네 unfreeze함.
-        # self.set_params_requires_grads(model=self.llm_model, keyword="embed", grad=True, IsPrint=False)
-        # # [CRITICAL FIX] lm_head도 unfreeze (modules_to_save에 포함되므로 학습 필요)
-        # self.set_params_requires_grads(model=self.llm_model, keyword="lm_head", grad=True, IsPrint=False) 
+        # [CRITICAL FIX] PEFT modules_to_save에 포함된 모듈들을 명시적으로 학습 가능하게 설정
+        # PEFT 적용 후에도 requires_grad를 강제로 설정해야 함
+        if tune_llm == "lora":
+            print("\n" + "="*70)
+            print("[PEFT FIX] Setting embed_tokens and lm_head to trainable...")
+
+            # 디버깅: 모든 파라미터 이름 확인
+            print("[DEBUG] Searching for embedding/output layer parameters...")
+            wte_count = 0  # Word Token Embedding (LLaDA)
+            ff_out_count = 0  # Feed-Forward Output (LLaDA)
+            embed_count = 0  # Standard embed_tokens
+            lm_head_count = 0  # Standard lm_head
+
+            for name, param in self.llm_model.named_parameters():
+                name_lower = name.lower()
+                # LLaDA specific names
+                if 'wte' in name_lower or '.wte.' in name:
+                    wte_count += 1
+                    if wte_count <= 2:
+                        print(f"  Found wte param: {name}, requires_grad={param.requires_grad}")
+                if 'ff_out' in name_lower or '.ff_out.' in name:
+                    ff_out_count += 1
+                    if ff_out_count <= 2:
+                        print(f"  Found ff_out param: {name}, requires_grad={param.requires_grad}")
+                # Standard names (for other models)
+                if 'embed' in name_lower and 'token' in name_lower:
+                    embed_count += 1
+                    if embed_count <= 2:
+                        print(f"  Found embed_tokens param: {name}, requires_grad={param.requires_grad}")
+                if 'lm_head' in name_lower:
+                    lm_head_count += 1
+                    if lm_head_count <= 2:
+                        print(f"  Found lm_head param: {name}, requires_grad={param.requires_grad}")
+
+            print(f"  Total: wte={wte_count}, ff_out={ff_out_count}, embed_tokens={embed_count}, lm_head={lm_head_count}")
+
+            # 모든 가능한 키워드로 unfreeze 시도
+            keywords = ["embed", "lm_head", "wte", "ff_out"]
+            for keyword in keywords:
+                self.set_params_requires_grads(model=self.llm_model, keyword=keyword, grad=True, IsPrint=True)
+            print("="*70 + "\n") 
 
         #! Stage 2에서 Q-Former를 학습할 때, LoRA의 Gradient가 없어야 하는데, 아래는 이를 위한 코드
         if self.args.llava_pretraining:
