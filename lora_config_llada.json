@@ -17,6 +17,6 @@
     ],
     "peft_type": "LORA",
     "r": 16,
-    "modules_to_save": ["embed_tokens", "lm_head"], 
+    "modules_to_save": ["model.transformer.wte", "model.transformer.ff_out"],
     "task_type": "CAUSAL_LM"
 }
