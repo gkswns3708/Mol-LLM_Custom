@@ -265,10 +265,12 @@ class Blip2OPT(Blip2Base):
         else:
             raise NotImplementedError()
 
-        self.set_params_requires_grads(
-            model=self.llm_model, keyword="embed", grad=True, IsPrint=False
-        )
+        # # 이 코드로 인해 embedding layer(embed_tokens)를 학습 가능하네 unfreeze함.
+        # self.set_params_requires_grads(model=self.llm_model, keyword="embed", grad=True, IsPrint=False)
+        # # [CRITICAL FIX] lm_head도 unfreeze (modules_to_save에 포함되므로 학습 필요)
+        # self.set_params_requires_grads(model=self.llm_model, keyword="lm_head", grad=True, IsPrint=False) 
 
+        #! Stage 2에서 Q-Former를 학습할 때, LoRA의 Gradient가 없어야 하는데, 아래는 이를 위한 코드
         if self.args.llava_pretraining:
             self.set_params_requires_grads(
                 model=self.llm_model, keyword="lora", grad=False, IsPrint=False
