@@ -1,5 +1,5 @@
-raw_data_root: /tmp/jovyan/real_train
-data_tag: 3.3M_0415
+raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official # 실제 학습 해야하는 경로
+data_tag: 512_Truncation # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
 
 target_benchmarks:
   # ---- used for training (논문 인스트럭션 튜닝 대상) ----
@@ -24,7 +24,7 @@ target_benchmarks:
   - smol-retrosynthesis
 
   # ---- OOD 평가 전용 (학습에는 미사용) ----
-  # - aqsol-logS
+  # - aqsol-logS1
   # - orderly-forward_reaction_prediction
   # - orderly-retrosynthesis
 
