@@ -15,8 +15,21 @@ wandb_id: null
 
 custom_log: True
 debug: false
+
+# ==================== Resume/Load Checkpoint Configuration ====================
+# ckpt_path: 특정 checkpoint에서 학습 재개 (optimizer, scheduler, epoch, step 모두 복원)
+# 사용 예시:
+#   ckpt_path: "/path/to/checkpoint/epoch=03-step=001500-train.ckpt"
+#   ckpt_path: "/path/to/checkpoint/last.ckpt"  # 가장 최근 checkpoint
 ckpt_path: null
+
+# pretrained_ckpt_path: 사전 학습된 모델 가중치만 로드 (학습은 처음부터)
+# 사용 예시:
+#   pretrained_ckpt_path: "/path/to/checkpoint/Custom_LLaDA/stage1/epoch=07-step=051600-train.ckpt"
 pretrained_ckpt_path: null
+
+# 주의: ckpt_path와 pretrained_ckpt_path는 동시에 사용할 수 없습니다!
+# ==============================================================================
 
 shuffle_selfies: false
 shuffle_graph: false
