@@ -7,4 +7,5 @@ trainer.devices=${gpus} \
 filename=${file_name} \
 trainer=llada8b \
 trainer.mol_representation=string_only \
-trainer.skip_sanity_check=true \
+trainer.skip_sanity_check=false \
+pretrained_ckpt_path="'/home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA/stage1_llm_pretraining/epoch=07-step=51600-train.ckpt'"
