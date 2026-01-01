@@ -301,10 +301,42 @@ class Blip2OPT(Blip2Base):
 
             print(f"  Total: wte={wte_count}, ff_out={ff_out_count}, embed_tokens={embed_count}, lm_head={lm_head_count}")
 
-            # 모든 가능한 키워드로 unfreeze 시도
-            keywords = ["embed", "lm_head", "wte", "ff_out"]
-            for keyword in keywords:
-                self.set_params_requires_grads(model=self.llm_model, keyword=keyword, grad=True, IsPrint=True)
+            # [FIX] 정확한 경로 지정으로 INPUT embedding과 OUTPUT head만 학습
+            # blocks 내부의 ff_out은 제외하여 메모리 절약
+            print("[FIX] Setting ONLY input embedding (wte/embed_tokens) and output head (ff_out/lm_head) to trainable...")
+            print("      Excluding transformer blocks internal ff_out layers...")
+
+            trainable_count = 0
+            for name, param in self.llm_model.named_parameters():
+                # Skip if it's inside transformer blocks
+                if '.blocks.' in name or 'transformer.blocks' in name:
+                    continue
+
+                # 1. LLaDA: Input Embedding (wte)
+                if 'wte' in name.lower():
+                    param.requires_grad = True
+                    print(f"  ✓ {name} set to requires_grad: True")
+                    trainable_count += 1
+
+                # 2. LLaDA: Output LM Head (ff_out at transformer level, NOT in blocks)
+                elif 'ff_out' in name.lower():
+                    param.requires_grad = True
+                    print(f"  ✓ {name} set to requires_grad: True")
+                    trainable_count += 1
+
+                # 3. Standard models: embed_tokens
+                elif 'embed_tokens' in name.lower():
+                    param.requires_grad = True
+                    print(f"  ✓ {name} set to requires_grad: True")
+                    trainable_count += 1
+
+                # 4. Standard models: lm_head
+                elif 'lm_head' in name.lower():
+                    param.requires_grad = True
+                    print(f"  ✓ {name} set to requires_grad: True")
+                    trainable_count += 1
+
+            print(f"  Total parameters explicitly set to trainable: {trainable_count}")
             print("="*70 + "\n") 
 
         #! Stage 2에서 Q-Former를 학습할 때, LoRA의 Gradient가 없어야 하는데, 아래는 이를 위한 코드

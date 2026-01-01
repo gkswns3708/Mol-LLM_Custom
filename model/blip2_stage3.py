@@ -83,7 +83,9 @@ class Blip2Stage3(pl.LightningModule):
                 self.task_specific_chosen_reward
             )
 
-        self.log_model_parameters()
+        # DISABLED: self.log_model_parameters()
+        # This logs 8B+ parameters to WandB/TensorBoard which takes hours
+        # Only enable for debugging specific parameter issues
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         if "task_specific_chosen_reward" in checkpoint:
@@ -599,6 +601,58 @@ class Blip2Stage3(pl.LightningModule):
         if self.global_step % self.trainer.log_every_n_steps == 0:
             self._log_sample_predictions(batch, outputs, tasks, batch_idx, mode="train")
 
+        # ==================================================================
+        # [DEBUG] GPU-specific monitoring around iteration 30-35
+        # ==================================================================
+        if 28 <= batch_idx <= 35:
+            import torch.distributed as dist
+            import torch.cuda as cuda
+            import sys
+
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+            # Get GPU memory info
+            gpu_id = rank  # In DDP, rank usually corresponds to GPU ID
+            mem_allocated = cuda.memory_allocated(gpu_id) / 1024**3  # GB
+            mem_reserved = cuda.memory_reserved(gpu_id) / 1024**3    # GB
+            mem_free = (cuda.get_device_properties(gpu_id).total_memory - cuda.memory_reserved(gpu_id)) / 1024**3
+
+            print(f"\n{'='*70}")
+            print(f"[GPU{rank}] ✓ training_step COMPLETED for batch_idx={batch_idx}")
+            print(f"[GPU{rank}]   global_step={self.global_step}")
+            print(f"[GPU{rank}]   loss={loss.item() if loss is not None else 'None'}")
+            print(f"[GPU{rank}]   Memory: allocated={mem_allocated:.2f}GB, reserved={mem_reserved:.2f}GB, free={mem_free:.2f}GB")
+            print(f"[GPU{rank}]   Rank {rank}/{world_size}")
+            print(f"{'='*70}\n")
+            sys.stdout.flush()
+
+            # Critical barrier test at batch 31
+            if batch_idx == 31:
+                print(f"[GPU{rank}] >>> ENTERING BARRIER TEST at batch 31 <<<")
+                sys.stdout.flush()
+
+                if dist.is_initialized():
+                    try:
+                        import time
+                        start_time = time.time()
+                        print(f"[GPU{rank}] Waiting at barrier...")
+                        sys.stdout.flush()
+
+                        dist.barrier()
+
+                        elapsed = time.time() - start_time
+                        print(f"[GPU{rank}] >>> BARRIER PASSED! (took {elapsed:.3f}s) <<<")
+                        sys.stdout.flush()
+                    except Exception as e:
+                        print(f"[GPU{rank}] !!! BARRIER FAILED: {e} !!!")
+                        sys.stdout.flush()
+                        raise
+                else:
+                    print(f"[GPU{rank}] DDP not initialized, skipping barrier test")
+                    sys.stdout.flush()
+        # ==================================================================
+
         return loss
 
     def _cache_critical_params(self):
@@ -637,7 +691,7 @@ class Blip2Stage3(pl.LightningModule):
                  batch_size=self.args.batch_size, sync_dist=False)
 
     def _log_sample_predictions(self, batch, outputs, tasks, batch_idx, mode="train",
-                                 num_samples=2, predictions=None, targets=None, prompts=None):
+                                 num_samples=2, predictions=None, targets=None, prompts=None, generated_ids=None):
         """통합 샘플 예측 로깅 (Training & Validation)"""
         import logging
         logger = logging.getLogger(__name__)
@@ -768,14 +822,30 @@ class Blip2Stage3(pl.LightningModule):
                 # Prediction
                 logger.info(f"Prediction: {predictions[i]}")
 
-                # [NEW] Prediction Token IDs
+                # [NEW] Generated Token IDs (raw output from model)
+                if generated_ids is not None:
+                    try:
+                        gen_id_list = generated_ids[i].tolist() if hasattr(generated_ids[i], 'tolist') else generated_ids[i]
+                        logger.info(f"\n[Generated Output] Token IDs (len={len(gen_id_list)}): {gen_id_list}")
+
+                        # Decode generated IDs
+                        generated_text = self.blip2model.llm_tokenizer.decode(generated_ids[i], skip_special_tokens=False)
+                        logger.info(f"[Generated Output] Decoded Text: {generated_text}")
+
+                        # Token breakdown
+                        gen_tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(generated_ids[i])
+                        logger.info(f"[Generated Output] Tokens: {' || '.join(gen_tokens[:50])}{'...' if len(gen_tokens) > 50 else ''}")
+                    except Exception as e:
+                        logger.warning(f"Could not process generated_ids: {e}")
+
+                # [OLD] Prediction Token IDs (from re-encoded prediction string)
                 try:
                     pred_ids = self.blip2model.llm_tokenizer.encode(predictions[i], add_special_tokens=False)
-                    logger.info(f"Prediction Token IDs (len={len(pred_ids)}): {pred_ids}")
+                    logger.info(f"\n[Re-encoded Prediction] Token IDs (len={len(pred_ids)}): {pred_ids}")
 
                     # Token breakdown
                     pred_tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(pred_ids)
-                    logger.info(f"Prediction Tokens: {' || '.join(pred_tokens)}")
+                    logger.info(f"[Re-encoded Prediction] Tokens: {' || '.join(pred_tokens)}")
                 except Exception as e:
                     logger.warning(f"Token debug error: {e}")
 
@@ -850,12 +920,18 @@ class Blip2Stage3(pl.LightningModule):
 
         fixed_params = []
 
-        # 모든 파라미터를 순회하면서 embedding/output layer를 찾아서 trainable 설정
-        # LLaDA: wte, ff_out / Standard: embed_tokens, lm_head
+        # [FIX] 정확한 경로 지정으로 INPUT embedding과 OUTPUT head만 학습
+        # blocks 내부의 ff_out은 제외하여 메모리 절약
         for name, param in self.blip2model.llm_model.named_parameters():
+            # Skip if it's inside transformer blocks
+            if '.blocks.' in name or 'transformer.blocks' in name:
+                continue
+
+            # LLaDA: wte (input embedding), ff_out (output head at transformer level ONLY)
+            # Standard: embed_tokens, lm_head
             name_lower = name.lower()
-            if ('embed' in name_lower or 'lm_head' in name_lower or
-                'wte' in name_lower or 'ff_out' in name_lower):
+            if ('wte' in name_lower or 'embed_tokens' in name_lower or
+                'lm_head' in name_lower or 'ff_out' in name_lower):
                 if not param.requires_grad:
                     param.requires_grad = True
                     fixed_params.append(name)
@@ -891,7 +967,9 @@ class Blip2Stage3(pl.LightningModule):
             self.trainer.current_epoch
         )
 
-        self.log_model_parameters()
+        # DISABLED: self.log_model_parameters()
+        # This logs 8B+ parameters to WandB/TensorBoard which takes hours
+        # Only enable for debugging specific parameter issues
 
         # [Fix 2.1] Epoch 0에서 LoRA 설정 검증
         if self.current_epoch == 0 and self.global_step == 0:
@@ -1026,6 +1104,15 @@ class Blip2Stage3(pl.LightningModule):
         logger.info("="*70 + "\n")
 
     def on_evaluation_epoch_start(self):
+        # Print validation start indicator
+        print(f"\n{'='*70}")
+        print(f"🔍 [VALIDATION] Starting validation at step {self.global_step}")
+        print(f"🔍 [VALIDATION] Current epoch: {self.current_epoch}")
+        print(f"🔍 [VALIDATION] Trainer state: {self.trainer.state.stage if hasattr(self.trainer, 'state') else 'N/A'}")
+        print(f"{'='*70}\n")
+        import sys
+        sys.stdout.flush()
+
         self.list_logs = {
             "predictions": [],
             "targets": [],
@@ -1052,7 +1139,10 @@ class Blip2Stage3(pl.LightningModule):
         if not hasattr(self, "task_specific_chosen_reward"):
             self.task_specific_chosen_reward = {}
 
-        self.log_model_parameters()
+        # DISABLED: self.log_model_parameters()
+        # This logs 8B+ parameters to WandB/TensorBoard which takes hours
+        # Only enable for debugging specific parameter issues
+        # Comment added to fix hang at iteration 31
 
     def log_model_parameters(self):
         mean_params = []
@@ -1093,6 +1183,12 @@ class Blip2Stage3(pl.LightningModule):
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx, mode="val"):
         # ----------------------------------------------------------------------
+        # [Progress Indicator] Show validation progress every 100 batches
+        # ----------------------------------------------------------------------
+        if batch_idx % 100 == 0 and batch_idx > 0:
+            print(f"📊 Validation progress: batch {batch_idx}...")
+
+        # ----------------------------------------------------------------------
         # [Step 1] 초기 데이터 및 변수 설정
         # ----------------------------------------------------------------------
         # Graph 데이터 분리
@@ -1109,30 +1205,7 @@ class Blip2Stage3(pl.LightningModule):
         gen_logits = None
         forward_logits = None
         attentions = None
-        
-        # ----------------------------------------------------------------------
-        # [Step 2] 디버깅 로그 출력 (첫 번째 배치만)
-        # ----------------------------------------------------------------------
-        if batch_idx == 0 and self.args.custom_log: 
-            print(f"\n{'='*20} [DEBUG: Input Token Analysis] {'='*20}")
-            tokenizer = self.blip2model.llm_tokenizer
-            input_ids_batch = batch.prompt_input_ids
-            
-            for k in range(min(2, len(input_ids_batch))):
-                ids = input_ids_batch[k]
-                print(f"\n[Sample {k}] Input IDs (Length: {len(ids)}):")
-                print(f"{ids.tolist()}")
-                
-                tokens = tokenizer.convert_ids_to_tokens(ids)
-                print(f"[Sample {k}] Token-wise List:")
-                print(tokens)
-                
-                decoded_text = tokenizer.decode(ids, skip_special_tokens=False)
-                print(f"[Sample {k}] Full Decoded String:")
-                print(decoded_text)
-                print("-" * 60)
-            print(f"{'='*60}\n")
-        
+
         is_llada = "llada" in self.args.llm_model.lower()
         
         # ----------------------------------------------------------------------
@@ -1160,15 +1233,84 @@ class Blip2Stage3(pl.LightningModule):
         # Generation 실행
         with torch.no_grad():
             gen_outputs = self.blip2model.generate(**gen_kwargs)
-        
+
         # Logits 안전하게 추출
         if hasattr(gen_outputs, "logits"):
             gen_logits = gen_outputs.logits
         else:
-            gen_logits = None 
+            gen_logits = None
+
+        # [NEW] Generated Token IDs 저장 (디코딩 전 원본)
+        if hasattr(gen_outputs, "sequences"):
+            generated_ids = gen_outputs.sequences  # [batch_size, seq_len]
+        else:
+            generated_ids = None
 
         gen_labels = batch.gen_labels
-        
+
+        # ----------------------------------------------------------------------
+        # [Step 3.5] 디버깅 로그 출력 - Generated Sequence (첫 번째 배치만, GPU 0만)
+        # ----------------------------------------------------------------------
+        if batch_idx == 0 and self.args.custom_log and self.trainer.global_rank == 0:
+            tokenizer = self.blip2model.llm_tokenizer
+            print(f"\n{'='*80}")
+            print(f"{'='*25} [DEBUG: Generation Analysis] {'='*25}")
+            print(f"{'='*80}")
+
+            for k in range(min(2, batch.prompt_input_ids.shape[0])):
+                print(f"\n{'─'*80}")
+                print(f"[Sample {k}]")
+                print(f"{'─'*80}")
+
+                if generated_ids is not None and k < len(generated_ids):
+                    # Full sequence (Input + Output)
+                    full_ids = generated_ids[k]
+                    input_len = len(batch.prompt_input_ids[k])
+
+                    # Split into Input and Output
+                    input_part_ids = full_ids[:input_len]
+                    output_part_ids = full_ids[input_len:]
+
+                    # === Full Sequence ===
+                    print(f"\n🔍 [FULL SEQUENCE] Token IDs (Total Length: {len(full_ids)}):")
+                    print(f"{full_ids.tolist()}")
+
+                    full_tokens = tokenizer.convert_ids_to_tokens(full_ids)
+                    print(f"\n🔍 [FULL SEQUENCE] Token-wise List:")
+                    print(full_tokens)
+
+                    full_decoded = tokenizer.decode(full_ids, skip_special_tokens=False)
+                    print(f"\n🔍 [FULL SEQUENCE] Decoded String:")
+                    print(full_decoded)
+
+                    print(f"\n{'-'*80}")
+
+                    # === Input Part ===
+                    print(f"\n📥 [INPUT PART] Token IDs (Length: {len(input_part_ids)}):")
+                    print(f"{input_part_ids.tolist()}")
+
+                    input_part_decoded = tokenizer.decode(input_part_ids, skip_special_tokens=False)
+                    print(f"\n📥 [INPUT PART] Decoded String:")
+                    print(input_part_decoded)
+
+                    print(f"\n{'-'*80}")
+
+                    # === Output Part (Generated Only) ===
+                    print(f"\n📤 [OUTPUT PART - GENERATED ONLY] Token IDs (Length: {len(output_part_ids)}):")
+                    print(f"{output_part_ids.tolist()}")
+
+                    output_tokens = tokenizer.convert_ids_to_tokens(output_part_ids)
+                    print(f"\n📤 [OUTPUT PART] Token-wise List:")
+                    print(output_tokens)
+
+                    output_part_decoded = tokenizer.decode(output_part_ids, skip_special_tokens=False)
+                    print(f"\n📤 [OUTPUT PART] Decoded String:")
+                    print(output_part_decoded)
+
+                print(f"\n{'─'*80}")
+
+            print(f"\n{'='*80}\n")
+
         # ----------------------------------------------------------------------
         # [Step 4] Forward Pass (Loss 계산)
         # ----------------------------------------------------------------------
@@ -1255,18 +1397,20 @@ class Blip2Stage3(pl.LightningModule):
                 attentions = gen_outputs.attentions
             else:
                 attentions = None
-                
+
             predictions = gen_outputs.predictions[:len_tuple]
             prompt_input_ids = batch.prompt_input_ids[:len_tuple]
             input_ids = batch.input_ids[:len_tuple]
+            if generated_ids is not None:
+                generated_ids = generated_ids[:len_tuple]
         else:
             tasks = [id2task(task_id.item()) for task_id in batch.tasks]
-            
+
             if hasattr(gen_outputs, "attentions"):
                 attentions = gen_outputs.attentions
             else:
                 attentions = None
-                
+
             predictions = gen_outputs.predictions
             prompt_input_ids = batch.prompt_input_ids
             input_ids = batch.input_ids
@@ -1349,7 +1493,8 @@ class Blip2Stage3(pl.LightningModule):
             num_samples=len(tasks),  # 모든 샘플 시도 (함수 내부에서 task당 5개 제한)
             predictions=predictions,
             targets=targets,
-            prompts=prompts
+            prompts=prompts,
+            generated_ids=generated_ids  # [NEW] 생성된 토큰 ID 전달
         )
             
 
