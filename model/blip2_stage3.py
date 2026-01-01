@@ -1103,6 +1103,87 @@ class Blip2Stage3(pl.LightningModule):
 
         logger.info("="*70 + "\n")
 
+        # [Fix 2.1] Epoch 0에서 LoRA 설정 검증
+        if self.current_epoch == 0 and self.global_step == 0:
+            self._log_lora_verification()
+
+    def _log_lora_verification(self):
+        """Epoch 0에서 LoRA 및 modules_to_save 설정 검증"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info("\n" + "="*70)
+        logger.info("[LoRA Verification] Checking modules_to_save setup...")
+        logger.info("="*70)
+
+        # 1. PEFT config 확인
+        if not hasattr(self.blip2model, 'llm_model'):
+            logger.warning("❌ blip2model has no llm_model attribute!")
+            logger.info("="*70 + "\n")
+            return
+
+        if not hasattr(self.blip2model.llm_model, 'peft_config'):
+            logger.warning("❌ Model does not have PEFT config! (Not using LoRA?)")
+            logger.info("="*70 + "\n")
+            return
+
+        peft_cfg = self.blip2model.llm_model.peft_config
+        if hasattr(peft_cfg, 'modules_to_save') and peft_cfg.modules_to_save:
+            logger.info(f"✅ modules_to_save configured: {peft_cfg.modules_to_save}")
+        else:
+            logger.warning("⚠️  No modules_to_save in PEFT config!")
+
+        # 2. embed_tokens 및 lm_head 상태 확인
+        embed_tokens_found = False
+        lm_head_found = False
+        embed_tokens_trainable = False
+        lm_head_trainable = False
+        embed_size = None
+        lm_head_size = None
+
+        for name, param in self.blip2model.llm_model.named_parameters():
+            if 'embed_tokens' in name:
+                embed_tokens_found = True
+                embed_tokens_trainable = param.requires_grad
+                embed_size = param.shape
+                logger.info(f"  📊 {name}")
+                logger.info(f"      Shape: {param.shape}, requires_grad: {param.requires_grad}")
+            if 'lm_head' in name:
+                lm_head_found = True
+                lm_head_trainable = param.requires_grad
+                lm_head_size = param.shape
+                logger.info(f"  📊 {name}")
+                logger.info(f"      Shape: {param.shape}, requires_grad: {param.requires_grad}")
+
+        # 3. 상태 요약
+        if embed_tokens_found and lm_head_found:
+            if embed_tokens_trainable and lm_head_trainable:
+                logger.info("✅ Both embed_tokens and lm_head are TRAINABLE")
+            else:
+                logger.warning(f"⚠️  Training status - embed_tokens: {embed_tokens_trainable}, lm_head: {lm_head_trainable}")
+        else:
+            logger.error(f"❌ Missing modules! embed_tokens: {embed_tokens_found}, lm_head: {lm_head_found}")
+
+        # 4. Vocab size 일관성 확인
+        try:
+            tokenizer_size = len(self.blip2model.llm_tokenizer)
+            model_embed_size = self.blip2model.llm_model.get_input_embeddings().weight.shape[0]
+            model_lm_head_size = self.blip2model.llm_model.get_output_embeddings().weight.shape[0]
+
+            logger.info(f"\n  Vocabulary Sizes:")
+            logger.info(f"    Tokenizer:   {tokenizer_size}")
+            logger.info(f"    Embed layer: {model_embed_size}")
+            logger.info(f"    LM head:     {model_lm_head_size}")
+
+            if tokenizer_size == model_embed_size == model_lm_head_size:
+                logger.info("✅ Size consistency check PASSED")
+            else:
+                logger.error("❌ Size MISMATCH detected! This will cause training issues.")
+        except Exception as e:
+            logger.warning(f"⚠️  Could not verify vocab sizes: {e}")
+
+        logger.info("="*70 + "\n")
+
     def on_evaluation_epoch_start(self):
         # Print validation start indicator
         print(f"\n{'='*70}")
@@ -1493,8 +1574,12 @@ class Blip2Stage3(pl.LightningModule):
             num_samples=len(tasks),  # 모든 샘플 시도 (함수 내부에서 task당 5개 제한)
             predictions=predictions,
             targets=targets,
+<<<<<<< HEAD
             prompts=prompts,
             generated_ids=generated_ids  # [NEW] 생성된 토큰 ID 전달
+=======
+            prompts=prompts
+>>>>>>> origin/main
         )
             
 
