@@ -31,6 +31,12 @@ pretrained_ckpt_path: null
 # 주의: ckpt_path와 pretrained_ckpt_path는 동시에 사용할 수 없습니다!
 # ==============================================================================
 
+# validate_first: Training 시작 전에 validation을 먼저 실행
+# 사용 예시: 이전 wandb run에 이어서 validation 로깅 후 training 시작
+#   validate_first: true
+#   wandb_id: "xehuqcy3"  # 이전 wandb run ID
+validate_first: false
+
 shuffle_selfies: false
 shuffle_graph: false
 process_disjoint: true
