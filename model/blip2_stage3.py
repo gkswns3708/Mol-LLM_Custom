@@ -220,7 +220,7 @@ class Blip2Stage3(pl.LightningModule):
         tasks,
         prompts,
         input_mol_strings,
-        token_ids, #! 추가해봄.
+        token_ids=None,  # optional로 변경
         probs=None,
         filename="predictions.json",
     ):
@@ -238,8 +238,9 @@ class Blip2Stage3(pl.LightningModule):
                 "target": targets[i],
                 "prompt": prompts[i],
                 "input_mol_strings": input_mol_strings[i],
-                "token_ids": token_ids[i], 
             }
+            if token_ids is not None:
+                instance["token_ids"] = token_ids[i]
             if tasks[i] in CLASSIFICATION_BENCHMARKS and probs is not None:
                 instance["prob"] = probs[i]
             instances.append(instance)
@@ -505,48 +506,50 @@ class Blip2Stage3(pl.LightningModule):
             
             print("="*60 + "\n")
             # 필요 시 에러를 발생시켜 학습 중단: raise ValueError("Training stopped due to NaN")
+
         for i, t in enumerate(tasks):
             if "bace" in t or "chebi" in t:
                 valid_len = (batch.labels[i] != -100).sum()
                 if valid_len == 0:
                     print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
-                if hasattr(self.args, "train_molpo") and self.args.train_molpo:
-                    compute_loss_context_manager = torch.amp.autocast
-                    len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
-                    tasks = tasks[:len_tuple]
 
-                    with compute_loss_context_manager(device_type="cuda"):
-                        # outputs가 dict인 경우 instance_loss 가져오기
-                        inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
-                        
-                        loss, metrics = self.get_total_molpo_loss(
-                            logits=logits,
-                            labels=batch.labels,
-                            molpo_labels=batch.molpo_labels,
-                            instance_loss=inst_loss,
-                            tasks=tasks,
-                            is_train=True,
-                            molpo_batch_division=self.args.molpo_batch_division,
-                            config=self.args
-                        )
-                    outputs.update(metrics)
+        if hasattr(self.args, "train_molpo") and self.args.train_molpo:
+            compute_loss_context_manager = torch.amp.autocast
+            len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
+            tasks = tasks[:len_tuple]
 
-                    if "graph_avg_norm" in outputs:
-                        graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
-                        for k in graph_keys:
-                            avg_norm = outputs.pop(k)
-                            if self.args.molpo_batch_division == 2:
-                                chosen_avg_norm = avg_norm[:len_tuple]
-                                reject_avg_norm = avg_norm[len_tuple:]
-                            elif self.args.molpo_batch_division == 3:
-                                sft_avg_norm = avg_norm[:len_tuple]
-                                chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
-                                reject_avg_norm = avg_norm[2 * len_tuple :]
+            with compute_loss_context_manager(device_type="cuda"):
+                # outputs가 dict인 경우 instance_loss 가져오기
+                inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
 
-                                outputs[f"{k}/sft"] = sft_avg_norm
+                loss, metrics = self.get_total_molpo_loss(
+                    logits=logits,
+                    labels=batch.labels,
+                    molpo_labels=batch.molpo_labels,
+                    instance_loss=inst_loss,
+                    tasks=tasks,
+                    is_train=True,
+                    molpo_batch_division=self.args.molpo_batch_division,
+                    config=self.args
+                )
+            outputs.update(metrics)
 
-                            outputs[f"{k}/chosen"] = chosen_avg_norm
-                            outputs[f"{k}/reject"] = reject_avg_norm
+            if "graph_avg_norm" in outputs:
+                graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
+                for k in graph_keys:
+                    avg_norm = outputs.pop(k)
+                    if self.args.molpo_batch_division == 2:
+                        chosen_avg_norm = avg_norm[:len_tuple]
+                        reject_avg_norm = avg_norm[len_tuple:]
+                    elif self.args.molpo_batch_division == 3:
+                        sft_avg_norm = avg_norm[:len_tuple]
+                        chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
+                        reject_avg_norm = avg_norm[2 * len_tuple :]
+
+                        outputs[f"{k}/sft"] = sft_avg_norm
+
+                    outputs[f"{k}/chosen"] = chosen_avg_norm
+                    outputs[f"{k}/reject"] = reject_avg_norm
 
         self.log(
             "lr",
@@ -600,58 +603,6 @@ class Blip2Stage3(pl.LightningModule):
         # [Fix 2.3] Training sample token-level logging
         if self.global_step % self.trainer.log_every_n_steps == 0:
             self._log_sample_predictions(batch, outputs, tasks, batch_idx, mode="train")
-
-        # ==================================================================
-        # [DEBUG] GPU-specific monitoring around iteration 30-35
-        # ==================================================================
-        if 28 <= batch_idx <= 35:
-            import torch.distributed as dist
-            import torch.cuda as cuda
-            import sys
-
-            rank = dist.get_rank() if dist.is_initialized() else 0
-            world_size = dist.get_world_size() if dist.is_initialized() else 1
-
-            # Get GPU memory info
-            gpu_id = rank  # In DDP, rank usually corresponds to GPU ID
-            mem_allocated = cuda.memory_allocated(gpu_id) / 1024**3  # GB
-            mem_reserved = cuda.memory_reserved(gpu_id) / 1024**3    # GB
-            mem_free = (cuda.get_device_properties(gpu_id).total_memory - cuda.memory_reserved(gpu_id)) / 1024**3
-
-            print(f"\n{'='*70}")
-            print(f"[GPU{rank}] ✓ training_step COMPLETED for batch_idx={batch_idx}")
-            print(f"[GPU{rank}]   global_step={self.global_step}")
-            print(f"[GPU{rank}]   loss={loss.item() if loss is not None else 'None'}")
-            print(f"[GPU{rank}]   Memory: allocated={mem_allocated:.2f}GB, reserved={mem_reserved:.2f}GB, free={mem_free:.2f}GB")
-            print(f"[GPU{rank}]   Rank {rank}/{world_size}")
-            print(f"{'='*70}\n")
-            sys.stdout.flush()
-
-            # Critical barrier test at batch 31
-            if batch_idx == 31:
-                print(f"[GPU{rank}] >>> ENTERING BARRIER TEST at batch 31 <<<")
-                sys.stdout.flush()
-
-                if dist.is_initialized():
-                    try:
-                        import time
-                        start_time = time.time()
-                        print(f"[GPU{rank}] Waiting at barrier...")
-                        sys.stdout.flush()
-
-                        dist.barrier()
-
-                        elapsed = time.time() - start_time
-                        print(f"[GPU{rank}] >>> BARRIER PASSED! (took {elapsed:.3f}s) <<<")
-                        sys.stdout.flush()
-                    except Exception as e:
-                        print(f"[GPU{rank}] !!! BARRIER FAILED: {e} !!!")
-                        sys.stdout.flush()
-                        raise
-                else:
-                    print(f"[GPU{rank}] DDP not initialized, skipping barrier test")
-                    sys.stdout.flush()
-        # ==================================================================
 
         return loss
 
@@ -1330,15 +1281,15 @@ class Blip2Stage3(pl.LightningModule):
         gen_labels = batch.gen_labels
 
         # ----------------------------------------------------------------------
-        # [Step 3.5] 디버깅 로그 출력 - Generated Sequence (첫 번째 배치만, GPU 0만)
+        # [Step 3.5] 디버깅 로그 출력 - Generated Sequence (500 배치마다, GPU 0만)
         # ----------------------------------------------------------------------
-        if batch_idx == 0 and self.args.custom_log and self.trainer.global_rank == 0:
+        if batch_idx % 500 == 0 and self.args.custom_log and self.trainer.global_rank == 0:
             tokenizer = self.blip2model.llm_tokenizer
             print(f"\n{'='*80}")
-            print(f"{'='*25} [DEBUG: Generation Analysis] {'='*25}")
+            print(f"{'='*25} [DEBUG: Generation Analysis - batch_idx={batch_idx}] {'='*25}")
             print(f"{'='*80}")
 
-            for k in range(min(2, batch.prompt_input_ids.shape[0])):
+            for k in range(min(10, batch.prompt_input_ids.shape[0])):
                 print(f"\n{'─'*80}")
                 print(f"[Sample {k}]")
                 print(f"{'─'*80}")
@@ -1387,6 +1338,25 @@ class Blip2Stage3(pl.LightningModule):
                     output_part_decoded = tokenizer.decode(output_part_ids, skip_special_tokens=False)
                     print(f"\n📤 [OUTPUT PART] Decoded String:")
                     print(output_part_decoded)
+
+                # === Label (Ground Truth) ===
+                if gen_labels is not None and k < len(gen_labels):
+                    label_ids = gen_labels[k]
+                    # -100 (ignore index) 제외한 실제 label만 추출
+                    valid_label_ids = label_ids[label_ids != -100]
+
+                    print(f"\n🏷️ [LABEL - GROUND TRUTH] Token IDs (Length: {len(valid_label_ids)}):")
+                    print(f"{valid_label_ids.tolist()}")
+
+                    label_tokens = tokenizer.convert_ids_to_tokens(valid_label_ids)
+                    print(f"\n🏷️ [LABEL] Token-wise List:")
+                    print(label_tokens)
+
+                    label_decoded = tokenizer.decode(valid_label_ids, skip_special_tokens=False)
+                    print(f"\n🏷️ [LABEL] Decoded String:")
+                    print(label_decoded)
+
+                    print(f"\n{'-'*80}")
 
                 print(f"\n{'─'*80}")
 
@@ -1574,12 +1544,8 @@ class Blip2Stage3(pl.LightningModule):
             num_samples=len(tasks),  # 모든 샘플 시도 (함수 내부에서 task당 5개 제한)
             predictions=predictions,
             targets=targets,
-<<<<<<< HEAD
             prompts=prompts,
             generated_ids=generated_ids  # [NEW] 생성된 토큰 ID 전달
-=======
-            prompts=prompts
->>>>>>> origin/main
         )
             
 

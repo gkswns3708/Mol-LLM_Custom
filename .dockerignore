@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+.eggs
+
+# Virtual environments
+venv/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and outputs
+*.log
+logs/
+outputs/
+wandb/
+
+# Large files (adjust as needed)
+*.zip
+*.tar.gz
+*.ckpt
+*.pt
+*.pth
+checkpoints/
+
+# Temporary files
+.cache/
+.tmp/
+tmp/

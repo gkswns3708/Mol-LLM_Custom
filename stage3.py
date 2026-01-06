@@ -131,30 +131,32 @@ def print_training_config_report(cfg, model):
     print(f"  Devices:            {cfg.devices}")
     print(f"  Seed:               {cfg.seed}")
 
-    # 2. 학습 설정
-    print("\n⚙️  [Training Settings]")
-    print(f"  Max Epochs:         {cfg.max_epochs}")
-    print(f"  Batch Size:         {cfg.batch_size} x {cfg.accumulate_grad_batches} (accum) = {cfg.total_batch_size} (effective)")
-    print(f"  Learning Rate:      {cfg.init_lr} (init), {cfg.min_lr} (min)")
-    print(f"  Warmup Steps:       {cfg.warmup_steps}")
-    print(f"  Scheduler:          {cfg.scheduler}")
-    print(f"  Optimizer:          {cfg.optimizer}")
-    print(f"  Gradient Clip:      {cfg.gradient_clip_val}")
-    print(f"  Weight Decay:       {cfg.weight_decay}")
+    # 2. 학습 설정 (test 모드가 아닐 때만)
+    if cfg.mode != "test":
+        print("\n⚙️  [Training Settings]")
+        print(f"  Max Epochs:         {cfg.max_epochs}")
+        print(f"  Batch Size:         {cfg.batch_size} x {cfg.get('accumulate_grad_batches', 1)} (accum) = {cfg.get('total_batch_size', cfg.batch_size)} (effective)")
+        print(f"  Learning Rate:      {cfg.init_lr} (init), {cfg.min_lr} (min)")
+        print(f"  Warmup Steps:       {cfg.warmup_steps}")
+        print(f"  Scheduler:          {cfg.scheduler}")
+        print(f"  Optimizer:          {cfg.optimizer}")
+        print(f"  Gradient Clip:      {cfg.gradient_clip_val}")
+        print(f"  Weight Decay:       {cfg.weight_decay}")
 
-    # 3. Checkpoint 설정
-    print("\n💾 [Checkpoint Settings]")
-    print(f"  Save Every:         {cfg.save_on_n_steps} steps")
-    print(f"  Keep Top-K:         {cfg.save_top_k_checkpoints if hasattr(cfg, 'save_top_k_checkpoints') else 'All'} checkpoints")
-    print(f"  Best Models:        Top {cfg.save_top_k_best if hasattr(cfg, 'save_top_k_best') else 3} (by val_loss)")
-    print(f"  Directory:          {cfg.logging_dir}/{cfg.filename}")
+    # 3. Checkpoint 설정 (test 모드가 아닐 때만)
+    if cfg.mode != "test":
+        print("\n💾 [Checkpoint Settings]")
+        print(f"  Save Every:         {cfg.get('save_on_n_steps', 'N/A')} steps")
+        print(f"  Keep Top-K:         {cfg.get('save_top_k_checkpoints', 'All')} checkpoints")
+        print(f"  Best Models:        Top {cfg.get('save_top_k_best', 3)} (by val_loss)")
+        print(f"  Directory:          {cfg.logging_dir}/{cfg.filename}")
 
     # 4. Resume/Pretrain 정보
-    if cfg.ckpt_path or cfg.pretrained_ckpt_path:
-        print("\n🔄 [Resume/Pretrain]")
+    if cfg.ckpt_path or cfg.get('pretrained_ckpt_path'):
+        print("\n🔄 [Checkpoint to Load]")
         if cfg.ckpt_path:
-            print(f"  Resume from:        {cfg.ckpt_path}")
-        if cfg.pretrained_ckpt_path:
+            print(f"  Checkpoint:         {cfg.ckpt_path}")
+        if cfg.get('pretrained_ckpt_path'):
             print(f"  Pretrained:         {cfg.pretrained_ckpt_path}")
 
     # 5. 파라미터 통계
@@ -409,6 +411,19 @@ def main(cfg):
         else:
             print("\n" + "="*70)
             print("[TRAINING] Starting training from scratch")
+            print("="*70 + "\n")
+
+        # Validate first before training if requested
+        if getattr(cfg, 'validate_first', False):
+            print("\n" + "="*70)
+            print("[VALIDATE FIRST] Running validation before training...")
+            if cfg.ckpt_path:
+                print(f"  - Using checkpoint: {cfg.ckpt_path}")
+            print("="*70 + "\n")
+            # ckpt_path를 전달해야 global_step, current_epoch이 올바르게 복원됨
+            trainer.validate(model, datamodule=dm, ckpt_path=cfg.ckpt_path)
+            print("\n" + "="*70)
+            print("[VALIDATE FIRST] Validation complete. Starting training...")
             print("="*70 + "\n")
 
         trainer.fit(model, datamodule=dm, ckpt_path=cfg.ckpt_path)

@@ -7,3 +7,4 @@ __pycache__/*
 */.ipynb_checkpoints/
 *_log/
 Mol-LLM_original/
+utils/visualization_results/
