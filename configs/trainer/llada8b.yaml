@@ -30,7 +30,7 @@ accelerator: gpu
 devices: "0,1,2,3,4,5,6,7"
 precision: bf16-mixed
 max_steps: -1
-max_epochs: 12
+max_epochs: 30
 every_n_epochs: 1
 task: null
 logging_dir: Mol-LLM_Custom/checkpoint/Custom_LLaDA
@@ -88,7 +88,7 @@ gradient_clip_val: 1.0
 
 # Validation Configuration
 val_check_interval: 1.0
-check_val_every_n_epoch: 10  # 10 epoch마다 validation
+check_val_every_n_epoch: 1  # 10 epoch마다 validation
 test_on_trainset: false
 
 # Test Inference Configuration
@@ -117,3 +117,39 @@ allHsExplicit: false
 
 # Special LLaDA Configuration
 remasking_strategy: 'random' # low_confidence도 존재.
+
+# Semi-Autoregressive Generation Configuration
+# Multi-task 환경에서 format token 혼란 문제를 해결하기 위한 설정
+use_semi_ar: true              # Semi-AR 생성 모드 활성화 (단일 전략 사용 시)
+                               # true: format tokens를 먼저 고정한 후 content만 diffusion
+                               # false: 기존 방식 (전체 시퀀스 diffusion)
+
+# ==================== Multi-Strategy Validation Configuration ====================
+# Validation 시 여러 generation 전략을 동시에 평가
+# 각 전략별로 별도의 prediction 파일과 metric이 생성됨
+#
+# 사용 가능한 전략:
+#   - random: 기존 방식 (전체 diffusion + random remasking)
+#   - semi_ar: Semi-AR + random remasking
+#   - low_confidence: 전체 diffusion + low_confidence remasking
+#   - semi_ar_low_confidence: Semi-AR + low_confidence remasking
+#
+# 예시:
+#   val_strategies: ["random", "semi_ar"]  # 두 전략 비교
+#   val_strategies: ["semi_ar", "semi_ar_low_confidence"]  # Semi-AR with 다른 remasking
+#   val_strategies: null  # use_semi_ar 설정에 따라 단일 전략 사용
+# ===============================================================================
+val_strategies: ["random", "semi_ar"]  # null이면 use_semi_ar 설정 따름
+
+# ==================== Debug Logging Configuration ====================
+# Special token embedding 학습 상태 로깅
+log_embedding_status: true           # embedding 상태 로깅 활성화
+embedding_log_interval: 500          # N step마다 로깅 (0 = 비활성화)
+
+# 모델 초기화 시 상세 로깅 (requires_grad 상태 등)
+log_model_init_details: true         # 모델 초기화 상세 로깅
+
+# NaN/Inf 발생 시 상세 로깅
+log_nan_details: true                # NaN 발생 시 상세 정보 저장
+nan_log_dir: './nan_logs'            # NaN 로그 저장 디렉토리
+# ======================================================================

@@ -10,7 +10,7 @@ mode: ft # finetuning mode: 'ft' or 'pretrain'
 
 wandb_entity: hj_ai
 wandb_project: mol-llm_llada
-wandb_log_freq: 10
+wandb_log_freq: 100
 wandb_id: null
 
 custom_log: True

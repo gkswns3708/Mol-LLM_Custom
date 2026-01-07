@@ -268,11 +268,16 @@ class Blip2OPT(Blip2Base):
         # [CRITICAL FIX] PEFT modules_to_save에 포함된 모듈들을 명시적으로 학습 가능하게 설정
         # PEFT 적용 후에도 requires_grad를 강제로 설정해야 함
         if tune_llm == "lora":
-            print("\n" + "="*70)
-            print("[PEFT FIX] Setting embed_tokens and lm_head to trainable...")
+            # config에서 로깅 설정 가져오기
+            log_model_init_details = getattr(self.args, 'log_model_init_details', False)
 
-            # 디버깅: 모든 파라미터 이름 확인
-            print("[DEBUG] Searching for embedding/output layer parameters...")
+            if log_model_init_details:
+                print("\n" + "="*70)
+                print("[PEFT FIX] Setting embed_tokens and lm_head to trainable...")
+
+                # 디버깅: 모든 파라미터 이름 확인
+                print("[DEBUG] Searching for embedding/output layer parameters...")
+
             wte_count = 0  # Word Token Embedding (LLaDA)
             ff_out_count = 0  # Feed-Forward Output (LLaDA)
             embed_count = 0  # Standard embed_tokens
@@ -283,28 +288,29 @@ class Blip2OPT(Blip2Base):
                 # LLaDA specific names
                 if 'wte' in name_lower or '.wte.' in name:
                     wte_count += 1
-                    if wte_count <= 2:
+                    if log_model_init_details and wte_count <= 2:
                         print(f"  Found wte param: {name}, requires_grad={param.requires_grad}")
                 if 'ff_out' in name_lower or '.ff_out.' in name:
                     ff_out_count += 1
-                    if ff_out_count <= 2:
+                    if log_model_init_details and ff_out_count <= 2:
                         print(f"  Found ff_out param: {name}, requires_grad={param.requires_grad}")
                 # Standard names (for other models)
                 if 'embed' in name_lower and 'token' in name_lower:
                     embed_count += 1
-                    if embed_count <= 2:
+                    if log_model_init_details and embed_count <= 2:
                         print(f"  Found embed_tokens param: {name}, requires_grad={param.requires_grad}")
                 if 'lm_head' in name_lower:
                     lm_head_count += 1
-                    if lm_head_count <= 2:
+                    if log_model_init_details and lm_head_count <= 2:
                         print(f"  Found lm_head param: {name}, requires_grad={param.requires_grad}")
 
-            print(f"  Total: wte={wte_count}, ff_out={ff_out_count}, embed_tokens={embed_count}, lm_head={lm_head_count}")
+            if log_model_init_details:
+                print(f"  Total: wte={wte_count}, ff_out={ff_out_count}, embed_tokens={embed_count}, lm_head={lm_head_count}")
 
-            # [FIX] 정확한 경로 지정으로 INPUT embedding과 OUTPUT head만 학습
-            # blocks 내부의 ff_out은 제외하여 메모리 절약
-            print("[FIX] Setting ONLY input embedding (wte/embed_tokens) and output head (ff_out/lm_head) to trainable...")
-            print("      Excluding transformer blocks internal ff_out layers...")
+                # [FIX] 정확한 경로 지정으로 INPUT embedding과 OUTPUT head만 학습
+                # blocks 내부의 ff_out은 제외하여 메모리 절약
+                print("[FIX] Setting ONLY input embedding (wte/embed_tokens) and output head (ff_out/lm_head) to trainable...")
+                print("      Excluding transformer blocks internal ff_out layers...")
 
             trainable_count = 0
             for name, param in self.llm_model.named_parameters():
@@ -315,29 +321,34 @@ class Blip2OPT(Blip2Base):
                 # 1. LLaDA: Input Embedding (wte)
                 if 'wte' in name.lower():
                     param.requires_grad = True
-                    print(f"  ✓ {name} set to requires_grad: True")
+                    if log_model_init_details:
+                        print(f"  ✓ {name} set to requires_grad: True")
                     trainable_count += 1
 
                 # 2. LLaDA: Output LM Head (ff_out at transformer level, NOT in blocks)
                 elif 'ff_out' in name.lower():
                     param.requires_grad = True
-                    print(f"  ✓ {name} set to requires_grad: True")
+                    if log_model_init_details:
+                        print(f"  ✓ {name} set to requires_grad: True")
                     trainable_count += 1
 
                 # 3. Standard models: embed_tokens
                 elif 'embed_tokens' in name.lower():
                     param.requires_grad = True
-                    print(f"  ✓ {name} set to requires_grad: True")
+                    if log_model_init_details:
+                        print(f"  ✓ {name} set to requires_grad: True")
                     trainable_count += 1
 
                 # 4. Standard models: lm_head
                 elif 'lm_head' in name.lower():
                     param.requires_grad = True
-                    print(f"  ✓ {name} set to requires_grad: True")
+                    if log_model_init_details:
+                        print(f"  ✓ {name} set to requires_grad: True")
                     trainable_count += 1
 
-            print(f"  Total parameters explicitly set to trainable: {trainable_count}")
-            print("="*70 + "\n") 
+            if log_model_init_details:
+                print(f"  Total parameters explicitly set to trainable: {trainable_count}")
+                print("="*70 + "\n") 
 
         #! Stage 2에서 Q-Former를 학습할 때, LoRA의 Gradient가 없어야 하는데, 아래는 이를 위한 코드
         if self.args.llava_pretraining:

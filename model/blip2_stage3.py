@@ -111,6 +111,8 @@ class Blip2Stage3(pl.LightningModule):
         self.on_second_stage = False
         # set strict_loading to False to load model in a lightweight way
         self.strict_loading = False
+        # 학습 완료 시점의 global_step을 저장 (test 시 파일명에 사용)
+        self._trained_global_step = None
 
         # [Fix 2.2] Gradient 로깅을 위한 파라미터 캐싱 (오버헤드 최소화)
         self._embed_tokens_param = None
@@ -220,7 +222,7 @@ class Blip2Stage3(pl.LightningModule):
         tasks,
         prompts,
         input_mol_strings,
-        token_ids, #! 추가해봄.
+        token_ids=None,  #! 추가해봄. (optional로 변경)
         probs=None,
         filename="predictions.json",
     ):
@@ -238,8 +240,9 @@ class Blip2Stage3(pl.LightningModule):
                 "target": targets[i],
                 "prompt": prompts[i],
                 "input_mol_strings": input_mol_strings[i],
-                "token_ids": token_ids[i], 
             }
+            if token_ids is not None:
+                instance["token_ids"] = token_ids[i]
             if tasks[i] in CLASSIFICATION_BENCHMARKS and probs is not None:
                 instance["prob"] = probs[i]
             instances.append(instance)
@@ -249,6 +252,9 @@ class Blip2Stage3(pl.LightningModule):
             json.dump(instances, f, ensure_ascii=False, indent=4)
 
     def on_test_epoch_start(self) -> None:
+        # test 시작 시 학습된 global_step 저장 (trainer.test()가 step을 리셋하기 전)
+        if self._trained_global_step is None:
+            self._trained_global_step = self.global_step
         self.on_evaluation_epoch_start()
 
     @torch.no_grad()
@@ -563,9 +569,10 @@ class Blip2Stage3(pl.LightningModule):
         )
 
         for k, v in outputs.items():
-            # 이미 pop 했거나 처리한 키 제외
-            if k in ["logits", "loss", "instance_loss"]: continue
-            
+            # logits는 너무 큰 텐서이므로 제외, instance_loss는 로깅
+            if k in ["logits"]:
+                continue
+
             val_to_log = v.mean() if isinstance(v, torch.Tensor) else v
             self.log(
                 f"train/{k}",
@@ -600,59 +607,7 @@ class Blip2Stage3(pl.LightningModule):
         # [Fix 2.3] Training sample token-level logging
         if self.global_step % self.trainer.log_every_n_steps == 0:
             self._log_sample_predictions(batch, outputs, tasks, batch_idx, mode="train")
-
-        # ==================================================================
-        # [DEBUG] GPU-specific monitoring around iteration 30-35
-        # ==================================================================
-        if 28 <= batch_idx <= 35:
-            import torch.distributed as dist
-            import torch.cuda as cuda
-            import sys
-
-            rank = dist.get_rank() if dist.is_initialized() else 0
-            world_size = dist.get_world_size() if dist.is_initialized() else 1
-
-            # Get GPU memory info
-            gpu_id = rank  # In DDP, rank usually corresponds to GPU ID
-            mem_allocated = cuda.memory_allocated(gpu_id) / 1024**3  # GB
-            mem_reserved = cuda.memory_reserved(gpu_id) / 1024**3    # GB
-            mem_free = (cuda.get_device_properties(gpu_id).total_memory - cuda.memory_reserved(gpu_id)) / 1024**3
-
-            print(f"\n{'='*70}")
-            print(f"[GPU{rank}] ✓ training_step COMPLETED for batch_idx={batch_idx}")
-            print(f"[GPU{rank}]   global_step={self.global_step}")
-            print(f"[GPU{rank}]   loss={loss.item() if loss is not None else 'None'}")
-            print(f"[GPU{rank}]   Memory: allocated={mem_allocated:.2f}GB, reserved={mem_reserved:.2f}GB, free={mem_free:.2f}GB")
-            print(f"[GPU{rank}]   Rank {rank}/{world_size}")
-            print(f"{'='*70}\n")
-            sys.stdout.flush()
-
-            # Critical barrier test at batch 31
-            if batch_idx == 31:
-                print(f"[GPU{rank}] >>> ENTERING BARRIER TEST at batch 31 <<<")
-                sys.stdout.flush()
-
-                if dist.is_initialized():
-                    try:
-                        import time
-                        start_time = time.time()
-                        print(f"[GPU{rank}] Waiting at barrier...")
-                        sys.stdout.flush()
-
-                        dist.barrier()
-
-                        elapsed = time.time() - start_time
-                        print(f"[GPU{rank}] >>> BARRIER PASSED! (took {elapsed:.3f}s) <<<")
-                        sys.stdout.flush()
-                    except Exception as e:
-                        print(f"[GPU{rank}] !!! BARRIER FAILED: {e} !!!")
-                        sys.stdout.flush()
-                        raise
-                else:
-                    print(f"[GPU{rank}] DDP not initialized, skipping barrier test")
-                    sys.stdout.flush()
-        # ==================================================================
-
+            
         return loss
 
     def _cache_critical_params(self):
@@ -1197,20 +1152,38 @@ class Blip2Stage3(pl.LightningModule):
         import sys
         sys.stdout.flush()
 
-        self.list_logs = {
-            "predictions": [],
-            "targets": [],
-            "tasks": [],
-            "probs": [],
-            "prompts": [],
-            "input_mol_strings": [],
-        }
+        # ======================================================================
+        # Multi-Strategy Validation 설정
+        # ======================================================================
+        is_llada = "llada" in self.args.llm_model.lower()
+        val_strategies = getattr(self.args, "val_strategies", None)
+
+        if is_llada and val_strategies is not None and len(val_strategies) > 0:
+            # Multi-strategy 모드
+            self.active_val_strategies = val_strategies
+            print(f"🔍 [Multi-Strategy Validation] Active strategies: {self.active_val_strategies}")
+        else:
+            # 단일 전략 모드 (기존 호환)
+            self.active_val_strategies = ["default"]
+
+        # 각 전략별 list_logs 초기화
+        self.strategy_list_logs = {}
+        for strategy in self.active_val_strategies:
+            self.strategy_list_logs[strategy] = {
+                "predictions": [],
+                "targets": [],
+                "tasks": [],
+                "probs": [],
+                "prompts": [],
+                "input_mol_strings": [],
+            }
+
+        # 기존 호환성을 위한 기본 list_logs (첫 번째 전략 참조)
+        self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
+
         self.debug_task_counts = {}
         self.total_avg_loss = 0.0
         self.total_seen_data_size = 0
-        # self.task_subtask_name_pairs = self.trainer.datamodule.dataset_split[
-        #     "test"
-        # ].task_subtask_name_pairs
 
         self.task_subtask_name_pairs = self.trainer.datamodule.task_subtask_name_pairs
 
@@ -1291,44 +1264,90 @@ class Blip2Stage3(pl.LightningModule):
         attentions = None
 
         is_llada = "llada" in self.args.llm_model.lower()
-        
-        # ----------------------------------------------------------------------
-        # [Step 3] Generation (추론) - 메모리 절약을 위해 no_grad 필수
-        # ----------------------------------------------------------------------
-        gen_kwargs = {
-            "graphs": (graphs, additional_graphs),
-            "input_ids": batch.prompt_input_ids,
-            "attention_mask": batch.prompt_attention_mask,
-            "is_mol_token": is_mol_token,
-            "max_length": self.gen_max_len,
-        }
-        
-        if is_llada:
-            # LLaDA 전용 옵션
-            gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64) 
-            gen_kwargs["gen_length"] = self.gen_max_len
-            gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "low_confidence")
-        else:
-            # AR 모델 전용 옵션
-            gen_kwargs["num_beams"] = self.num_beams
-            gen_kwargs["min_length"] = self.min_len
-            gen_kwargs["output_attentions"] = self.args.log_attn_score
-        
-        # Generation 실행
-        with torch.no_grad():
-            gen_outputs = self.blip2model.generate(**gen_kwargs)
 
-        # Logits 안전하게 추출
-        if hasattr(gen_outputs, "logits"):
-            gen_logits = gen_outputs.logits
-        else:
-            gen_logits = None
+        # Task 이름 추출 (multi-strategy에서 공통 사용)
+        task_names = [id2task(task_id.item()) for task_id in batch.tasks]
 
-        # [NEW] Generated Token IDs 저장 (디코딩 전 원본)
-        if hasattr(gen_outputs, "sequences"):
-            generated_ids = gen_outputs.sequences  # [batch_size, seq_len]
-        else:
-            generated_ids = None
+        # ----------------------------------------------------------------------
+        # [Step 3] Generation (추론) - Multi-Strategy Support
+        # ----------------------------------------------------------------------
+        # 각 전략별 결과를 저장할 딕셔너리
+        strategy_outputs = {}
+
+        for strategy in self.active_val_strategies:
+            gen_kwargs = {
+                "graphs": (graphs, additional_graphs),
+                "input_ids": batch.prompt_input_ids,
+                "attention_mask": batch.prompt_attention_mask,
+                "is_mol_token": is_mol_token,
+                "max_length": self.gen_max_len,
+            }
+
+            if is_llada:
+                # LLaDA 전용 옵션
+                gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
+                gen_kwargs["gen_length"] = self.gen_max_len
+
+                # 전략에 따른 설정
+                # 전략 종류:
+                #   - "default": use_semi_ar config 설정 따름
+                #   - "random": 전체 diffusion + random remasking
+                #   - "semi_ar": Semi-AR + random remasking
+                #   - "low_confidence": 전체 diffusion + low_confidence remasking
+                #   - "semi_ar_low_confidence": Semi-AR + low_confidence remasking
+                if strategy == "default":
+                    # 기존 config 설정 사용
+                    gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
+                    use_semi_ar = getattr(self.args, "use_semi_ar", False)
+                    if use_semi_ar:
+                        gen_kwargs["use_semi_ar"] = True
+                        gen_kwargs["task_name"] = task_names
+                elif strategy == "random":
+                    gen_kwargs["remasking_strategy"] = "random"
+                    gen_kwargs["use_semi_ar"] = False
+                elif strategy == "semi_ar":
+                    gen_kwargs["remasking_strategy"] = "random"
+                    gen_kwargs["use_semi_ar"] = True
+                    gen_kwargs["task_name"] = task_names
+                elif strategy == "low_confidence":
+                    gen_kwargs["remasking_strategy"] = "low_confidence"
+                    gen_kwargs["use_semi_ar"] = False
+                elif strategy == "semi_ar_low_confidence":
+                    gen_kwargs["remasking_strategy"] = "low_confidence"
+                    gen_kwargs["use_semi_ar"] = True
+                    gen_kwargs["task_name"] = task_names
+                else:
+                    # 알 수 없는 전략은 기본값 사용
+                    logger.warning(f"Unknown validation strategy: {strategy}, using default")
+                    gen_kwargs["remasking_strategy"] = "random"
+            else:
+                # AR 모델 전용 옵션 (전략 무시)
+                gen_kwargs["num_beams"] = self.num_beams
+                gen_kwargs["min_length"] = self.min_len
+                gen_kwargs["output_attentions"] = self.args.log_attn_score
+
+            # Generation 실행
+            with torch.no_grad():
+                gen_outputs = self.blip2model.generate(**gen_kwargs)
+
+            # 결과 저장
+            strategy_outputs[strategy] = {
+                "gen_outputs": gen_outputs,
+                "gen_logits": gen_outputs.logits if hasattr(gen_outputs, "logits") else None,
+                "generated_ids": gen_outputs.sequences if hasattr(gen_outputs, "sequences") else None,
+            }
+
+            # 첫 번째 배치에서 전략별 결과 로깅 (GPU 0에서만)
+            if batch_idx == 0 and self.trainer.global_rank == 0:
+                print(f"\n📊 [Strategy: {strategy}] Sample predictions:")
+                for k in range(min(2, len(gen_outputs.predictions))):
+                    print(f"  [{k}] {gen_outputs.predictions[k][:100]}...")
+
+        # 기존 호환성: 첫 번째 전략의 결과를 기본으로 사용
+        primary_strategy = self.active_val_strategies[0]
+        gen_outputs = strategy_outputs[primary_strategy]["gen_outputs"]
+        gen_logits = strategy_outputs[primary_strategy]["gen_logits"]
+        generated_ids = strategy_outputs[primary_strategy]["generated_ids"]
 
         gen_labels = batch.gen_labels
 
@@ -1583,14 +1602,31 @@ class Blip2Stage3(pl.LightningModule):
             
 
         # ----------------------------------------------------------------------
-        # [Step 10] 로그 리스트 누적 (CPU 메모리만 사용)
+        # [Step 10] 로그 리스트 누적 (Multi-Strategy Support)
         # ----------------------------------------------------------------------
-        self.list_logs["predictions"].extend(predictions)
-        self.list_logs["targets"].extend(targets)
-        self.list_logs["tasks"].extend(tasks)
-        self.list_logs["probs"].extend(probs_list)
-        self.list_logs["prompts"].extend(prompts)
-        self.list_logs["input_mol_strings"].extend(input_mol_strings)
+        # 각 전략별로 predictions 수집
+        for strategy in self.active_val_strategies:
+            strategy_gen_outputs = strategy_outputs[strategy]["gen_outputs"]
+            strategy_predictions = strategy_gen_outputs.predictions
+            strategy_predictions = [
+                p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in strategy_predictions
+            ]
+
+            # MolPO 처리 시 slicing
+            if self.args.eval_molpo:
+                len_tuple = gen_labels.shape[0] // self.args.molpo_batch_division
+                strategy_predictions = strategy_predictions[:len_tuple]
+
+            # 각 전략별 로그에 누적
+            self.strategy_list_logs[strategy]["predictions"].extend(strategy_predictions)
+            self.strategy_list_logs[strategy]["targets"].extend(targets)
+            self.strategy_list_logs[strategy]["tasks"].extend(tasks)
+            self.strategy_list_logs[strategy]["probs"].extend(probs_list)
+            self.strategy_list_logs[strategy]["prompts"].extend(prompts)
+            self.strategy_list_logs[strategy]["input_mol_strings"].extend(input_mol_strings)
+
+        # 기존 호환성을 위한 list_logs 업데이트 (첫 번째 전략 참조)
+        self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
 
         # ----------------------------------------------------------------------
         # [Step 11] Loss 누적 (반드시 .item() 사용)
@@ -1796,6 +1832,12 @@ class Blip2Stage3(pl.LightningModule):
     def on_evaluation_epoch_end(self, mode="val") -> None:
         print(f"\nDevice {self.device} on_evaluation_epoch_end start")
 
+        # test 모드에서는 학습 완료 시점의 global_step 사용, 그 외에는 현재 global_step 사용
+        if mode == "test" and self._trained_global_step is not None:
+            step_for_filename = self._trained_global_step
+        else:
+            step_for_filename = self.global_step
+
         if self.args.eval_molpo:
             self.task_specific_logging(
                 outputs=None,
@@ -1806,42 +1848,58 @@ class Blip2Stage3(pl.LightningModule):
                 num_moving_samples=None,
             )
 
-        evaluation_results, failed_cases = per_device_evaluate(
-            predictions=self.list_logs["predictions"],
-            targets=self.list_logs["targets"],
-            tasks=self.list_logs["tasks"],
-            prompts=self.list_logs["prompts"],
-            input_mol_strings=self.list_logs["input_mol_strings"],
-            tokenizer=self.blip2model.llm_tokenizer,
-            total_task_subtask_pairs=self.task_subtask_name_pairs,
-        )
+        # ======================================================================
+        # Multi-Strategy Evaluation
+        # ======================================================================
+        all_strategy_results = {}
 
-        self.save_predictions(
-            predictions=self.list_logs["predictions"],
-            targets=self.list_logs["targets"],
-            tasks=self.list_logs["tasks"],
-            prompts=self.list_logs["prompts"],
-            probs=self.list_logs["probs"],
-            input_mol_strings=self.list_logs["input_mol_strings"],
-            filename=(
-                f"{self.args.mode}-step{self.global_step}-{self.global_rank}-outputs.json"
-                if self.args.mode == "val"
-                else f"{self.args.mode}-{self.global_rank}-outputs.json"
-            ),
-        )
+        for strategy in self.active_val_strategies:
+            strategy_logs = self.strategy_list_logs[strategy]
+            strategy_suffix = f"_{strategy}" if strategy != "default" else ""
 
-        self.save_predictions(
-            predictions=failed_cases["predictions"],
-            targets=failed_cases["targets"],
-            tasks=failed_cases["tasks"],
-            prompts=failed_cases["prompts"],
-            input_mol_strings=failed_cases["input_mol_strings"],
-            filename=(
-                f"{self.args.mode}-step{self.global_step}-{self.global_rank}-failed_cases.json"
-                if self.args.mode == "val"
-                else f"{self.args.mode}-{self.global_rank}-failed_cases.json"
-            ),
-        )
+            print(f"\n{'='*70}")
+            print(f"📊 [Strategy: {strategy}] Evaluating predictions...")
+            print(f"{'='*70}")
+
+            evaluation_results, failed_cases = per_device_evaluate(
+                predictions=strategy_logs["predictions"],
+                targets=strategy_logs["targets"],
+                tasks=strategy_logs["tasks"],
+                prompts=strategy_logs["prompts"],
+                input_mol_strings=strategy_logs["input_mol_strings"],
+                tokenizer=self.blip2model.llm_tokenizer,
+                total_task_subtask_pairs=self.task_subtask_name_pairs,
+            )
+
+            all_strategy_results[strategy] = {
+                "evaluation_results": evaluation_results,
+                "failed_cases": failed_cases,
+            }
+
+            # 전략별 prediction 파일 저장
+            self.save_predictions(
+                predictions=strategy_logs["predictions"],
+                targets=strategy_logs["targets"],
+                tasks=strategy_logs["tasks"],
+                prompts=strategy_logs["prompts"],
+                probs=strategy_logs["probs"],
+                input_mol_strings=strategy_logs["input_mol_strings"],
+                filename=f"{self.args.mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-outputs.json",
+            )
+
+            self.save_predictions(
+                predictions=failed_cases["predictions"],
+                targets=failed_cases["targets"],
+                tasks=failed_cases["tasks"],
+                prompts=failed_cases["prompts"],
+                input_mol_strings=failed_cases["input_mol_strings"],
+                filename=f"{self.args.mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-failed_cases.json",
+            )
+
+        # 기존 호환성: 첫 번째 전략 결과를 기본으로 사용
+        primary_strategy = self.active_val_strategies[0]
+        evaluation_results = all_strategy_results[primary_strategy]["evaluation_results"]
+        failed_cases = all_strategy_results[primary_strategy]["failed_cases"]
 
         self.log(
             f"{mode}/total_loss",
@@ -2063,7 +2121,7 @@ class Blip2Stage3(pl.LightningModule):
 
         result_path = os.path.join(
             self.logger.log_dir,
-            f"{mode}-step{self.global_step}-{self.global_rank}-results.json",
+            f"{mode}-step{step_for_filename}-{self.global_rank}-results.json",
         )
         # zip the flattened metrics and averaged_flattened_metric_tensors
         result_dict = {}
@@ -2074,6 +2132,75 @@ class Blip2Stage3(pl.LightningModule):
         # save result_dict in result_path
         with open(result_path, "w") as f:
             json.dump(result_dict, f, ensure_ascii=False, indent=4)
+
+        # ======================================================================
+        # Multi-Strategy Summary Metrics
+        # ======================================================================
+        if len(self.active_val_strategies) > 1:
+            print(f"\n{'='*70}")
+            print("📊 Multi-Strategy Comparison Summary")
+            print(f"{'='*70}")
+
+            strategy_summaries = {}
+            for strategy in self.active_val_strategies:
+                strategy_eval_results = all_strategy_results[strategy]["evaluation_results"]
+                strategy_failed = all_strategy_results[strategy]["failed_cases"]
+
+                # Calculate overall metrics for this strategy
+                total_correct = 0
+                total_count = 0
+                total_failure_rate = 0
+                task_count = 0
+
+                for task_pair, metrics in strategy_eval_results.items():
+                    if "accuracy" in metrics:
+                        total_correct += metrics["accuracy"] * metrics["num_instances"]
+                        total_count += metrics["num_instances"]
+                    if "failure_rate" in metrics:
+                        total_failure_rate += metrics["failure_rate"]
+                        task_count += 1
+
+                avg_accuracy = total_correct / total_count if total_count > 0 else 0
+                avg_failure_rate = total_failure_rate / task_count if task_count > 0 else 0
+
+                strategy_summaries[strategy] = {
+                    "avg_accuracy": avg_accuracy,
+                    "avg_failure_rate": avg_failure_rate,
+                    "total_samples": total_count,
+                    "num_failed_cases": len(strategy_failed["predictions"]),
+                }
+
+                print(f"\n[{strategy}]")
+                print(f"  - Average Accuracy: {avg_accuracy:.4f}")
+                print(f"  - Average Failure Rate: {avg_failure_rate:.4f}")
+                print(f"  - Total Samples: {total_count}")
+                print(f"  - Failed Cases: {len(strategy_failed['predictions'])}")
+
+                # Log strategy-specific summary metrics
+                strategy_suffix = f"_{strategy}" if strategy != "default" else ""
+                self.log(
+                    f"{mode}/strategy{strategy_suffix}/avg_accuracy",
+                    avg_accuracy,
+                    sync_dist=False,
+                    rank_zero_only=True,
+                )
+                self.log(
+                    f"{mode}/strategy{strategy_suffix}/avg_failure_rate",
+                    avg_failure_rate,
+                    sync_dist=False,
+                    rank_zero_only=True,
+                )
+
+            # Save strategy comparison to file
+            strategy_comparison_path = os.path.join(
+                self.logger.log_dir,
+                f"{mode}-step{step_for_filename}-{self.global_rank}-strategy_comparison.json",
+            )
+            with open(strategy_comparison_path, "w") as f:
+                json.dump(strategy_summaries, f, ensure_ascii=False, indent=4)
+
+            print(f"\n📁 Strategy comparison saved to: {strategy_comparison_path}")
+            print(f"{'='*70}")
 
         print(f"\nDevice {self.device} on_evaluation_epoch_end end")
 
