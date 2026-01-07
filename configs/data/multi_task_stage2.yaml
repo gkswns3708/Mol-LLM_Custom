@@ -1,4 +1,4 @@
-raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official # 실제 학습 해야하는 경로
+raw_data_root: Mol-LLM_Custom/dataset/train_official # 실제 학습 해야하는 경로
 data_tag: 512_Truncation # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
 
 target_benchmarks:

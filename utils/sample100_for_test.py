@@ -3,7 +3,7 @@ import pandas as pd
 from datasets import load_from_disk
 
 # 1. 설정
-dataset_path = "/home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_test_512_Truncation"
+dataset_path = "Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_test_512_Truncation"
 save_path = dataset_path + "_100_sampled"
 
 print(f"Loading dataset from: {dataset_path}")

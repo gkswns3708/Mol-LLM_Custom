@@ -1,20 +1,30 @@
 ==============Executing task: Specific Task===============
 Added 2944 selfies tokens to the tokenizer
 trainable params: 167,772,160 || all params: 7,440,183,296 || trainable%: 2.2549
-/home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt -args.gine.graph_encoder_ckpt
-load graph encoder from /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
-load graph encoder from /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
+Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt -args.gine.graph_encoder_ckpt
+load graph encoder from Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
+load graph encoder from Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
 bert load scibert
 total params: 7550544809
-/home/jovyan/CHJ/Mol-LLM_Custom/dataset/real_train/InstructGraph.py -os.path.join(args.raw_data_root, 'InstructGraph.py')
+Mol-LLM_Custom/dataset/real_train/InstructGraph.py -os.path.join(args.raw_data_root, 'InstructGraph.py')
 train_tasks: ('smol-name_conversion-i2s', 'smol-name_conversion-i2f', 'smol-name_conversion-s2f', 'smol-name_conversion-s2i', 'smol-property_prediction-bbbp', 'smol-property_prediction-clintox', 'smol-property_prediction-hiv', 'smol-property_prediction-sider', 'bace', 'smol-property_prediction-esol', 'smol-property_prediction-lipo', 'qm9_homo', 'qm9_lumo', 'qm9_homo_lumo_gap', 'qm9_dipole_moment', 'qm9_isotropic_polarizability', 'qm9_electronic_spatial_extent', 'qm9_zero_point_vibrational_energy', 'qm9_heat_capacity_298K', 'qm9_internal_energy_298K', 'qm9_enthalpy_298K', 'qm9_free_energy_298K', 'forward_reaction_prediction', 'smol-forward_synthesis', 'retrosynthesis', 'smol-retrosynthesis', 'reagent_prediction', 'chebi-20-text2mol', 'smol-molecule_generation', 'chebi-20-mol2text', 'smol-molecule_captioning')
 accumulate_grad_batches: 8
-loaded trained model from /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
-Testing: |                                                                                     | 0/? [00:00<?, ?it/s]Testing: |                                                                                     | 0/? [00:00<?, ?it/s]Testing DataLoader 0:   0%|                                                                    | 0/7 [00:00<?, ?it/s]Testing DataLoader 0:  14%|████████▌                                                   | 1/7 [00:05<00:32,  0.19it/s]Testing DataLoader 0:  29%|█████████████████▏                                          | 2/7 [00:11<00:27,  0.18it/s]Testing DataLoader 0:  43%|█████████████████████████▋                                  | 3/7 [00:15<00:20,  0.19it/s]Testing DataLoader 0:  57%|██████████████████████████████████▎                         | 4/7 [00:19<00:14,  0.21it/s]Testing DataLoader 0:  71%|██████████████████████████████████████████▊                 | 5/7 [00:23<00:09,  0.21it/s]Testing DataLoader 0:  86%|███████████████████████████████████████████████████▍        | 6/7 [00:28<00:04,  0.21it/s]
+loaded trained model from Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
+
+Testing: |                                                                                     | 0/? [00:00<?, ?it/s]
+Testing: |                                                                                     | 0/? [00:00<?, ?it/s]
+Testing DataLoader 0:   0%|                                                                    | 0/7 [00:00<?, ?it/s]
+Testing DataLoader 0:  14%|████████▌                                                   | 1/7 [00:05<00:32,  0.19it/s]
+Testing DataLoader 0:  29%|█████████████████▏                                          | 2/7 [00:11<00:27,  0.18it/s]
+Testing DataLoader 0:  43%|█████████████████████████▋                                  | 3/7 [00:15<00:20,  0.19it/s]
+Testing DataLoader 0:  57%|██████████████████████████████████▎                         | 4/7 [00:19<00:14,  0.21it/s]
+Testing DataLoader 0:  71%|██████████████████████████████████████████▊                 | 5/7 [00:23<00:09,  0.21it/s]
+Testing DataLoader 0:  86%|███████████████████████████████████████████████████▍        | 6/7 [00:28<00:04,  0.21it/s]
 Device cuda:3 on_evaluation_epoch_end start
 
 Device cuda:4 on_evaluation_epoch_end start
-Testing DataLoader 0: 100%|████████████████████████████████████████████████████████████| 7/7 [00:34<00:00,  0.20it/s]
+
+Testing DataLoader 0: 100%|████████████████████████████████████████████████████████████| 7/7 [00:34<00:00,  0.20it/s]
 Device cuda:0 on_evaluation_epoch_end start
 
 Device cuda:2 on_evaluation_epoch_end start
@@ -201,7 +211,8 @@ test/smol-retrosynthesis/validity_ratio: nan
 =================================================================================
 
 Device cuda:0 on_evaluation_epoch_end end
-Testing DataLoader 0: 100%|████████████████████████████████████████████████████████████| 7/7 [00:42<00:00,  0.16it/s]
+
+Testing DataLoader 0: 100%|████████████████████████████████████████████████████████████| 7/7 [00:42<00:00,  0.16it/s]
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                        Test metric                                             DataLoader 0
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -43,10 +43,10 @@ checkpoint/Custom_LLaDA/stage1_llm_pretraining/
 
 ```yaml
 # 특정 step checkpoint에서 재개
-ckpt_path: "/home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA/stage1_llm_pretraining/epoch=03-step=001500-train.ckpt"
+ckpt_path: "Mol-LLM_Custom/checkpoint/Custom_LLaDA/stage1_llm_pretraining/epoch=03-step=001500-train.ckpt"
 
 # 또는 가장 최근 checkpoint에서 재개
-ckpt_path: "/home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA/stage1_llm_pretraining/last.ckpt"
+ckpt_path: "Mol-LLM_Custom/checkpoint/Custom_LLaDA/stage1_llm_pretraining/last.ckpt"
 ```
 
 그 후 학습 실행:
@@ -79,7 +79,7 @@ python stage3.py ckpt_path="/path/to/checkpoint/epoch=03-step=001500-train.ckpt"
 
 ```yaml
 # pretrained model 가중치만 로드 (optimizer는 초기화)
-pretrained_ckpt_path: "/home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA/stage1_llm_pretraining/epoch=07-step=051600-train.ckpt"
+pretrained_ckpt_path: "Mol-LLM_Custom/checkpoint/Custom_LLaDA/stage1_llm_pretraining/epoch=07-step=051600-train.ckpt"
 
 # ckpt_path는 null로 유지
 ckpt_path: null

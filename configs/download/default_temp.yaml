@@ -1,4 +1,4 @@
-raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/real_train
+raw_data_root: Mol-LLM_Custom/dataset/real_train
 data_tag: 3.3M_0415
 
 target_benchmarks:

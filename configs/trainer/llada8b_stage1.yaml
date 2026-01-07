@@ -16,7 +16,7 @@ mol_representation: string_only  # ✅ SMILES/SELFIES만 사용
 # ============================================
 # [필수] LoRA 설정
 # ============================================
-peft_config: "/home/jovyan/CHJ/Mol-LLM_Custom/lora_config_llada.json"
+peft_config: "Mol-LLM_Custom/lora_config_llada.json"
 peft_dir: ""                # 처음부터 학습
 lora_r: 16                  # JSON과 일치시켜야 함
 lora_alpha: 32
@@ -73,7 +73,7 @@ min_len: 8
 # ============================================
 # [필수] 로깅
 # ============================================
-logging_dir: /home/jovyan/CHJ/checkpoint/LLaDA_Stage1
+logging_dir: checkpoint/LLaDA_Stage1
 filename: llada_stage1_text_only
 save_on_n_steps: 500
 val_check_interval: 0.5     # 0.5 epoch마다 validation

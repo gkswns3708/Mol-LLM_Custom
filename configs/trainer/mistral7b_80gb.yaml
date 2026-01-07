@@ -28,7 +28,7 @@ max_steps: -1
 max_epochs: 12
 every_n_epochs: 1
 task: null
-logging_dir: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom
+logging_dir: Mol-LLM_Custom/checkpoint/Custom
 llava_pretraining: 0
 second_stage_start_epoch: 4
 num_workers: 0

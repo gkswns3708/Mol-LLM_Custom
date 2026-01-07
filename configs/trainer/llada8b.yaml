@@ -13,7 +13,7 @@ projector_type: qformer
 # LLM Configuration
 llm_model: "GSAI-ML/LLaDA-8B-Instruct"
 tune_llm: lora
-peft_config: "/home/jovyan/CHJ/Mol-LLM_Custom/lora_config_llada.json"
+peft_config: "Mol-LLM_Custom/lora_config_llada.json"
 peft_dir: ""
 load_in_8bit: false
 lora_r: 64
@@ -33,7 +33,7 @@ max_steps: -1
 max_epochs: 12
 every_n_epochs: 1
 task: null
-logging_dir: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA
+logging_dir: Mol-LLM_Custom/checkpoint/Custom_LLaDA
 llava_pretraining: 0
 second_stage_start_epoch: 0
 num_workers: 0
@@ -77,18 +77,18 @@ max_packing_size: -1
 
 weight_decay: 0.1               
 min_lr: 0.0000025               
-init_lr: 0.000025               
+init_lr: 0.0025               
 warmup_lr: 0.0                  
-warmup_steps: 50                
+warmup_steps: 10                
 # warmup_epochs: 0.5            
 scheduler: warmup_stable_decay_lr 
 optimizer: adamw
 log_every_n_steps: 10
-gradient_clip_val: 1.0          
+gradient_clip_val: 1.0
 
-# Real validation Configuration
-val_check_interval: 1.0 # 무조건 소수로 해야함.
-check_val_every_n_epoch: 1
+# Validation Configuration
+val_check_interval: 1.0
+check_val_every_n_epoch: 10  # 10 epoch마다 validation
 test_on_trainset: false
 
 # Test Inference Configuration

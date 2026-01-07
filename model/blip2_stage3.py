@@ -454,8 +454,8 @@ class Blip2Stage3(pl.LightningModule):
         outputs = self.blip2model(batch)
         
         # [요청하신 값 추출 방식]
-        # 안전한 처리를 위해 dict 여부 확인 후 pop 수행
-        if isinstance(outputs, dict):
+        # ModelOutput은 dict를 상속하지 않으므로 hasattr로 체크
+        if hasattr(outputs, 'pop'):
             logits = outputs.pop("logits", None)
             loss = outputs.pop("loss", None)
             # instance_loss는 MolPO 계산에 필요하므로 보존하거나 get으로 접근
@@ -867,13 +867,16 @@ class Blip2Stage3(pl.LightningModule):
         if (mode == "train") or not epoch_end:
             # log dataset specific losses
             new_outputs = {
-                k: v for k, v in outputs.items() if v.shape != torch.Size([])
+                k: v for k, v in outputs.items()
+                if isinstance(v, torch.Tensor) and v.shape != torch.Size([])
             }
 
             for task in tasks:
-                task_specific_outputs.setdefault(
-                    task, {k: [] for k in new_outputs.keys()}
-                )
+                if task not in task_specific_outputs:
+                    task_specific_outputs[task] = {}
+                for k in new_outputs.keys():
+                    if k not in task_specific_outputs[task]:
+                        task_specific_outputs[task][k] = []
 
             for metric, v in new_outputs.items():
 
@@ -1574,12 +1577,8 @@ class Blip2Stage3(pl.LightningModule):
             num_samples=len(tasks),  # 모든 샘플 시도 (함수 내부에서 task당 5개 제한)
             predictions=predictions,
             targets=targets,
-<<<<<<< HEAD
             prompts=prompts,
             generated_ids=generated_ids  # [NEW] 생성된 토큰 ID 전달
-=======
-            prompts=prompts
->>>>>>> origin/main
         )
             
 

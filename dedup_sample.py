@@ -265,9 +265,9 @@ if __name__ == "__main__":
     except RuntimeError: pass
 
     # 경로 설정 (사용자 환경에 맞게 수정)
-    train_in = "/home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_train_3.3M_0415_raw"
-    val_in = "/home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_val_3.3M_0415_raw"
-    test_in = "/home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_test_3.3M_0415_raw"
-    save_dir = "/home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official/"
+    train_in = "Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_train_3.3M_0415_raw"
+    val_in = "Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_val_3.3M_0415_raw"
+    test_in = "Mol-LLM_Custom/dataset/train_official/GSAI-ML-LLaDA-8B-Instruct_string+graph_q32_test_3.3M_0415_raw"
+    save_dir = "Mol-LLM_Custom/dataset/train_official/"
     
     main_cleaning_pipeline(train_in, val_in, test_in, save_dir, num_cores=24)
