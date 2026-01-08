@@ -1185,6 +1185,16 @@ class Blip2Stage3(pl.LightningModule):
                 "input_mol_strings": [],
             }
 
+        # LLaDA Classification 최적화용 likelihood 전략 추가
+        self.strategy_list_logs["likelihood"] = {
+            "predictions": [],
+            "targets": [],
+            "tasks": [],
+            "probs": [],
+            "prompts": [],
+            "input_mol_strings": [],
+        }
+
         # 기존 호환성을 위한 기본 list_logs (첫 번째 전략 참조)
         self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
 
@@ -1280,13 +1290,86 @@ class Blip2Stage3(pl.LightningModule):
         # Task 이름 추출 (multi-strategy에서 공통 사용)
         task_names = [id2task(task_id.item()) for task_id in batch.tasks]
 
+        # ===========================================================================
+        # [LLaDA Classification 최적화] Likelihood 비교만으로 예측 수행
+        #
+        # LLaDA 논문 Appendix B.5 (MMLU 평가 방식):
+        # - Classification 태스크에서는 generation 없이 Likelihood 비교만 사용
+        # - 각 후보(True/False)의 log-likelihood를 계산하여 argmax로 예측
+        # - 이 방식이 더 정확하고 효율적임
+        # ===========================================================================
+        is_all_classification = all(
+            task_name in CLASSIFICATION_BENCHMARKS for task_name in task_names
+        )
+
+        if is_llada and is_all_classification:
+            # LLaDA Classification: Generation 건너뛰고 Likelihood 비교만 수행
+            with torch.no_grad():
+                llada_probs = self.blip2model.compute_binary_prob_likelihood(
+                    graphs=(graphs, additional_graphs),
+                    input_ids=batch.prompt_input_ids,
+                    attention_mask=batch.prompt_attention_mask,
+                    is_mol_token=is_mol_token,
+                )
+                # probs: [batch, 2] = [P(False), P(True)]
+                probs = llada_probs.cpu().tolist()
+
+                # Likelihood에서 직접 predictions 도출 (argmax)
+                # Training target 형식과 일치: "<BOOLEAN> True </BOOLEAN>" (공백 포함)
+                predictions = []
+                for p in probs:
+                    if p[1] > p[0]:  # P(True) > P(False)
+                        predictions.append("<BOOLEAN> True </BOOLEAN>")
+                    else:
+                        predictions.append("<BOOLEAN> False </BOOLEAN>")
+
+            # 나머지 필요한 변수들 초기화 (generation을 건너뛰었으므로)
+            gen_outputs = None
+            gen_logits = None
+            generated_ids = None
+            strategy_outputs = {}  # 빈 딕셔너리 (multi-strategy 미사용)
+
+            # Forward pass for loss calculation
+            with torch.no_grad():
+                forward_outputs = self.blip2model(batch)
+
+            if isinstance(forward_outputs, dict):
+                forward_loss = forward_outputs.get("loss")
+                forward_logits = forward_outputs.get("logits", None)
+
+                if "instance_loss" in forward_outputs:
+                    forward_instance_loss = forward_outputs["instance_loss"]
+                else:
+                    forward_instance_loss = torch.full(
+                        (batch.prompt_input_ids.shape[0],),
+                        forward_loss.item(),
+                        device=self.device
+                    )
+            else:
+                forward_loss = forward_outputs
+                forward_instance_loss = torch.full(
+                    (batch.prompt_input_ids.shape[0],),
+                    forward_loss.item(),
+                    device=self.device
+                )
+
+            gen_labels = batch.gen_labels
+            attentions = None
+
+            # Skip to Step 7 (Decoding)
+            # 아래 코드에서 goto 대신 플래그 사용
+            skip_generation_loop = True
+        else:
+            skip_generation_loop = False
+
         # ----------------------------------------------------------------------
         # [Step 3] Generation (추론) - Multi-Strategy Support
         # ----------------------------------------------------------------------
         # 각 전략별 결과를 저장할 딕셔너리
-        strategy_outputs = {}
+        if not skip_generation_loop:
+            strategy_outputs = {}
 
-        for strategy in self.active_val_strategies:
+        for strategy in self.active_val_strategies if not skip_generation_loop else []:
             gen_kwargs = {
                 "graphs": (graphs, additional_graphs),
                 "input_ids": batch.prompt_input_ids,
@@ -1356,17 +1439,28 @@ class Blip2Stage3(pl.LightningModule):
                     print(f"  [{k}] {gen_outputs.predictions[k][:100]}...")
 
         # 기존 호환성: 첫 번째 전략의 결과를 기본으로 사용
-        primary_strategy = self.active_val_strategies[0]
-        gen_outputs = strategy_outputs[primary_strategy]["gen_outputs"]
-        gen_logits = strategy_outputs[primary_strategy]["gen_logits"]
-        generated_ids = strategy_outputs[primary_strategy]["generated_ids"]
+        # (LLaDA Classification 최적화 경로에서는 이미 변수들이 설정됨)
+        if not skip_generation_loop:
+            primary_strategy = self.active_val_strategies[0]
+            gen_outputs = strategy_outputs[primary_strategy]["gen_outputs"]
+            gen_logits = strategy_outputs[primary_strategy]["gen_logits"]
+            generated_ids = strategy_outputs[primary_strategy]["generated_ids"]
 
         gen_labels = batch.gen_labels
 
         # ----------------------------------------------------------------------
         # [Step 3.5] 디버깅 로그 출력 - Generated Sequence (첫 번째 배치만, GPU 0만)
         # ----------------------------------------------------------------------
-        if batch_idx == 0 and self.args.custom_log and self.trainer.global_rank == 0:
+        # LLaDA Classification 최적화 경로에서는 generation을 건너뛰었으므로 별도 로그 출력
+        if skip_generation_loop and batch_idx == 0 and self.trainer.global_rank == 0:
+            print(f"\n{'='*80}")
+            print(f"[LLaDA Classification] Generation skipped - using Likelihood comparison")
+            print(f"  Tasks: {task_names[:3]}...")
+            print(f"  Predictions (from probs): {predictions[:3]}")
+            print(f"  Probs: {probs[:3]}")
+            print(f"{'='*80}\n")
+
+        if batch_idx == 0 and self.args.custom_log and self.trainer.global_rank == 0 and not skip_generation_loop:
             tokenizer = self.blip2model.llm_tokenizer
             print(f"\n{'='*80}")
             print(f"{'='*25} [DEBUG: Generation Analysis] {'='*25}")
@@ -1429,45 +1523,47 @@ class Blip2Stage3(pl.LightningModule):
         # ----------------------------------------------------------------------
         # [Step 4] Forward Pass (Loss 계산)
         # ----------------------------------------------------------------------
-        with torch.no_grad():
-            forward_outputs = self.blip2model(batch)
-        
-        # 모델 타입별 Output 처리
-        if is_llada:
-            if isinstance(forward_outputs, dict):
-                forward_loss = forward_outputs.get("loss")
-                forward_logits = forward_outputs.get("logits", None)
-                
-                if "instance_loss" in forward_outputs:
-                    forward_instance_loss = forward_outputs["instance_loss"]
+        # LLaDA Classification 최적화 경로에서는 이미 forward pass 완료 (Step 3에서)
+        if not skip_generation_loop:
+            with torch.no_grad():
+                forward_outputs = self.blip2model(batch)
+
+            # 모델 타입별 Output 처리
+            if is_llada:
+                if isinstance(forward_outputs, dict):
+                    forward_loss = forward_outputs.get("loss")
+                    forward_logits = forward_outputs.get("logits", None)
+
+                    if "instance_loss" in forward_outputs:
+                        forward_instance_loss = forward_outputs["instance_loss"]
+                    else:
+                        forward_instance_loss = torch.full(
+                            (batch.prompt_input_ids.shape[0],),
+                            forward_loss.item(),
+                            device=self.device
+                        )
                 else:
+                    # 딕셔너리가 아닌 경우 (Loss 스칼라만 반환된 경우)
+                    forward_loss = forward_outputs
                     forward_instance_loss = torch.full(
-                        (batch.prompt_input_ids.shape[0],), 
-                        forward_loss.item(), 
-                        device=self.device
-                    )
+                            (batch.prompt_input_ids.shape[0],),
+                            forward_loss.item(),
+                            device=self.device
+                        )
             else:
-                # 딕셔너리가 아닌 경우 (Loss 스칼라만 반환된 경우)
-                forward_loss = forward_outputs
-                forward_instance_loss = torch.full(
-                        (batch.prompt_input_ids.shape[0],), 
-                        forward_loss.item(), 
-                        device=self.device
-                    )
-        else:
-            # Autoregressive 모델 처리
-            if isinstance(forward_outputs, dict) and "logits" in forward_outputs:
-                 forward_logits = forward_outputs["logits"]
-            
-            # forward_logits가 없으면 outputs에서 get 시도
-            logits_to_use = forward_logits if forward_logits is not None else forward_outputs.get("logits")
-            
-            forward_loss_dict = get_instance_loss(
-                logits=logits_to_use, 
-                labels=batch.labels
-            )
-            forward_instance_loss = forward_loss_dict["instance_loss"]
-            forward_loss = forward_loss_dict["loss"]
+                # Autoregressive 모델 처리
+                if isinstance(forward_outputs, dict) and "logits" in forward_outputs:
+                     forward_logits = forward_outputs["logits"]
+
+                # forward_logits가 없으면 outputs에서 get 시도
+                logits_to_use = forward_logits if forward_logits is not None else forward_outputs.get("logits")
+
+                forward_loss_dict = get_instance_loss(
+                    logits=logits_to_use,
+                    labels=batch.labels
+                )
+                forward_instance_loss = forward_loss_dict["instance_loss"]
+                forward_loss = forward_loss_dict["loss"]
 
         # ----------------------------------------------------------------------
         # [Step 5] MolPO Metrics 계산 (메모리 누수 방지 로직 적용)
@@ -1478,7 +1574,7 @@ class Blip2Stage3(pl.LightningModule):
             tasks = [id2task(task_id.item()) for task_id in batch.tasks][:len_tuple]
 
             compute_loss_context_manager = torch.amp.autocast
-            
+
             # MolPO Loss 계산
             with torch.no_grad():
                 with compute_loss_context_manager(device_type="cuda"):
@@ -1492,7 +1588,7 @@ class Blip2Stage3(pl.LightningModule):
                         molpo_batch_division=self.args.molpo_batch_division,
                         config=self.args
                     )
-            
+
             # [핵심] Metrics 내부의 모든 텐서를 스칼라(Python float)로 변환
             # 이렇게 해야 GPU 그래프가 끊기고 메모리가 해제됩니다.
             for k, v in raw_metrics.items():
@@ -1504,16 +1600,22 @@ class Blip2Stage3(pl.LightningModule):
             # Visualization을 위한 Slicing (앞부분 데이터만 사용)
             if gen_logits is not None:
                 gen_logits = gen_logits[:len_tuple]
-            
+
             gen_labels = gen_labels[:len_tuple]
             forward_instance_loss = forward_instance_loss[:len_tuple]
 
-            if hasattr(gen_outputs, "attentions"):
-                attentions = gen_outputs.attentions
-            else:
+            # LLaDA Classification 최적화 경로에서는 gen_outputs가 None
+            if skip_generation_loop:
+                # predictions는 이미 설정됨 (Step 3에서 probs -> argmax)
+                predictions = predictions[:len_tuple]
                 attentions = None
+            else:
+                if hasattr(gen_outputs, "attentions"):
+                    attentions = gen_outputs.attentions
+                else:
+                    attentions = None
+                predictions = gen_outputs.predictions[:len_tuple]
 
-            predictions = gen_outputs.predictions[:len_tuple]
             prompt_input_ids = batch.prompt_input_ids[:len_tuple]
             input_ids = batch.input_ids[:len_tuple]
             if generated_ids is not None:
@@ -1521,12 +1623,17 @@ class Blip2Stage3(pl.LightningModule):
         else:
             tasks = [id2task(task_id.item()) for task_id in batch.tasks]
 
-            if hasattr(gen_outputs, "attentions"):
-                attentions = gen_outputs.attentions
-            else:
+            # LLaDA Classification 최적화 경로에서는 gen_outputs가 None
+            if skip_generation_loop:
+                # predictions는 이미 설정됨 (Step 3에서 probs -> argmax)
                 attentions = None
+            else:
+                if hasattr(gen_outputs, "attentions"):
+                    attentions = gen_outputs.attentions
+                else:
+                    attentions = None
+                predictions = gen_outputs.predictions
 
-            predictions = gen_outputs.predictions
             prompt_input_ids = batch.prompt_input_ids
             input_ids = batch.input_ids
 
@@ -1563,47 +1670,55 @@ class Blip2Stage3(pl.LightningModule):
         # ----------------------------------------------------------------------
         # [Step 8] Probs 계산 및 거대 텐서 즉시 삭제 (메모리 확보 핵심)
         # ----------------------------------------------------------------------
-        # LLaDA는 논문 Eq.6 방식 (Likelihood 비교)으로 prob 계산
-        # AR 모델은 기존 방식 (logit에서 직접 추출)
+        # LLaDA Classification: 이미 Step 3에서 probs 계산 완료 (skip_generation_loop=True)
+        # LLaDA Non-Classification: 논문 Eq.6 방식 (Likelihood 비교)으로 prob 계산
+        # AR 모델: 기존 방식 (logit에서 직접 추출)
         # ----------------------------------------------------------------------
-        with torch.no_grad():
-            if is_llada:
-                # ================================================================
-                # [LLaDA] 논문 Eq.6: Likelihood 비교 방식
-                #
-                # - 전체 응답을 마스킹하고 forward pass로 log-likelihood 계산
-                # - True/False 각각의 likelihood를 비교하여 확률 산출
-                # - Appendix B.5: "단일 토큰만 예측하는 경우 Monte Carlo 1회면 충분"
-                # ================================================================
-                try:
-                    llada_probs = self.blip2model.compute_binary_prob_likelihood(
-                        graphs=(graphs, additional_graphs),
-                        input_ids=batch.prompt_input_ids,
-                        attention_mask=batch.prompt_attention_mask,
-                        is_mol_token=is_mol_token,
-                    )
-                    # [batch, 2] -> [[P(False), P(True)], ...] 형태의 리스트로 변환
-                    probs = llada_probs.cpu().tolist()
-                except Exception as e:
-                    logger.warning(f"[LLaDA Prob] compute_binary_prob_likelihood failed: {e}")
-                    logger.warning("[LLaDA Prob] Falling back to AR-style prob calculation")
-                    # Fallback: AR 방식 (정확하지 않지만 동작은 함)
+        if skip_generation_loop and is_llada and is_all_classification:
+            # LLaDA Classification: probs는 이미 계산됨 (Step 3에서)
+            # predictions도 이미 도출됨 (argmax from probs)
+            pass  # probs 변수가 이미 설정되어 있음
+        else:
+            with torch.no_grad():
+                if is_llada:
+                    # ================================================================
+                    # [LLaDA] 논문 Eq.6: Likelihood 비교 방식
+                    #
+                    # - 전체 응답을 마스킹하고 forward pass로 log-likelihood 계산
+                    # - True/False 각각의 likelihood를 비교하여 확률 산출
+                    # - Appendix B.5: "단일 토큰만 예측하는 경우 Monte Carlo 1회면 충분"
+                    # ================================================================
+                    try:
+                        llada_probs = self.blip2model.compute_binary_prob_likelihood(
+                            graphs=(graphs, additional_graphs),
+                            input_ids=batch.prompt_input_ids,
+                            attention_mask=batch.prompt_attention_mask,
+                            is_mol_token=is_mol_token,
+                        )
+                        # [batch, 2] -> [[P(False), P(True)], ...] 형태의 리스트로 변환
+                        probs = llada_probs.cpu().tolist()
+                    except Exception as e:
+                        logger.warning(f"[LLaDA Prob] compute_binary_prob_likelihood failed: {e}")
+                        logger.warning("[LLaDA Prob] Falling back to AR-style prob calculation")
+                        # Fallback: AR 방식 (정확하지 않지만 동작은 함)
+                        probs = convert_logit2binary_prob(
+                            logits=gen_logits,
+                            predictions=predictions,
+                            tokenizer=self.blip2model.llm_tokenizer,
+                        )
+                else:
+                    # AR 모델: 기존 방식 (logit에서 직접 추출)
                     probs = convert_logit2binary_prob(
                         logits=gen_logits,
                         predictions=predictions,
                         tokenizer=self.blip2model.llm_tokenizer,
                     )
-            else:
-                # AR 모델: 기존 방식 (logit에서 직접 추출)
-                probs = convert_logit2binary_prob(
-                    logits=gen_logits,
-                    predictions=predictions,
-                    tokenizer=self.blip2model.llm_tokenizer,
-                )
         
         # [중요] 사용 끝난 거대 텐서 즉시 삭제
-        del gen_logits
-        del forward_outputs
+        if gen_logits is not None:
+            del gen_logits
+        if 'forward_outputs' in dir() and forward_outputs is not None:
+            del forward_outputs
         if forward_logits is not None:
             del forward_logits
         
@@ -1647,35 +1762,59 @@ class Blip2Stage3(pl.LightningModule):
         # ----------------------------------------------------------------------
         # [Step 10] 로그 리스트 누적 (Multi-Strategy Support)
         # ----------------------------------------------------------------------
-        # 각 전략별로 predictions 수집
-        for strategy in self.active_val_strategies:
-            strategy_gen_outputs = strategy_outputs[strategy]["gen_outputs"]
-            strategy_predictions = strategy_gen_outputs.predictions
-            strategy_predictions = [
-                p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in strategy_predictions
-            ]
+        if skip_generation_loop:
+            # LLaDA Classification 최적화 경로: 직접 predictions 사용
+            # (generation 없이 probs에서 도출된 predictions)
+            # "likelihood" 전략으로 저장하여 _likelihood suffix가 붙도록 함
 
             # MolPO 처리 시 slicing
             if self.args.eval_molpo:
                 len_tuple = gen_labels.shape[0] // self.args.molpo_batch_division
-                strategy_predictions = strategy_predictions[:len_tuple]
+                predictions_to_log = predictions[:len_tuple]
+            else:
+                predictions_to_log = predictions
 
-            # 각 전략별 로그에 누적
-            self.strategy_list_logs[strategy]["predictions"].extend(strategy_predictions)
-            self.strategy_list_logs[strategy]["targets"].extend(targets)
-            self.strategy_list_logs[strategy]["tasks"].extend(tasks)
-            self.strategy_list_logs[strategy]["probs"].extend(probs_list)
-            self.strategy_list_logs[strategy]["prompts"].extend(prompts)
-            self.strategy_list_logs[strategy]["input_mol_strings"].extend(input_mol_strings)
+            # likelihood 전략에 누적 (Classification 최적화 전용)
+            self.strategy_list_logs["likelihood"]["predictions"].extend(predictions_to_log)
+            self.strategy_list_logs["likelihood"]["targets"].extend(targets)
+            self.strategy_list_logs["likelihood"]["tasks"].extend(tasks)
+            self.strategy_list_logs["likelihood"]["probs"].extend(probs_list)
+            self.strategy_list_logs["likelihood"]["prompts"].extend(prompts)
+            self.strategy_list_logs["likelihood"]["input_mol_strings"].extend(input_mol_strings)
 
-        # 기존 호환성을 위한 list_logs 업데이트 (첫 번째 전략 참조)
-        self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
+            # 기존 호환성을 위한 list_logs 업데이트
+            self.list_logs = self.strategy_list_logs["likelihood"]
+        else:
+            # 각 전략별로 predictions 수집
+            for strategy in self.active_val_strategies:
+                strategy_gen_outputs = strategy_outputs[strategy]["gen_outputs"]
+                strategy_predictions = strategy_gen_outputs.predictions
+                strategy_predictions = [
+                    p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in strategy_predictions
+                ]
+
+                # MolPO 처리 시 slicing
+                if self.args.eval_molpo:
+                    len_tuple = gen_labels.shape[0] // self.args.molpo_batch_division
+                    strategy_predictions = strategy_predictions[:len_tuple]
+
+                # 각 전략별 로그에 누적
+                self.strategy_list_logs[strategy]["predictions"].extend(strategy_predictions)
+                self.strategy_list_logs[strategy]["targets"].extend(targets)
+                self.strategy_list_logs[strategy]["tasks"].extend(tasks)
+                self.strategy_list_logs[strategy]["probs"].extend(probs_list)
+                self.strategy_list_logs[strategy]["prompts"].extend(prompts)
+                self.strategy_list_logs[strategy]["input_mol_strings"].extend(input_mol_strings)
+
+            # 기존 호환성을 위한 list_logs 업데이트 (첫 번째 전략 참조)
+            self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
 
         # ----------------------------------------------------------------------
         # [Step 10.5] 전략별 Generation Loss 계산 (LLaDA 전용)
         # ----------------------------------------------------------------------
         # 생성된 시퀀스와 Ground Truth 간의 token-level cross-entropy 계산
-        if is_llada:
+        # LLaDA Classification 최적화 경로에서는 generation이 없으므로 건너뜀
+        if is_llada and not skip_generation_loop:
             with torch.no_grad():
                 for strategy in self.active_val_strategies:
                     strategy_logits = strategy_outputs[strategy]["gen_logits"]
@@ -1762,18 +1901,25 @@ class Blip2Stage3(pl.LightningModule):
         # ----------------------------------------------------------------------
         # [Step 12] 최종 로깅 및 리턴
         # ----------------------------------------------------------------------
-        # 전략별 gen_loss 단순 평균을 val_total_loss로 로깅 (LLaDA 전용)
-        if is_llada and hasattr(self, 'strategy_total_gen_loss'):
-            valid_gen_losses = []
-            for strategy in self.active_val_strategies:
-                count = self.strategy_total_gen_loss_count[strategy]
-                if count > 0:
-                    # 각 전략별 평균 gen_loss를 리스트에 추가
-                    valid_gen_losses.append(self.strategy_total_gen_loss[strategy] / count)
-            if valid_gen_losses:
-                # 전략별 평균 gen_loss의 단순 평균
-                avg_gen_loss = sum(valid_gen_losses) / len(valid_gen_losses)
-                self.log("val_total_loss", avg_gen_loss, sync_dist=True, prog_bar=True, logger=True)
+        # val_total_loss 로깅 (ModelCheckpoint 모니터링용)
+        if is_llada:
+            if skip_generation_loop:
+                # LLaDA Classification 최적화 경로: forward_loss 사용
+                # Generation을 건너뛰었으므로 forward_loss를 val_total_loss로 로깅
+                if forward_loss is not None:
+                    self.log("val_total_loss", forward_loss.item(), sync_dist=True, prog_bar=True, logger=True)
+            elif hasattr(self, 'strategy_total_gen_loss'):
+                # 일반 LLaDA 경로: 전략별 gen_loss 단순 평균
+                valid_gen_losses = []
+                for strategy in self.active_val_strategies:
+                    count = self.strategy_total_gen_loss_count[strategy]
+                    if count > 0:
+                        # 각 전략별 평균 gen_loss를 리스트에 추가
+                        valid_gen_losses.append(self.strategy_total_gen_loss[strategy] / count)
+                if valid_gen_losses:
+                    # 전략별 평균 gen_loss의 단순 평균
+                    avg_gen_loss = sum(valid_gen_losses) / len(valid_gen_losses)
+                    self.log("val_total_loss", avg_gen_loss, sync_dist=True, prog_bar=True, logger=True)
         
         # [강제 메모리 정리]
         import gc
@@ -1934,7 +2080,13 @@ class Blip2Stage3(pl.LightningModule):
         # ======================================================================
         all_strategy_results = {}
 
-        for strategy in self.active_val_strategies:
+        # likelihood 전략이 데이터가 있으면 포함, 아니면 기존 전략만 사용
+        strategies_to_evaluate = list(self.active_val_strategies)
+        if len(self.strategy_list_logs["likelihood"]["predictions"]) > 0:
+            # likelihood에 데이터가 있으면 이것만 평가 (Classification 최적화 경로)
+            strategies_to_evaluate = ["likelihood"]
+
+        for strategy in strategies_to_evaluate:
             strategy_logs = self.strategy_list_logs[strategy]
             strategy_suffix = f"_{strategy}" if strategy != "default" else ""
 
@@ -2048,7 +2200,7 @@ class Blip2Stage3(pl.LightningModule):
         # Prepare per-strategy classification tensors
         self.num_per_device_cls = 10000
         self.strategy_per_device_cls_tensors = {}
-        for strategy in self.active_val_strategies:
+        for strategy in strategies_to_evaluate:
             strategy_logs = self.strategy_list_logs[strategy]
             per_device_cls_tensor = torch.zeros(
                 size=(self.num_per_device_cls, 4), device=self.device, dtype=torch.float
@@ -2071,8 +2223,8 @@ class Blip2Stage3(pl.LightningModule):
                     cls_idx += 1
             self.strategy_per_device_cls_tensors[strategy] = per_device_cls_tensor
 
-        # For backward compatibility, use first strategy's tensor
-        self.per_device_cls_tensor = self.strategy_per_device_cls_tensors[self.active_val_strategies[0]]
+        # For backward compatibility, use first evaluated strategy's tensor
+        self.per_device_cls_tensor = self.strategy_per_device_cls_tensors[strategies_to_evaluate[0]]
 
         assert flattened_metric_tensors.shape[0] == len(
             flattened_metric_keys
@@ -2141,7 +2293,7 @@ class Blip2Stage3(pl.LightningModule):
         cls_flattened_metric_keys = []
         cls_flattented_metric_tensors = torch.empty(size=(0, 1), device=self.device)
 
-        for strategy in self.active_val_strategies:
+        for strategy in strategies_to_evaluate:
             strategy_suffix = f"_{strategy}" if strategy != "default" else ""
             strategy_cls_tensor = strategy_uniform_cls_tensors[strategy]
 
@@ -2235,13 +2387,13 @@ class Blip2Stage3(pl.LightningModule):
         # ======================================================================
         # Multi-Strategy Summary Metrics
         # ======================================================================
-        if len(self.active_val_strategies) > 1:
+        if len(strategies_to_evaluate) >= 1:
             print(f"\n{'='*70}")
             print("📊 Multi-Strategy Comparison Summary")
             print(f"{'='*70}")
 
             strategy_summaries = {}
-            for strategy in self.active_val_strategies:
+            for strategy in strategies_to_evaluate:
                 strategy_eval_results = all_strategy_results[strategy]["evaluation_results"]
                 strategy_failed = all_strategy_results[strategy]["failed_cases"]
 

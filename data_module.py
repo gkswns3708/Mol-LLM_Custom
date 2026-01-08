@@ -93,7 +93,7 @@ class Stage3DM(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=False,
+            drop_last=True,  # DDP 동기화 문제 방지: 모든 GPU가 동일한 배치 수 처리
             persistent_workers=True if self.args.num_workers > 0 else False,
             collate_fn=self.eval_collator,
         )
@@ -106,7 +106,7 @@ class Stage3DM(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=False,
+            drop_last=True,  # DDP 동기화 문제 방지: 모든 GPU가 동일한 배치 수 처리
             persistent_workers=True if self.args.num_workers > 0 else False,
             collate_fn=self.eval_collator,
         )

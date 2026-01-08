@@ -104,4 +104,13 @@ allHsExplicit: false
 
 
 # Special LLaDA Configuration
-remasking_strategy: 'random' # low_confidence도 존재.
+# remasking_strategy 옵션:
+#   - 'low_confidence': Algorithm 5 - 낮은 confidence 토큰을 다시 mask (LLaDA 논문 권장)
+#   - 'random': Algorithm 4 - 랜덤하게 다시 mask
+#   - 'none': Remasking 없이 매 step마다 top-k 토큰만 unmask (기존 방식)
+remasking_strategy: 'random'
+
+# Semi-Autoregressive 생성 모드
+use_semi_ar: false
+semi_ar_block_size: 32
+val_strategies: null

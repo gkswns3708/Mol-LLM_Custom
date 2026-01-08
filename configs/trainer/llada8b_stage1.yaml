@@ -57,8 +57,17 @@ gradient_clip_val: 1.0
 # ============================================
 # [필수] LLaDA 전용 설정
 # ============================================
-remasking_strategy: 'random'     # low_confidence or random
-sampling_steps: 16               # Generation 시 diffusion steps
+# remasking_strategy 옵션:
+#   - 'low_confidence': Algorithm 5 - 낮은 confidence 토큰을 다시 mask (LLaDA 논문 권장)
+#   - 'random': Algorithm 4 - 랜덤하게 다시 mask
+#   - 'none': Remasking 없이 매 step마다 top-k 토큰만 unmask (기존 방식)
+remasking_strategy: 'low_confidence'
+sampling_steps: 32               # Generation 시 diffusion steps
+
+# Semi-Autoregressive 생성 모드
+use_semi_ar: false
+semi_ar_block_size: 16
+val_strategies: null
 
 # ============================================
 # [필수] 데이터

@@ -9,7 +9,10 @@ import model.added_tokens as added_tokens
 import numpy as np
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 한국 시간대 (KST = UTC+9)
+KST = timezone(timedelta(hours=9))
 # [중요] Python 기본 logging 대신 transformers의 logging을 사용
 logger = logging.get_logger(__name__)
 
@@ -527,7 +530,7 @@ class Blip2LLaDA(Blip2OPT):
         - 라벨값
         - 각종 통계 정보
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        timestamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S_%f")
         log_dir = getattr(self.args, 'nan_log_dir', './nan_logs')
         os.makedirs(log_dir, exist_ok=True)
         log_file = os.path.join(log_dir, f"nan_sample_{timestamp}.json")
@@ -702,26 +705,124 @@ class Blip2LLaDA(Blip2OPT):
         attention_mask,
         is_mol_token=None,
         max_length=128,
-        steps=64, 
+        steps=64,
         temperature=0.0,
         remasking_strategy='low_confidence',
+        use_semi_ar=False,
+        semi_ar_block_size=32,
+        task_name=None,
         **kwargs
     ):
+        """
+        LLaDA Generation with configurable remasking strategy
+
+        ========================================================================
+        LLaDA 논문 Algorithm 4 & 5 구현 (Appendix A.3)
+        ========================================================================
+
+        remasking_strategy 옵션:
+        - 'low_confidence': Algorithm 5 - 낮은 confidence 토큰을 다시 mask
+        - 'random': Algorithm 4 - 랜덤하게 s/t 비율만큼 다시 mask
+        - 'none': Remasking 없이 매 step마다 top-k 토큰만 unmask (기존 방식)
+
+        use_semi_ar 옵션:
+        - True: Semi-Autoregressive 모드 (블록 단위로 순차 생성)
+        - False: 전체 영역 동시 생성
+
+        Args:
+            graphs: 분자 그래프 (tuple of main_graph, additional_graph)
+            input_ids: 입력 토큰 ID [batch, prompt_len]
+            attention_mask: 어텐션 마스크 [batch, prompt_len]
+            is_mol_token: mol token 위치 마스크 [batch, prompt_len]
+            max_length: 최대 생성 길이
+            steps: Diffusion steps
+            temperature: Gumbel noise temperature (0=greedy, >0=stochastic)
+            remasking_strategy: 'low_confidence' | 'random' | 'none'
+            use_semi_ar: Semi-Autoregressive 모드 사용 여부
+            semi_ar_block_size: Semi-AR 블록 크기
+            task_name: Task 이름 (Semi-AR 모드에서 format token 결정용)
+        """
+        # Semi-AR 모드 분기
+        if use_semi_ar:
+            return self._generate_semi_ar(
+                graphs=graphs,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                is_mol_token=is_mol_token,
+                max_length=max_length,
+                steps=steps,
+                temperature=temperature,
+                remasking_strategy=remasking_strategy,
+                block_size=semi_ar_block_size,
+                task_name=task_name,
+                **kwargs
+            )
+
         batch_size = input_ids.shape[0]
         prompt_len = input_ids.shape[1]
         gen_len = max_length
-        
+
+        # 초기화: 생성 영역을 모두 MASK로 설정 (t=1 상태)
         gen_tokens = torch.full((batch_size, gen_len), self.mask_token_id, device=self.device, dtype=torch.long)
         full_ids = torch.cat([input_ids, gen_tokens], dim=1)
-        
+
         gen_mask = torch.ones((batch_size, gen_len), device=self.device, dtype=attention_mask.dtype)
         full_attention_mask = torch.cat([attention_mask, gen_mask], dim=1)
-        
+
         if is_mol_token is not None:
             is_mol_token_gen = torch.zeros((batch_size, gen_len), device=self.device, dtype=torch.bool)
             full_is_mol_token = torch.cat([is_mol_token, is_mol_token_gen], dim=1)
         else:
             full_is_mol_token = None
+
+        # ================================================================
+        # Remasking 전략에 따른 생성 로직
+        # ================================================================
+
+        if remasking_strategy == 'none':
+            # 기존 방식: 매 step마다 top-k 토큰만 unmask (remasking 없음)
+            return self._generate_no_remask(
+                full_ids=full_ids,
+                full_attention_mask=full_attention_mask,
+                full_is_mol_token=full_is_mol_token,
+                graphs=graphs,
+                prompt_len=prompt_len,
+                gen_len=gen_len,
+                steps=steps,
+                temperature=temperature,
+            )
+        else:
+            # Algorithm 4 (random) 또는 Algorithm 5 (low_confidence)
+            return self._generate_with_remask(
+                full_ids=full_ids,
+                full_attention_mask=full_attention_mask,
+                full_is_mol_token=full_is_mol_token,
+                graphs=graphs,
+                prompt_len=prompt_len,
+                gen_len=gen_len,
+                steps=steps,
+                temperature=temperature,
+                remasking_strategy=remasking_strategy,
+            )
+
+    def _generate_no_remask(
+        self,
+        full_ids,
+        full_attention_mask,
+        full_is_mol_token,
+        graphs,
+        prompt_len,
+        gen_len,
+        steps,
+        temperature,
+    ):
+        """
+        Remasking 없는 생성 (기존 방식)
+
+        매 step마다 가장 높은 confidence의 k개 토큰만 unmask.
+        한번 unmask된 토큰은 변경되지 않음.
+        """
+        batch_size = full_ids.shape[0]
 
         mask_index = (full_ids[:, prompt_len:] == self.mask_token_id)
         num_transfer_tokens = self.get_num_transfer_tokens(mask_index, steps)
@@ -730,57 +831,314 @@ class Blip2LLaDA(Blip2OPT):
             cur_mask_index = (full_ids == self.mask_token_id)
 
             current_embeds = self.llm_embed_tokens(full_ids)
-            
-            # 그래프 주입 (오버라이딩된 메서드 사용)
+
             if graphs is not None:
                 current_embeds, _, _ = self.inject_graph_embeds2input_embeds(
                     input_embeds=current_embeds,
                     is_mol_token=full_is_mol_token,
                     graphs=graphs
                 )
-            
+
             outputs = self.llm_model(
                 inputs_embeds=current_embeds,
                 attention_mask=full_attention_mask,
                 return_dict=True
             )
-            logits = outputs.logits 
+            logits = outputs.logits
 
             logits_with_noise = self.add_gumbel_noise(logits, temperature)
             x0_pred = torch.argmax(logits_with_noise, dim=-1)
 
-            if remasking_strategy == 'low_confidence':
-                p = F.softmax(logits, dim=-1)
-                x0_p = torch.squeeze(
-                    torch.gather(p, dim=-1, index=torch.unsqueeze(x0_pred, -1)), -1
-                )
-            elif remasking_strategy == 'random':
-                x0_p = torch.rand_like(logits[:, :, 0])
-            else:
-                raise NotImplementedError(f"Unknown remasking strategy: {remasking_strategy}")
+            # Confidence 계산 (low_confidence 방식 사용)
+            p = F.softmax(logits, dim=-1)
+            x0_p = torch.squeeze(
+                torch.gather(p, dim=-1, index=torch.unsqueeze(x0_pred, -1)), -1
+            )
 
             x0_p[:, :prompt_len] = -np.inf
             confidence = torch.where(cur_mask_index, x0_p, torch.tensor(-np.inf, device=self.device))
-            
+
+            # Top-k 선택하여 unmask
             transfer_mask = torch.zeros_like(full_ids, dtype=torch.bool)
-            
+
             for b in range(batch_size):
                 k = num_transfer_tokens[b, step]
                 if k > 0:
                     _, select_indices = torch.topk(confidence[b], k=k)
                     transfer_mask[b, select_indices] = True
-            
+
             full_ids[transfer_mask] = x0_pred[transfer_mask]
-            
+
         generated_tokens = full_ids[:, prompt_len:]
         generated_text = self.llm_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-        
-        # [수정] attentions=None 추가하여 에러 방지
+
         return AttrDict(
             predictions=generated_text,
             sequences=full_ids,
             logits=logits,
-            attentions=None 
+            attentions=None
+        )
+
+    def _generate_with_remask(
+        self,
+        full_ids,
+        full_attention_mask,
+        full_is_mol_token,
+        graphs,
+        prompt_len,
+        gen_len,
+        steps,
+        temperature,
+        remasking_strategy,
+    ):
+        """
+        LLaDA 논문 Algorithm 4 (random) & Algorithm 5 (low_confidence) 구현
+
+        핵심 차이점 (기존 방식 vs 논문 방식):
+        - 기존: 매 step마다 k개 토큰만 unmask, 나머지는 그대로 유지
+        - 논문: 모든 mask 토큰을 예측 후, 낮은 confidence 토큰을 다시 mask
+
+        Algorithm 5 (Low-Confidence Remasking):
+        1. 모든 masked 토큰을 예측 (r0 = argmax)
+        2. 이미 unmasked된 토큰은 confidence = 1로 설정
+        3. nun = ⌊L(1-s)⌋ 개의 가장 높은 confidence 토큰만 unmask 상태 유지
+        4. 나머지는 다시 MASK로 되돌림 (remasking)
+
+        Algorithm 4 (Random Remasking):
+        - Step 2에서 confidence 대신 random 값 사용
+        """
+        batch_size = full_ids.shape[0]
+
+        for step in range(steps):
+            # 현재 timestep t와 다음 timestep s 계산
+            t = 1.0 - step / steps
+            s = max(0.0, t - 1.0 / steps)
+
+            # Forward pass
+            current_embeds = self.llm_embed_tokens(full_ids)
+
+            if graphs is not None:
+                current_embeds, _, _ = self.inject_graph_embeds2input_embeds(
+                    input_embeds=current_embeds,
+                    is_mol_token=full_is_mol_token,
+                    graphs=graphs
+                )
+
+            outputs = self.llm_model(
+                inputs_embeds=current_embeds,
+                attention_mask=full_attention_mask,
+                return_dict=True
+            )
+            logits = outputs.logits
+
+            # Gumbel noise로 예측
+            logits_with_noise = self.add_gumbel_noise(logits, temperature)
+            x0_pred = torch.argmax(logits_with_noise, dim=-1)
+
+            # ============================================================
+            # Confidence 계산 (Algorithm 5 line 8-9)
+            # ============================================================
+            cur_mask_index = (full_ids == self.mask_token_id)
+
+            if remasking_strategy == 'low_confidence':
+                # Algorithm 5: 예측 토큰의 확률을 confidence로 사용
+                p = F.softmax(logits, dim=-1)
+                x0_p = torch.squeeze(
+                    torch.gather(p, dim=-1, index=torch.unsqueeze(x0_pred, -1)), -1
+                )
+            elif remasking_strategy == 'random':
+                # Algorithm 4: 랜덤 값을 confidence로 사용
+                x0_p = torch.rand_like(logits[:, :, 0])
+            else:
+                raise NotImplementedError(f"Unknown remasking strategy: {remasking_strategy}")
+
+            # Confidence 초기화:
+            # - 현재 masked인 위치: 예측 confidence
+            # - 현재 unmasked인 위치: 1.0 (이미 확정된 토큰은 유지)
+            confidence = torch.zeros_like(x0_p)
+            confidence[:, :prompt_len] = np.inf  # prompt는 절대 건드리지 않음
+            confidence[:, prompt_len:] = torch.where(
+                cur_mask_index[:, prompt_len:],
+                x0_p[:, prompt_len:],  # masked -> 예측 confidence
+                torch.ones_like(x0_p[:, prompt_len:])  # unmasked -> 1.0 (유지)
+            )
+
+            # ============================================================
+            # Step 1: 모든 masked 위치를 예측값으로 채움 (Algorithm 5 line 6-8)
+            # ============================================================
+            full_ids = torch.where(cur_mask_index, x0_pred, full_ids)
+
+            # ============================================================
+            # Step 2: Remasking (Algorithm 5 line 12-16)
+            # nun = ⌊L(1-s)⌋ 개의 가장 높은 confidence 토큰만 유지
+            # ============================================================
+            if s > 0:  # 마지막 step이 아니면 remasking 수행
+                # nun: unmask 상태로 유지할 토큰 수
+                nun = int(gen_len * (1 - s))
+
+                for b in range(batch_size):
+                    # 생성 영역의 confidence만 고려
+                    gen_confidence = confidence[b, prompt_len:]
+
+                    if nun < gen_len:
+                        # 가장 높은 confidence의 nun개만 유지, 나머지는 다시 mask
+                        _, keep_indices = torch.topk(gen_confidence, k=nun, largest=True)
+
+                        # 모든 생성 영역을 MASK로 설정
+                        full_ids[b, prompt_len:] = self.mask_token_id
+
+                        # 가장 높은 confidence의 토큰만 복원
+                        full_ids[b, prompt_len + keep_indices] = x0_pred[b, prompt_len + keep_indices]
+
+        generated_tokens = full_ids[:, prompt_len:]
+        generated_text = self.llm_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+
+        return AttrDict(
+            predictions=generated_text,
+            sequences=full_ids,
+            logits=logits,
+            attentions=None
+        )
+
+    def _generate_semi_ar(
+        self,
+        graphs,
+        input_ids,
+        attention_mask,
+        is_mol_token,
+        max_length,
+        steps,
+        temperature,
+        remasking_strategy,
+        block_size,
+        task_name=None,
+        **kwargs
+    ):
+        """
+        Semi-Autoregressive Generation (논문 Appendix A.3, Figure 4)
+
+        시퀀스를 여러 블록으로 나누어 왼쪽에서 오른쪽으로 순차 생성.
+        각 블록 내에서는 지정된 remasking_strategy 사용.
+
+        Args:
+            block_size: 각 블록의 크기 (토큰 수)
+            remasking_strategy: 블록 내 remasking 전략
+        """
+        batch_size = input_ids.shape[0]
+        prompt_len = input_ids.shape[1]
+        gen_len = max_length
+
+        # 초기화
+        gen_tokens = torch.full((batch_size, gen_len), self.mask_token_id, device=self.device, dtype=torch.long)
+        full_ids = torch.cat([input_ids, gen_tokens], dim=1)
+
+        gen_mask = torch.ones((batch_size, gen_len), device=self.device, dtype=attention_mask.dtype)
+        full_attention_mask = torch.cat([attention_mask, gen_mask], dim=1)
+
+        if is_mol_token is not None:
+            is_mol_token_gen = torch.zeros((batch_size, gen_len), device=self.device, dtype=torch.bool)
+            full_is_mol_token = torch.cat([is_mol_token, is_mol_token_gen], dim=1)
+        else:
+            full_is_mol_token = None
+
+        # 블록 수 계산
+        num_blocks = (gen_len + block_size - 1) // block_size
+
+        # 각 블록에 할당할 step 수
+        steps_per_block = max(1, steps // num_blocks)
+
+        for block_idx in range(num_blocks):
+            block_start = prompt_len + block_idx * block_size
+            block_end = min(prompt_len + (block_idx + 1) * block_size, prompt_len + gen_len)
+            current_block_size = block_end - block_start
+
+            if current_block_size <= 0:
+                break
+
+            # 현재 블록에 대해 diffusion 수행
+            for step in range(steps_per_block):
+                t = 1.0 - step / steps_per_block
+                s = max(0.0, t - 1.0 / steps_per_block)
+
+                # Forward pass (전체 시퀀스)
+                current_embeds = self.llm_embed_tokens(full_ids)
+
+                if graphs is not None:
+                    current_embeds, _, _ = self.inject_graph_embeds2input_embeds(
+                        input_embeds=current_embeds,
+                        is_mol_token=full_is_mol_token,
+                        graphs=graphs
+                    )
+
+                outputs = self.llm_model(
+                    inputs_embeds=current_embeds,
+                    attention_mask=full_attention_mask,
+                    return_dict=True
+                )
+                logits = outputs.logits
+
+                logits_with_noise = self.add_gumbel_noise(logits, temperature)
+                x0_pred = torch.argmax(logits_with_noise, dim=-1)
+
+                # 현재 블록의 mask 여부 확인
+                cur_block_mask = (full_ids[:, block_start:block_end] == self.mask_token_id)
+
+                # Confidence 계산
+                if remasking_strategy == 'low_confidence':
+                    p = F.softmax(logits[:, block_start:block_end, :], dim=-1)
+                    block_pred = x0_pred[:, block_start:block_end]
+                    x0_p = torch.squeeze(
+                        torch.gather(p, dim=-1, index=torch.unsqueeze(block_pred, -1)), -1
+                    )
+                elif remasking_strategy == 'random':
+                    x0_p = torch.rand((batch_size, current_block_size), device=self.device)
+                else:
+                    # 'none': confidence 기반 선택
+                    p = F.softmax(logits[:, block_start:block_end, :], dim=-1)
+                    block_pred = x0_pred[:, block_start:block_end]
+                    x0_p = torch.squeeze(
+                        torch.gather(p, dim=-1, index=torch.unsqueeze(block_pred, -1)), -1
+                    )
+
+                # Confidence 설정
+                confidence = torch.where(
+                    cur_block_mask,
+                    x0_p,
+                    torch.ones_like(x0_p)  # 이미 unmask된 토큰은 유지
+                )
+
+                # 모든 masked 위치를 예측값으로 채움
+                full_ids[:, block_start:block_end] = torch.where(
+                    cur_block_mask,
+                    x0_pred[:, block_start:block_end],
+                    full_ids[:, block_start:block_end]
+                )
+
+                # Remasking (마지막 step이 아닌 경우)
+                if s > 0 and remasking_strategy != 'none':
+                    nun = int(current_block_size * (1 - s))
+
+                    for b in range(batch_size):
+                        block_confidence = confidence[b]
+
+                        if nun < current_block_size:
+                            _, keep_indices = torch.topk(block_confidence, k=nun, largest=True)
+
+                            # 블록 전체를 MASK로 설정
+                            full_ids[b, block_start:block_end] = self.mask_token_id
+
+                            # 높은 confidence 토큰만 복원
+                            for idx in keep_indices:
+                                full_ids[b, block_start + idx] = x0_pred[b, block_start + idx]
+
+        generated_tokens = full_ids[:, prompt_len:]
+        generated_text = self.llm_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+
+        return AttrDict(
+            predictions=generated_text,
+            sequences=full_ids,
+            logits=logits,
+            attentions=None
         )
 
     def extract_graph_feature(self, samples):
@@ -1382,9 +1740,11 @@ class Blip2LLaDA(Blip2OPT):
         batch_size = input_ids.shape[0]
         prompt_len = input_ids.shape[1]
 
-        # 후보 응답 토큰화: "<BOOLEAN>True</BOOLEAN>" vs "<BOOLEAN>False</BOOLEAN>"
-        true_response = "<BOOLEAN>True</BOOLEAN>"
-        false_response = "<BOOLEAN>False</BOOLEAN>"
+        # 후보 응답 토큰화 (Training target 형식과 일치시킴)
+        # Training target: "<BOOLEAN> True </BOOLEAN><|eot_id|>" (공백 포함)
+        # Likelihood 비교도 동일한 형식 사용해야 정확한 확률 추정 가능
+        true_response = "<BOOLEAN> True </BOOLEAN>"
+        false_response = "<BOOLEAN> False </BOOLEAN>"
 
         true_tokens = self.llm_tokenizer.encode(true_response, add_special_tokens=False)
         false_tokens = self.llm_tokenizer.encode(false_response, add_special_tokens=False)

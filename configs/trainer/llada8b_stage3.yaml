@@ -103,4 +103,23 @@ allHsExplicit: false
 
 
 # Special LLaDA Configuration
-remasking_strategy: 'random' # low_confidence도 존재.
+# remasking_strategy 옵션:
+#   - 'low_confidence': Algorithm 5 - 낮은 confidence 토큰을 다시 mask (LLaDA 논문 권장)
+#   - 'random': Algorithm 4 - 랜덤하게 다시 mask
+#   - 'none': Remasking 없이 매 step마다 top-k 토큰만 unmask (기존 방식)
+remasking_strategy: 'random'
+
+# Semi-Autoregressive 생성 모드
+# True: 블록 단위로 순차 생성 (left-to-right)
+# False: 전체 영역 동시 생성
+use_semi_ar: false
+# block_size 권장값: 생성 길이에 따라 조정
+# - 짧은 텍스트 (mol2text 등): 8~16
+# - 긴 텍스트 (code, math): 32~64
+# LLaDA 논문 Table 8 참고: GSM8K=8, HumanEval=32, GPQA=64
+semi_ar_block_size: 16
+
+# Validation 전략 설정 (복수 전략 동시 평가 지원)
+# null이면 remasking_strategy와 use_semi_ar 설정에 따라 단일 전략 사용
+# 예시: ["random", "low_confidence", "semi_ar"]
+val_strategies: null
