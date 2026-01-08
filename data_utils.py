@@ -390,6 +390,20 @@ class DataCollator(DataCollatorForSeq2Seq):
             add_special_tokens=False,
         )
 
+        # ========================================================================
+        # [LLaDA SFT] target text 끝에 EOS 토큰 추가
+        #
+        # LLaDA 논문 Section 2.3: "We treat |EOS| as a normal token during training"
+        # Appendix B.1: "the padding |EOS| tokens are treated as part of the response"
+        #
+        # 모델이 응답 종료 시점을 학습할 수 있도록 EOS 토큰을 response에 포함
+        # ========================================================================
+        eos_token_id = self.tokenizer.eos_token_id
+        if eos_token_id is not None and self.train:
+            for i in range(len(target_tokenized["input_ids"])):
+                target_tokenized["input_ids"][i].append(eos_token_id)
+                target_tokenized["attention_mask"][i].append(1)
+
         full_input_ids = [
             p + t
             for p, t in zip(

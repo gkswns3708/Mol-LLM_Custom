@@ -77,7 +77,7 @@ max_packing_size: -1
 
 weight_decay: 0.1               
 min_lr: 0.0000025               
-init_lr: 0.0025               
+init_lr: 0.00025               
 warmup_lr: 0.0                  
 warmup_steps: 10                
 # warmup_epochs: 0.5            

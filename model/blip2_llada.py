@@ -270,6 +270,9 @@ class Blip2LLaDA(Blip2OPT):
         # 핵심: response 영역에서만 마스킹하고, 마스킹된 위치의 원본 토큰을 예측
         #
         # 1. labels != -100 인 위치가 response 영역 (is_answer)
+        #    - DataLoader에서 target text 끝에 EOS 토큰이 추가됨 (data_utils.py)
+        #    - 따라서 EOS 토큰도 labels에 포함되어 response 영역에 포함됨
+        #    - LLaDA 논문 Section 2.3: "We treat |EOS| as a normal token during training"
         # 2. response 영역 내에서 랜덤하게 마스킹 (masked_indices)
         # 3. 마스킹된 위치에서만 cross-entropy loss 계산
         # 4. 1/p_mask로 importance weighting
@@ -1216,6 +1219,259 @@ class Blip2LLaDA(Blip2OPT):
             logits=logits,
             attentions=None
         )
+
+    # ==========================================================================
+    # LLaDA Paper Eq. 6: Monte Carlo Likelihood Estimation
+    # ==========================================================================
+    #
+    # 논문 Section 2.4 Inference, Algorithm 3 (Appendix A), Appendix B.5 참조
+    #
+    # Eq. 6: log p(y|x) ≈ (1/K) Σ_{k=1}^{K} Σ_{i=1}^{|y|} log p(y_i | x, y^{M_k})
+    #
+    # 핵심 아이디어:
+    # 1. K개의 Monte Carlo 샘플에서 마스킹 비율 t_k ~ Uniform(0,1) 샘플링
+    # 2. 응답 토큰 중 t_k 비율만큼 랜덤하게 마스킹
+    # 3. Forward pass로 마스킹된 위치의 log-probability 계산
+    # 4. 평균 log-likelihood 반환
+    # ==========================================================================
+
+    @torch.no_grad()
+    def compute_response_likelihood(
+        self,
+        graphs,
+        input_ids,
+        attention_mask,
+        response_ids,
+        response_attention_mask,
+        is_mol_token=None,
+        num_samples=128,  # 논문 Appendix B.5: K=128 for evaluation
+    ):
+        """
+        LLaDA 논문 Eq. 6에 따른 Monte Carlo Likelihood 추정
+
+        Args:
+            graphs: 분자 그래프 (tuple of main_graph, additional_graph)
+            input_ids: 프롬프트 토큰 ID [batch, prompt_len]
+            attention_mask: 프롬프트 어텐션 마스크 [batch, prompt_len]
+            response_ids: 응답 토큰 ID [batch, response_len]
+            response_attention_mask: 응답 어텐션 마스크 [batch, response_len]
+            is_mol_token: mol token 위치 마스크 [batch, prompt_len]
+            num_samples: Monte Carlo 샘플 수 (default: 128)
+
+        Returns:
+            torch.Tensor: 각 샘플의 평균 log-likelihood [batch]
+        """
+        batch_size = input_ids.shape[0]
+        prompt_len = input_ids.shape[1]
+        response_len = response_ids.shape[1]
+
+        # 전체 시퀀스 구성: [prompt | response]
+        full_ids = torch.cat([input_ids, response_ids], dim=1)
+        full_attention_mask = torch.cat([attention_mask, response_attention_mask], dim=1)
+
+        if is_mol_token is not None:
+            is_mol_token_resp = torch.zeros((batch_size, response_len), device=self.device, dtype=torch.bool)
+            full_is_mol_token = torch.cat([is_mol_token, is_mol_token_resp], dim=1)
+        else:
+            full_is_mol_token = None
+
+        # 응답 영역 마스크 (response_attention_mask가 1인 위치)
+        response_mask = response_attention_mask.bool()  # [batch, response_len]
+        response_lengths = response_mask.sum(dim=1)  # [batch]
+
+        # Monte Carlo 샘플링으로 log-likelihood 추정
+        total_log_likelihood = torch.zeros(batch_size, device=self.device)
+
+        for _ in range(num_samples):
+            # Step 1: 각 배치별로 마스킹 비율 t ~ Uniform(0, 1) 샘플링
+            t = torch.rand(batch_size, device=self.device)
+
+            # Step 2: 응답 영역에서 t 비율만큼 랜덤하게 마스킹
+            noisy_full_ids = full_ids.clone()
+            mask_probs = torch.rand((batch_size, response_len), device=self.device)
+
+            # 각 샘플별로 마스킹 비율 적용
+            for b in range(batch_size):
+                # 응답 영역 내에서만 마스킹
+                valid_response = response_mask[b]
+                should_mask = (mask_probs[b] < t[b]) & valid_response
+
+                # 마스킹 적용 (prompt_len 이후가 response 영역)
+                noisy_full_ids[b, prompt_len:][should_mask] = self.mask_token_id
+
+            # Step 3: Forward pass
+            current_embeds = self.llm_embed_tokens(noisy_full_ids)
+
+            if graphs is not None:
+                current_embeds, _, _ = self.inject_graph_embeds2input_embeds(
+                    input_embeds=current_embeds,
+                    is_mol_token=full_is_mol_token,
+                    graphs=graphs
+                )
+
+            outputs = self.llm_model(
+                inputs_embeds=current_embeds,
+                attention_mask=full_attention_mask,
+                return_dict=True
+            )
+            logits = outputs.logits  # [batch, seq_len, vocab_size]
+
+            # Step 4: 마스킹된 위치의 log-probability 계산
+            # 응답 영역의 logits만 추출
+            response_logits = logits[:, prompt_len:, :]  # [batch, response_len, vocab_size]
+            log_probs = F.log_softmax(response_logits, dim=-1)  # [batch, response_len, vocab_size]
+
+            # 원본 응답 토큰의 log-probability 추출
+            # gather를 사용해 각 위치의 정답 토큰에 대한 log-prob 추출
+            target_log_probs = torch.gather(
+                log_probs,
+                dim=-1,
+                index=response_ids.unsqueeze(-1)
+            ).squeeze(-1)  # [batch, response_len]
+
+            # 마스킹된 위치만 합산 (실제 응답 토큰이 있는 위치)
+            # 현재 샘플에서 마스킹된 위치 = noisy_full_ids에서 mask_token_id인 위치
+            masked_in_response = (noisy_full_ids[:, prompt_len:] == self.mask_token_id) & response_mask
+
+            # 마스킹된 위치의 log-prob 합산
+            sample_log_likelihood = (target_log_probs * masked_in_response.float()).sum(dim=1)
+
+            # 마스킹된 토큰 수로 정규화 (0 division 방지)
+            num_masked = masked_in_response.sum(dim=1).float()
+            sample_log_likelihood = sample_log_likelihood / (num_masked + 1e-8)
+
+            # 마스킹된 토큰이 없는 경우 (t≈0) 처리
+            sample_log_likelihood = torch.where(
+                num_masked > 0,
+                sample_log_likelihood,
+                torch.zeros_like(sample_log_likelihood)
+            )
+
+            total_log_likelihood += sample_log_likelihood
+
+        # Monte Carlo 평균
+        avg_log_likelihood = total_log_likelihood / num_samples
+
+        return avg_log_likelihood
+
+    @torch.no_grad()
+    def compute_binary_prob_likelihood(
+        self,
+        graphs,
+        input_ids,
+        attention_mask,
+        is_mol_token=None,
+    ):
+        """
+        Binary classification (True/False)에 대한 확률을 Likelihood 비교로 계산
+
+        짧은 응답(True/False)에 최적화된 버전:
+        - 전체 응답을 마스킹하고 1회 forward pass로 log-likelihood 계산
+        - 128번 Monte Carlo 샘플링은 긴 응답에만 의미 있음
+        - 3~4 토큰짜리 응답에서는 전체 마스킹이 더 효율적이고 정확
+
+        Args:
+            graphs: 분자 그래프 (tuple)
+            input_ids: 프롬프트 토큰 ID [batch, prompt_len]
+            attention_mask: 프롬프트 어텐션 마스크 [batch, prompt_len]
+            is_mol_token: mol token 위치 마스크 [batch, prompt_len]
+
+        Returns:
+            torch.Tensor: [P(False), P(True)] 확률 [batch, 2]
+        """
+        batch_size = input_ids.shape[0]
+        prompt_len = input_ids.shape[1]
+
+        # 후보 응답 토큰화: "<BOOLEAN>True</BOOLEAN>" vs "<BOOLEAN>False</BOOLEAN>"
+        true_response = "<BOOLEAN>True</BOOLEAN>"
+        false_response = "<BOOLEAN>False</BOOLEAN>"
+
+        true_tokens = self.llm_tokenizer.encode(true_response, add_special_tokens=False)
+        false_tokens = self.llm_tokenizer.encode(false_response, add_special_tokens=False)
+
+        # 두 응답의 길이를 맞춤 (더 긴 쪽에 맞춰 padding)
+        max_resp_len = max(len(true_tokens), len(false_tokens))
+
+        # Padding (mask_token_id 사용 - 어차피 전체 마스킹할 것이므로)
+        true_tokens_padded = true_tokens + [self.mask_token_id] * (max_resp_len - len(true_tokens))
+        false_tokens_padded = false_tokens + [self.mask_token_id] * (max_resp_len - len(false_tokens))
+
+        true_ids = torch.tensor([true_tokens_padded] * batch_size, device=self.device, dtype=torch.long)
+        false_ids = torch.tensor([false_tokens_padded] * batch_size, device=self.device, dtype=torch.long)
+
+        # 실제 토큰 위치 마스크 (padding 제외)
+        true_valid_mask = torch.zeros((batch_size, max_resp_len), device=self.device, dtype=torch.bool)
+        false_valid_mask = torch.zeros((batch_size, max_resp_len), device=self.device, dtype=torch.bool)
+        true_valid_mask[:, :len(true_tokens)] = True
+        false_valid_mask[:, :len(false_tokens)] = True
+
+        # ================================================================
+        # 전체 마스킹 후 1회 forward pass로 log-likelihood 계산
+        # ================================================================
+
+        def compute_full_mask_likelihood(response_ids, valid_mask):
+            """전체 응답을 마스킹하고 log-likelihood 계산"""
+            # 전체 시퀀스 구성: [prompt | masked_response]
+            masked_response = torch.full_like(response_ids, self.mask_token_id)
+            full_ids = torch.cat([input_ids, masked_response], dim=1)
+            full_attention_mask = torch.cat([
+                attention_mask,
+                torch.ones((batch_size, max_resp_len), device=self.device, dtype=attention_mask.dtype)
+            ], dim=1)
+
+            if is_mol_token is not None:
+                is_mol_token_resp = torch.zeros((batch_size, max_resp_len), device=self.device, dtype=torch.bool)
+                full_is_mol_token = torch.cat([is_mol_token, is_mol_token_resp], dim=1)
+            else:
+                full_is_mol_token = None
+
+            # Forward pass
+            current_embeds = self.llm_embed_tokens(full_ids)
+
+            if graphs is not None:
+                current_embeds, _, _ = self.inject_graph_embeds2input_embeds(
+                    input_embeds=current_embeds,
+                    is_mol_token=full_is_mol_token,
+                    graphs=graphs
+                )
+
+            outputs = self.llm_model(
+                inputs_embeds=current_embeds,
+                attention_mask=full_attention_mask,
+                return_dict=True
+            )
+            logits = outputs.logits  # [batch, seq_len, vocab_size]
+
+            # 응답 영역의 log-probability 계산
+            response_logits = logits[:, prompt_len:, :]  # [batch, max_resp_len, vocab_size]
+            log_probs = F.log_softmax(response_logits, dim=-1)
+
+            # 원본 응답 토큰의 log-probability 추출
+            target_log_probs = torch.gather(
+                log_probs,
+                dim=-1,
+                index=response_ids.unsqueeze(-1)
+            ).squeeze(-1)  # [batch, max_resp_len]
+
+            # valid한 위치만 합산 (padding 제외)
+            log_likelihood = (target_log_probs * valid_mask.float()).sum(dim=1)
+
+            # 토큰 수로 정규화 (길이가 다른 응답 간 공정한 비교)
+            num_tokens = valid_mask.sum(dim=1).float()
+            log_likelihood = log_likelihood / (num_tokens + 1e-8)
+
+            return log_likelihood
+
+        # True/False 각각의 log-likelihood 계산
+        true_log_likelihood = compute_full_mask_likelihood(true_ids, true_valid_mask)
+        false_log_likelihood = compute_full_mask_likelihood(false_ids, false_valid_mask)
+
+        # Log-likelihood를 확률로 변환 (softmax)
+        # [batch, 2] where dim=1 is [P(False), P(True)]
+        log_likelihoods = torch.stack([false_log_likelihood, true_log_likelihood], dim=1)
+        probs = F.softmax(log_likelihoods, dim=1)
+
+        return probs
 
 
 class AttrDict(dict):

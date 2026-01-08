@@ -1,4 +1,5 @@
 import os
+import math
 from typing import Any, Dict
 import torch
 from model.blip2_opt import Blip2OPT
@@ -921,6 +922,12 @@ class Blip2Stage3(pl.LightningModule):
         self.train_total_avg_loss = 0.0
         self.train_total_seen_data_size = 0
 
+        # ======================================================================
+        # Epoch 단위 validation metric 누적을 위한 초기화
+        # ======================================================================
+        self.epoch_val_metrics = {}  # {metric_key: [values]}
+        self.epoch_val_count = 0  # epoch 내 validation 횟수
+
         self.trainer.train_dataloader.collate_fn.current_epoch = (
             self.trainer.current_epoch
         )
@@ -1182,15 +1189,20 @@ class Blip2Stage3(pl.LightningModule):
         self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
 
         self.debug_task_counts = {}
-        self.total_avg_loss = 0.0
-        self.total_seen_data_size = 0
 
         self.task_subtask_name_pairs = self.trainer.datamodule.task_subtask_name_pairs
 
-        self.eval_dataset_losses = {
-            task_subtask_pair: {"avg_loss": 0.0, "num_instances": 0}
-            for task_subtask_pair in self.task_subtask_name_pairs
+        # 전략별 generation loss 저장용 (생성 결과 기반 loss)
+        self.strategy_total_gen_loss = {strategy: 0.0 for strategy in self.active_val_strategies}
+        self.strategy_total_gen_loss_count = {strategy: 0 for strategy in self.active_val_strategies}
+        self.strategy_dataset_gen_losses = {
+            strategy: {
+                task_subtask_pair: {"gen_loss": 0.0, "num_instances": 0}
+                for task_subtask_pair in self.task_subtask_name_pairs
+            }
+            for strategy in self.active_val_strategies
         }
+
         self.eval_task_specific_outputs = {}
 
         if not hasattr(self, "task_specific_chosen_reward"):
@@ -1551,12 +1563,43 @@ class Blip2Stage3(pl.LightningModule):
         # ----------------------------------------------------------------------
         # [Step 8] Probs 계산 및 거대 텐서 즉시 삭제 (메모리 확보 핵심)
         # ----------------------------------------------------------------------
+        # LLaDA는 논문 Eq.6 방식 (Likelihood 비교)으로 prob 계산
+        # AR 모델은 기존 방식 (logit에서 직접 추출)
+        # ----------------------------------------------------------------------
         with torch.no_grad():
-            probs = convert_logit2binary_prob(
-                logits=gen_logits,
-                predictions=predictions,
-                tokenizer=self.blip2model.llm_tokenizer,
-            )
+            if is_llada:
+                # ================================================================
+                # [LLaDA] 논문 Eq.6: Likelihood 비교 방식
+                #
+                # - 전체 응답을 마스킹하고 forward pass로 log-likelihood 계산
+                # - True/False 각각의 likelihood를 비교하여 확률 산출
+                # - Appendix B.5: "단일 토큰만 예측하는 경우 Monte Carlo 1회면 충분"
+                # ================================================================
+                try:
+                    llada_probs = self.blip2model.compute_binary_prob_likelihood(
+                        graphs=(graphs, additional_graphs),
+                        input_ids=batch.prompt_input_ids,
+                        attention_mask=batch.prompt_attention_mask,
+                        is_mol_token=is_mol_token,
+                    )
+                    # [batch, 2] -> [[P(False), P(True)], ...] 형태의 리스트로 변환
+                    probs = llada_probs.cpu().tolist()
+                except Exception as e:
+                    logger.warning(f"[LLaDA Prob] compute_binary_prob_likelihood failed: {e}")
+                    logger.warning("[LLaDA Prob] Falling back to AR-style prob calculation")
+                    # Fallback: AR 방식 (정확하지 않지만 동작은 함)
+                    probs = convert_logit2binary_prob(
+                        logits=gen_logits,
+                        predictions=predictions,
+                        tokenizer=self.blip2model.llm_tokenizer,
+                    )
+            else:
+                # AR 모델: 기존 방식 (logit에서 직접 추출)
+                probs = convert_logit2binary_prob(
+                    logits=gen_logits,
+                    predictions=predictions,
+                    tokenizer=self.blip2model.llm_tokenizer,
+                )
         
         # [중요] 사용 끝난 거대 텐서 즉시 삭제
         del gen_logits
@@ -1629,46 +1672,74 @@ class Blip2Stage3(pl.LightningModule):
         self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
 
         # ----------------------------------------------------------------------
-        # [Step 11] Loss 누적 (반드시 .item() 사용)
+        # [Step 10.5] 전략별 Generation Loss 계산 (LLaDA 전용)
         # ----------------------------------------------------------------------
-        batch_size = len(input_ids)
-        new_data_weight = batch_size / (self.total_seen_data_size + batch_size)
-        
-        # [중요] .item()을 사용하여 스칼라 값으로 변환 후 누적
-        loss_val = forward_loss.item() if isinstance(forward_loss, torch.Tensor) else forward_loss
-        self.total_avg_loss += (loss_val - self.total_avg_loss) * new_data_weight
-        self.total_seen_data_size += batch_size
+        # 생성된 시퀀스와 Ground Truth 간의 token-level cross-entropy 계산
+        if is_llada:
+            with torch.no_grad():
+                for strategy in self.active_val_strategies:
+                    strategy_logits = strategy_outputs[strategy]["gen_logits"]
 
-        # Instance Loss 처리
-        # 텐서를 CPU로 옮겨서 처리 (GPU 접근 최소화)
-        if isinstance(forward_instance_loss, torch.Tensor):
-            inst_loss_cpu = forward_instance_loss.detach().cpu()
-        else:
-            inst_loss_cpu = forward_instance_loss
+                    if strategy_logits is None:
+                        continue
 
-        for i in range(len(inst_loss_cpu)):
-            val = inst_loss_cpu[i]
-            if isinstance(val, torch.Tensor):
-                val = val.item() # 스칼라 변환
-            
-            if val != val: # NaN check
-                continue
+                    # gen_labels: [batch, gen_len] - Ground Truth 토큰 ID
+                    # strategy_logits: [batch, gen_len, vocab_size]
 
-            task_subtask_pair = tasks[i]
-            if task_subtask_pair not in self.eval_dataset_losses:
-                self.eval_dataset_losses[task_subtask_pair] = {
-                    "avg_loss": 0.0,
-                    "num_instances": 0,
-                }
-            
-            # 평균 업데이트
-            curr_dict = self.eval_dataset_losses[task_subtask_pair]
-            curr_dict["avg_loss"] *= curr_dict["num_instances"] / (curr_dict["num_instances"] + 1)
-            curr_dict["avg_loss"] += val / (curr_dict["num_instances"] + 1)
-            curr_dict["num_instances"] += 1
+                    # 길이 맞추기 (logits와 labels의 길이가 다를 수 있음)
+                    min_len = min(strategy_logits.shape[1], gen_labels.shape[1])
+                    truncated_logits = strategy_logits[:, :min_len, :]
+                    truncated_labels = gen_labels[:, :min_len]
+
+                    # Cross-Entropy Loss 계산 (labels != -100인 위치만)
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction='none', ignore_index=-100)
+
+                    # [batch, seq_len, vocab] -> [batch * seq_len, vocab]
+                    flat_logits = truncated_logits.reshape(-1, truncated_logits.shape[-1])
+                    flat_labels = truncated_labels.reshape(-1)
+
+                    # 토큰별 loss 계산
+                    token_losses = loss_fct(flat_logits, flat_labels)
+                    token_losses = token_losses.reshape(truncated_labels.shape)  # [batch, seq_len]
+
+                    # 각 샘플별 평균 loss (유효한 토큰만)
+                    valid_mask = (truncated_labels != -100).float()
+                    valid_counts = valid_mask.sum(dim=1).clamp(min=1)  # 0 방지
+                    instance_gen_losses = (token_losses * valid_mask).sum(dim=1) / valid_counts
+
+                    # 전체 평균
+                    batch_gen_loss = instance_gen_losses.mean().item()
+
+                    # 전략별 총 gen_loss 누적
+                    curr_count = self.strategy_total_gen_loss_count[strategy]
+                    new_count = curr_count + len(instance_gen_losses)
+                    self.strategy_total_gen_loss[strategy] = (
+                        self.strategy_total_gen_loss[strategy] * curr_count + batch_gen_loss * len(instance_gen_losses)
+                    ) / new_count
+                    self.strategy_total_gen_loss_count[strategy] = new_count
+
+                    # 태스크별 gen_loss 누적
+                    instance_gen_losses_cpu = instance_gen_losses.detach().cpu()
+                    for i in range(len(instance_gen_losses_cpu)):
+                        gen_loss_val = instance_gen_losses_cpu[i].item()
+
+                        if gen_loss_val != gen_loss_val:  # NaN check
+                            continue
+
+                        task_subtask_pair = tasks[i]
+                        if task_subtask_pair not in self.strategy_dataset_gen_losses[strategy]:
+                            self.strategy_dataset_gen_losses[strategy][task_subtask_pair] = {
+                                "gen_loss": 0.0,
+                                "num_instances": 0,
+                            }
+
+                        curr_dict = self.strategy_dataset_gen_losses[strategy][task_subtask_pair]
+                        n = curr_dict["num_instances"]
+                        curr_dict["gen_loss"] = (curr_dict["gen_loss"] * n + gen_loss_val) / (n + 1)
+                        curr_dict["num_instances"] = n + 1
 
         # ----------------------------------------------------------------------
-        # [Step 12] MolPO Logging
+        # [Step 11] MolPO Logging
         # ----------------------------------------------------------------------
         if self.args.eval_molpo:
             self.task_specific_logging(
@@ -1689,10 +1760,20 @@ class Blip2Stage3(pl.LightningModule):
                 )
         
         # ----------------------------------------------------------------------
-        # [Step 13] 최종 로깅 및 리턴
+        # [Step 12] 최종 로깅 및 리턴
         # ----------------------------------------------------------------------
-        # Loss 로깅
-        self.log("val_total_loss", loss_val, sync_dist=True, prog_bar=True, logger=True)
+        # 전략별 gen_loss 단순 평균을 val_total_loss로 로깅 (LLaDA 전용)
+        if is_llada and hasattr(self, 'strategy_total_gen_loss'):
+            valid_gen_losses = []
+            for strategy in self.active_val_strategies:
+                count = self.strategy_total_gen_loss_count[strategy]
+                if count > 0:
+                    # 각 전략별 평균 gen_loss를 리스트에 추가
+                    valid_gen_losses.append(self.strategy_total_gen_loss[strategy] / count)
+            if valid_gen_losses:
+                # 전략별 평균 gen_loss의 단순 평균
+                avg_gen_loss = sum(valid_gen_losses) / len(valid_gen_losses)
+                self.log("val_total_loss", avg_gen_loss, sync_dist=True, prog_bar=True, logger=True)
         
         # [강제 메모리 정리]
         import gc
@@ -1896,19 +1977,7 @@ class Blip2Stage3(pl.LightningModule):
                 filename=f"{self.args.mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-failed_cases.json",
             )
 
-        # 기존 호환성: 첫 번째 전략 결과를 기본으로 사용
-        primary_strategy = self.active_val_strategies[0]
-        evaluation_results = all_strategy_results[primary_strategy]["evaluation_results"]
-        failed_cases = all_strategy_results[primary_strategy]["failed_cases"]
-
-        self.log(
-            f"{mode}/total_loss",
-            self.total_avg_loss,
-            sync_dist=True,
-            batch_size=self.total_seen_data_size,
-        )
-
-        # evaluate classification tasks
+        # evaluate classification tasks - prepare common structures
         self.cls_task_subtask_name_pair = [
             task_subtask_pair
             for task_subtask_pair in self.task_subtask_name_pairs
@@ -1925,68 +1994,85 @@ class Blip2Stage3(pl.LightningModule):
             idx: task_subtask_pair
             for task_subtask_pair, idx in self.cls_task_subtask_name_pair_dict.items()
         }
-        self.num_per_device_cls = 10000
-        self.per_device_cls_tensor = torch.zeros(
-            size=(self.num_per_device_cls, 4), device=self.device, dtype=torch.float
-        )
-        non_zero_count = 0
-        cls_idx = 0
-        for i in range(len(self.list_logs["tasks"])):
-            task_subtask_pair = self.list_logs["tasks"][i]
-            if task_subtask_pair in self.cls_task_subtask_name_pair_dict.keys():
-                probs = self.list_logs["probs"][i]
-                label = int(
-                    "True" in self.list_logs["targets"][i]
-                    or "true" in self.list_logs["targets"][i]
-                )
-                pair_ids = self.cls_task_subtask_name_pair_dict[task_subtask_pair]
-                self.per_device_cls_tensor[cls_idx] = torch.tensor(
-                    [probs[0], probs[1], pair_ids, label],
-                    device=self.device,
-                    dtype=torch.float,
-                )
-                non_zero_count += 1
-                cls_idx += 1
 
-        # evaluate the other tasks
+        # evaluate the other tasks - now per strategy
         flattened_metric_keys = []
         flattened_metric_tensors = torch.empty(size=(0, 2), device=self.device)
 
-        # tied to order of self.task_subtask_name_pairs
-        for task_subtask_pair in evaluation_results:
-            for metric in evaluation_results[task_subtask_pair]:
-                flattened_metric_keys.append(f"{mode}/{task_subtask_pair}/{metric}")
-                metric_value = evaluation_results[task_subtask_pair][metric]
-                num_instance = evaluation_results[task_subtask_pair]["num_instances"]
-                metric_count_pair = [metric_value * num_instance, num_instance]
+        # Process each strategy's evaluation results with strategy suffix
+        for strategy in self.active_val_strategies:
+            strategy_suffix = f"_{strategy}" if strategy != "default" else ""
+            evaluation_results = all_strategy_results[strategy]["evaluation_results"]
 
-                flattened_metric_tensors = torch.cat(
-                    [
-                        flattened_metric_tensors,
-                        torch.tensor(
-                            metric_count_pair,
-                            device=self.device,
-                        ).unsqueeze(0),
-                    ],
-                    dim=0,
-                )
+            # tied to order of self.task_subtask_name_pairs
+            for task_subtask_pair in evaluation_results:
+                for metric in evaluation_results[task_subtask_pair]:
+                    flattened_metric_keys.append(f"{mode}/{task_subtask_pair}/{metric}{strategy_suffix}")
+                    metric_value = evaluation_results[task_subtask_pair][metric]
+                    num_instance = evaluation_results[task_subtask_pair]["num_instances"]
+                    metric_count_pair = [metric_value * num_instance, num_instance]
 
-        # tied to order of self.task_subtask_name_pairs
-        for dataset in self.eval_dataset_losses.keys():
-            flattened_metric_keys.append(f"{mode}/{dataset}/avg_loss")
-            metric_value = self.eval_dataset_losses[dataset]["avg_loss"]
-            num_instance = self.eval_dataset_losses[dataset]["num_instances"]
-            metric_count_pair = [metric_value * num_instance, num_instance]
-            flattened_metric_tensors = torch.cat(
-                [
-                    flattened_metric_tensors,
-                    torch.tensor(
-                        metric_count_pair,
-                        device=self.device,
-                    ).unsqueeze(0),
-                ],
-                dim=0,
+                    flattened_metric_tensors = torch.cat(
+                        [
+                            flattened_metric_tensors,
+                            torch.tensor(
+                                metric_count_pair,
+                                device=self.device,
+                            ).unsqueeze(0),
+                        ],
+                        dim=0,
+                    )
+
+        # 전략별 Generation Loss 로깅 (LLaDA 전용)
+        if hasattr(self, 'strategy_dataset_gen_losses'):
+            for strategy in self.active_val_strategies:
+                strategy_suffix = f"_{strategy}" if strategy != "default" else ""
+                for dataset in self.strategy_dataset_gen_losses[strategy].keys():
+                    gen_loss_data = self.strategy_dataset_gen_losses[strategy][dataset]
+                    if gen_loss_data["num_instances"] > 0:
+                        flattened_metric_keys.append(f"{mode}/{dataset}/gen_loss{strategy_suffix}")
+                        metric_value = gen_loss_data["gen_loss"]
+                        num_instance = gen_loss_data["num_instances"]
+                        metric_count_pair = [metric_value * num_instance, num_instance]
+                        flattened_metric_tensors = torch.cat(
+                            [
+                                flattened_metric_tensors,
+                                torch.tensor(
+                                    metric_count_pair,
+                                    device=self.device,
+                                ).unsqueeze(0),
+                            ],
+                            dim=0,
+                        )
+
+        # Prepare per-strategy classification tensors
+        self.num_per_device_cls = 10000
+        self.strategy_per_device_cls_tensors = {}
+        for strategy in self.active_val_strategies:
+            strategy_logs = self.strategy_list_logs[strategy]
+            per_device_cls_tensor = torch.zeros(
+                size=(self.num_per_device_cls, 4), device=self.device, dtype=torch.float
             )
+            cls_idx = 0
+            for i in range(len(strategy_logs["tasks"])):
+                task_subtask_pair = strategy_logs["tasks"][i]
+                if task_subtask_pair in self.cls_task_subtask_name_pair_dict.keys():
+                    probs = strategy_logs["probs"][i]
+                    label = int(
+                        "True" in strategy_logs["targets"][i]
+                        or "true" in strategy_logs["targets"][i]
+                    )
+                    pair_ids = self.cls_task_subtask_name_pair_dict[task_subtask_pair]
+                    per_device_cls_tensor[cls_idx] = torch.tensor(
+                        [probs[0], probs[1], pair_ids, label],
+                        device=self.device,
+                        dtype=torch.float,
+                    )
+                    cls_idx += 1
+            self.strategy_per_device_cls_tensors[strategy] = per_device_cls_tensor
+
+        # For backward compatibility, use first strategy's tensor
+        self.per_device_cls_tensor = self.strategy_per_device_cls_tensors[self.active_val_strategies[0]]
 
         assert flattened_metric_tensors.shape[0] == len(
             flattened_metric_keys
@@ -2027,15 +2113,21 @@ class Blip2Stage3(pl.LightningModule):
                 :, :, 1
             ].sum(dim=0)
 
-            gathered_cls_tensor = self.all_gather(self.per_device_cls_tensor)
-            uniform_cls_tensor = torch.cat(
-                [cls_tensor for cls_tensor in gathered_cls_tensor], dim=0
-            )
+            # Gather per-strategy classification tensors
+            strategy_uniform_cls_tensors = {}
+            for strategy in self.active_val_strategies:
+                gathered_cls_tensor = self.all_gather(self.strategy_per_device_cls_tensors[strategy])
+                strategy_uniform_cls_tensors[strategy] = torch.cat(
+                    [cls_tensor for cls_tensor in gathered_cls_tensor], dim=0
+                )
+            # For backward compatibility
+            uniform_cls_tensor = strategy_uniform_cls_tensors[self.active_val_strategies[0]]
         else:
             scaled_flattened_metric_tensors = flattened_metric_tensors[:, 0]
             total_instance_count = flattened_metric_tensors[:, 1]
             total_instance_count_include_nan = total_instance_count
 
+            strategy_uniform_cls_tensors = self.strategy_per_device_cls_tensors
             uniform_cls_tensor = self.per_device_cls_tensor
 
         # if total_instance_count is 0, set the metric to null value
@@ -2045,44 +2137,51 @@ class Blip2Stage3(pl.LightningModule):
             torch.tensor(float("nan"), device=self.device),
         )
 
-        # evaluate classification tasks
-        # get total_cls_tensor only where total_cls_tensor[:, :2].sum(-1) > 0
-        actual_cls_tensor = uniform_cls_tensor[uniform_cls_tensor[:, :2].sum(-1) > 0]
-
-        total_probs = actual_cls_tensor[:, :2].cpu()
-        total_labels = actual_cls_tensor[:, 3].cpu().to(torch.long)
-        tasks_subtask_idx = actual_cls_tensor[:, 2].to(torch.int32).tolist()
-        # get task names using self.cls_task_subtask_name_pair_dict_inv
-        total_tasks = [
-            self.cls_task_subtask_name_pair_dict_inv[idx] for idx in tasks_subtask_idx
-        ]
-        classification_evaluation_result = total_device_evaluate(
-            total_labels=total_labels,
-            total_probs=total_probs,
-            total_tasks=total_tasks,
-            classification_task_subtask_pairs=self.cls_task_subtask_name_pair,
-        )
-
-        # convert classification_evaluation_result to flattened_metric_keys and flattened_metric_tensors
+        # evaluate classification tasks - now per strategy
         cls_flattened_metric_keys = []
         cls_flattented_metric_tensors = torch.empty(size=(0, 1), device=self.device)
-        for task_subtask_pair in classification_evaluation_result:
-            for metric in classification_evaluation_result[task_subtask_pair]:
-                cls_flattened_metric_keys.append(f"{mode}/{task_subtask_pair}/{metric}")
-                metric_value = classification_evaluation_result[task_subtask_pair][
-                    metric
-                ]
 
-                cls_flattented_metric_tensors = torch.cat(
-                    [
-                        cls_flattented_metric_tensors,
-                        torch.tensor(
-                            [metric_value],
-                            device=self.device,
-                        ).unsqueeze(0),
-                    ],
-                    dim=0,
+        for strategy in self.active_val_strategies:
+            strategy_suffix = f"_{strategy}" if strategy != "default" else ""
+            strategy_cls_tensor = strategy_uniform_cls_tensors[strategy]
+
+            # get total_cls_tensor only where total_cls_tensor[:, :2].sum(-1) > 0
+            actual_cls_tensor = strategy_cls_tensor[strategy_cls_tensor[:, :2].sum(-1) > 0]
+
+            if actual_cls_tensor.shape[0] > 0:
+                total_probs = actual_cls_tensor[:, :2].cpu()
+                total_labels = actual_cls_tensor[:, 3].cpu().to(torch.long)
+                tasks_subtask_idx = actual_cls_tensor[:, 2].to(torch.int32).tolist()
+                # get task names using self.cls_task_subtask_name_pair_dict_inv
+                total_tasks = [
+                    self.cls_task_subtask_name_pair_dict_inv[idx] for idx in tasks_subtask_idx
+                ]
+                classification_evaluation_result = total_device_evaluate(
+                    total_labels=total_labels,
+                    total_probs=total_probs,
+                    total_tasks=total_tasks,
+                    classification_task_subtask_pairs=self.cls_task_subtask_name_pair,
                 )
+
+                # convert classification_evaluation_result to flattened_metric_keys and flattened_metric_tensors
+                for task_subtask_pair in classification_evaluation_result:
+                    for metric in classification_evaluation_result[task_subtask_pair]:
+                        cls_flattened_metric_keys.append(f"{mode}/{task_subtask_pair}/{metric}{strategy_suffix}")
+                        metric_value = classification_evaluation_result[task_subtask_pair][
+                            metric
+                        ]
+
+                        cls_flattented_metric_tensors = torch.cat(
+                            [
+                                cls_flattented_metric_tensors,
+                                torch.tensor(
+                                    [metric_value],
+                                    device=self.device,
+                                ).unsqueeze(0),
+                            ],
+                            dim=0,
+                        )
+
         cls_flattented_metric_tensors = cls_flattented_metric_tensors.squeeze(-1)
         flattened_metric_keys += cls_flattened_metric_keys
         averaged_flattened_metric_tensors = torch.cat(
@@ -2202,7 +2301,68 @@ class Blip2Stage3(pl.LightningModule):
             print(f"\n📁 Strategy comparison saved to: {strategy_comparison_path}")
             print(f"{'='*70}")
 
+        # ======================================================================
+        # Epoch 단위 metric 누적 (step별 validation 결과를 epoch 단위로 집계)
+        # ======================================================================
+        if hasattr(self, 'epoch_val_metrics'):
+            for i, key in enumerate(flattened_metric_keys):
+                if "num_instances" in key:
+                    continue
+                metric_value = averaged_flattened_metric_tensors[i].item()
+                if not math.isnan(metric_value):
+                    if key not in self.epoch_val_metrics:
+                        self.epoch_val_metrics[key] = []
+                    self.epoch_val_metrics[key].append(metric_value)
+            self.epoch_val_count = getattr(self, 'epoch_val_count', 0) + 1
+
         print(f"\nDevice {self.device} on_evaluation_epoch_end end")
+
+    def on_train_epoch_end(self) -> None:
+        """Epoch 종료 시 epoch 전체에 대한 validation metric summary 로깅"""
+        if not hasattr(self, 'epoch_val_metrics') or not self.epoch_val_metrics:
+            print(f"[Epoch {self.current_epoch}] No validation metrics to summarize")
+            return
+
+        print(f"\n{'='*70}")
+        print(f"📊 [EPOCH {self.current_epoch} SUMMARY] Aggregating {self.epoch_val_count} validation runs")
+        print(f"{'='*70}")
+
+        epoch_summary = {}
+        for key, values in self.epoch_val_metrics.items():
+            if len(values) > 0:
+                # NaN 제거 후 평균 계산
+                valid_values = [v for v in values if not math.isnan(v)]
+                if len(valid_values) > 0:
+                    avg_value = sum(valid_values) / len(valid_values)
+                    # epoch suffix 추가한 새 key 생성
+                    epoch_key = key.replace("/", "/epoch_") if key.count("/") >= 2 else key + "_epoch"
+                    epoch_summary[epoch_key] = avg_value
+
+                    # 로깅
+                    self.log(
+                        epoch_key,
+                        avg_value,
+                        sync_dist=False,
+                        rank_zero_only=True,
+                    )
+
+        # Epoch summary를 파일로 저장 (rank 0에서만)
+        if self.global_rank == 0 and hasattr(self, 'logger') and hasattr(self.logger, 'log_dir') and self.logger.log_dir:
+            epoch_summary_path = os.path.join(
+                self.logger.log_dir,
+                f"epoch{self.current_epoch}-summary.json",
+            )
+            with open(epoch_summary_path, "w") as f:
+                json.dump(epoch_summary, f, ensure_ascii=False, indent=4)
+            print(f"📁 Epoch summary saved to: {epoch_summary_path}")
+
+        # 주요 metric 출력
+        print(f"\n[Epoch {self.current_epoch}] Key metrics (averaged over {self.epoch_val_count} validations):")
+        for key, value in sorted(epoch_summary.items()):
+            if any(m in key for m in ['accuracy', 'roc_auc', 'f1', 'total_loss']):
+                print(f"  {key}: {value:.4f}")
+
+        print(f"{'='*70}\n")
 
     """
     def on_after_backward(self):

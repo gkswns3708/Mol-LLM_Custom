@@ -590,7 +590,7 @@ def convert_logit2binary_prob(logits, predictions, tokenizer):
     True_token_id = tokenizer.encode("True")[-1]
     False_token_id = tokenizer.encode("False")[-1]
 
-    bos_token, eos_token = added_tokens.BOOL    
+    bos_token, eos_token = added_tokens.BOOL
     # [수정] LLaDA와 기존 모델(Mistral) 모두 지원하도록 예외 처리 추가
     try:
         # 1. 표준 방식 (LLaDA, Llama-3 등 최신 토크나이저용: 문자열 입력)
@@ -605,18 +605,22 @@ def convert_logit2binary_prob(logits, predictions, tokenizer):
     ).to(logits.device)
 
     for idx, pred in enumerate(predictions):
-        # first, inspect that pred includes boolean tokens
-        # second, inspect that there is only one token between boolean tokens
-        # third, get position id of the prediction token between the boolean tokens
+        # <BOOLEAN> 토큰이 있으면, 그 바로 다음 토큰 위치의 True/False logit으로 prob 계산
+        # (형식이 완벽하지 않아도, <BOOLEAN> 태그만 있으면 prob 계산 수행)
         pred_token_ids = tokenizer.encode(pred, add_special_tokens=False)
         try:
-            assert re.search(
-                f"{bos_token}.+{eos_token}", pred
-            ).group(), f"pred should be searched by re pattern {bos_token}.+{eos_token}"
+            # <BOOLEAN> 토큰 위치 찾기
             boolean_bos_position = pred_token_ids.index(boolean_bos_id)
-            prediction_position_ids[idx, boolean_bos_position + 1] = True
-            is_using_prediction_position_ids[idx, :] = True
-        except:
+            # <BOOLEAN> 다음 위치의 토큰으로 prob 계산
+            if boolean_bos_position + 1 < len(pred_token_ids):
+                prediction_position_ids[idx, boolean_bos_position + 1] = True
+                is_using_prediction_position_ids[idx, :] = True
+            else:
+                # <BOOLEAN> 다음에 토큰이 없는 경우
+                prediction_position_ids[idx, 0] = True
+                is_using_prediction_position_ids[idx, :] = False
+        except ValueError:
+            # <BOOLEAN> 토큰을 찾지 못한 경우
             prediction_position_ids[idx, 0] = True
             is_using_prediction_position_ids[idx, :] = False
 
