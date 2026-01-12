@@ -30,7 +30,8 @@ class GINE_TokenGT(nn.Module):
             max_position_embeddings=args.tokengt.max_position_embeddings
         )
         ##### load pretrained GINE #####
-        print(args.gine.graph_encoder_ckpt, "-args.gine.graph_encoder_ckpt")
+        if getattr(args, 'debug', False):
+            print(args.gine.graph_encoder_ckpt, "-args.gine.graph_encoder_ckpt")
         ckpt = torch.load(
             args.gine.graph_encoder_ckpt, map_location=torch.device("cpu"), weights_only=False
         )
@@ -39,7 +40,8 @@ class GINE_TokenGT(nn.Module):
             if param.startswith('blip2model.graph_encoder.graph_encoder_gine'):
                 renamed_state_dict[param.replace("blip2model.graph_encoder.graph_encoder_gine.", "")] = value
         self.graph_encoder_gine.load_state_dict(renamed_state_dict, strict=True)
-        print(f"load graph encoder from {args.gine.graph_encoder_ckpt}")
+        if getattr(args, 'debug', False):
+            print(f"load graph encoder from {args.gine.graph_encoder_ckpt}")
 
         ##### load pretrained TokenGT #####
         ckpt = torch.load(
@@ -50,7 +52,8 @@ class GINE_TokenGT(nn.Module):
             if param.startswith('blip2model.graph_encoder.graph_encoder_tokengt'):
                 renamed_state_dict[param.replace("blip2model.graph_encoder.graph_encoder_tokengt.", "")] = value
         self.graph_encoder_tokengt.load_state_dict(renamed_state_dict, strict=True)
-        print(f"load graph encoder from {args.tokengt.graph_encoder_ckpt}")
+        if getattr(args, 'debug', False):
+            print(f"load graph encoder from {args.tokengt.graph_encoder_ckpt}")
 
         self.layer_norm_gine = nn.LayerNorm(args.gine.gnn_hidden_dim)
         self.layer_norm_tokengt = nn.LayerNorm(args.tokengt.gnn_hidden_dim)

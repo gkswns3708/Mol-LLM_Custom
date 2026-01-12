@@ -135,7 +135,20 @@ def print_training_config_report(cfg, model):
     print("\n⚙️  [Training Settings]")
     print(f"  Max Epochs:         {cfg.max_epochs}")
     print(f"  Batch Size:         {cfg.batch_size} x {cfg.accumulate_grad_batches} (accum) = {cfg.total_batch_size} (effective)")
-    print(f"  Learning Rate:      {cfg.init_lr} (init), {cfg.min_lr} (min)")
+
+    # Learning Rate 출력 (새로운 그룹별 LR 형식 지원)
+    if hasattr(cfg, 'lr_lora'):
+        min_lr_ratio = getattr(cfg, 'min_lr_ratio', 0.1)
+        print(f"  Learning Rate:")
+        print(f"    LoRA:             {cfg.lr_lora} -> {cfg.lr_lora * min_lr_ratio} (decay)")
+        print(f"    Embed (orig):     {cfg.lr_embed_orig} -> {cfg.lr_embed_orig * min_lr_ratio}")
+        print(f"    Embed (new):      {cfg.lr_embed_new} -> {cfg.lr_embed_new * min_lr_ratio}")
+        print(f"    Head (orig):      {cfg.lr_head_orig} -> {cfg.lr_head_orig * min_lr_ratio}")
+        print(f"    Head (new):       {cfg.lr_head_new} -> {cfg.lr_head_new * min_lr_ratio}")
+    else:
+        # Legacy 형식
+        print(f"  Learning Rate:      {cfg.init_lr} (init), {cfg.min_lr} (min)")
+
     print(f"  Warmup Steps:       {cfg.warmup_steps}")
     print(f"  Scheduler:          {cfg.scheduler}")
     print(f"  Optimizer:          {cfg.optimizer}")

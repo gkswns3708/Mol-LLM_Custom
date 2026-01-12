@@ -41,6 +41,10 @@ class Blip2LLaDA(Blip2OPT):
         # Special token embedding 로깅을 위한 카운터
         self._log_step_counter = 0
         self._initial_embedding_norms = None  # 초기 embedding norm 저장용
+
+        # 새 토큰 디버깅 로깅 설정
+        self._log_new_token_debug = getattr(args, 'log_new_token_debug', False)
+        self._new_token_debug_interval = getattr(args, 'new_token_debug_interval', 100)
         # =====================================================================
 
     def get_lora_target_modules(self):
@@ -389,12 +393,152 @@ class Blip2LLaDA(Blip2OPT):
             if self._log_step_counter % self._embedding_log_interval == 0:
                 self._log_special_token_embedding_status()
 
+        # ==============================================================================
+        # [디버깅] 새 토큰 Loss 기여도 및 Gradient 분석
+        # ==============================================================================
+        new_token_debug_info = {}
+        if self.training and self._log_new_token_debug:
+            self._log_step_counter += 1
+            if self._log_step_counter % self._new_token_debug_interval == 0:
+                new_token_debug_info = self._analyze_new_token_contribution(
+                    original_tokens=original_tokens,
+                    masked_indices=masked_indices,
+                    masked_targets=masked_targets if masked_indices.sum() > 0 else None,
+                    token_loss=token_loss,
+                    masked_logits=masked_logits if masked_indices.sum() > 0 else None,
+                )
+
         return {
             "loss": loss,
             "instance_loss": instance_loss,
             "logits": logits,
             "graph_avg_norm": graph_avg_norm,
-            "moltoken_avg_norm": moltoken_avg_norm
+            "moltoken_avg_norm": moltoken_avg_norm,
+            "new_token_debug": new_token_debug_info,
+        }
+
+    def forward_stepwise_teacher_forcing(self, samples, steps=32):
+        """
+        Step-wise Teacher Forcing 방식의 Generation Loss 계산
+
+        LLaDA의 iterative denoising 과정 전체를 시뮬레이션:
+        - 각 step별로 해당 마스킹 비율에 맞는 입력을 생성
+        - 정답 토큰을 Teacher Forcing으로 제공 (실제 생성 대신)
+        - 각 step의 loss에 importance weighting (1/p) 적용
+        - 모든 step의 weighted loss를 평균
+
+        이는 val_total_loss와 유사하지만, 전체 denoising trajectory를
+        deterministic하게 시뮬레이션한다는 점이 다름.
+
+        Args:
+            samples: 배치 데이터 (input_ids, attention_mask, labels, graphs 등)
+            steps: denoising step 수 (기본값: 32)
+
+        Returns:
+            dict: {
+                "loss": 전체 평균 loss,
+                "instance_loss": 샘플별 loss [batch_size]
+            }
+        """
+        input_ids = samples['input_ids']
+        attention_mask = samples['attention_mask']
+        labels = samples['labels']
+
+        batch_size, seq_len = input_ids.shape
+
+        # response 영역 (labels != -100인 위치)
+        is_answer = (labels != -100)
+        answer_lengths = is_answer.sum(dim=1).float()  # [batch_size]
+
+        # 원본 토큰 (정답) - Teacher Forcing에 사용
+        original_tokens = input_ids.clone()
+
+        loss_fct = nn.CrossEntropyLoss(reduction='none')
+
+        # Step-wise loss 누적
+        instance_weighted_loss_sum = torch.zeros(batch_size, device=self.device)
+
+        for step in range(steps):
+            # 현재 step의 마스킹 비율 계산 (1.0 → 0.0 선형 감소)
+            # t = 1.0 - step / steps
+            # 마스킹 비율 p = t (step 0에서 100%, step N-1에서 ~0%)
+            t = 1.0 - step / steps
+            p_mask = max(t, 1e-6)  # 0 방지
+
+            # 각 샘플의 response 영역에서 p_mask 비율만큼 마스킹
+            noisy_input_ids = input_ids.clone()
+
+            # 샘플별로 마스킹 적용
+            for b in range(batch_size):
+                # 해당 샘플의 response 위치들
+                answer_positions = torch.where(is_answer[b])[0]
+                num_answer_tokens = len(answer_positions)
+
+                if num_answer_tokens == 0:
+                    continue
+
+                # p_mask 비율만큼 마스킹할 토큰 수
+                num_to_mask = int(num_answer_tokens * p_mask)
+                num_to_mask = max(1, num_to_mask)  # 최소 1개는 마스킹
+
+                # 랜덤하게 마스킹할 위치 선택
+                perm = torch.randperm(num_answer_tokens, device=self.device)
+                mask_indices = answer_positions[perm[:num_to_mask]]
+
+                # 마스킹 적용
+                noisy_input_ids[b, mask_indices] = self.mask_token_id
+
+            # Embedding 생성
+            noisy_text_embeds = self.llm_embed_tokens(noisy_input_ids)
+            inputs_embeds = noisy_text_embeds.clone()
+
+            # Graph embedding 주입 (있는 경우)
+            if "graphs" in samples:
+                inputs_embeds, _, _ = self.inject_graph_embeds2input_embeds(
+                    input_embeds=inputs_embeds,
+                    is_mol_token=samples['is_mol_token'],
+                    graphs=(samples['graphs'], samples['additional_graphs'])
+                )
+
+            # Forward pass
+            outputs = self.llm_model(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                return_dict=True
+            )
+            logits = outputs.logits
+
+            # 마스킹된 위치에서만 loss 계산
+            masked_indices = (noisy_input_ids == self.mask_token_id) & is_answer
+
+            if masked_indices.sum() == 0:
+                continue
+
+            # 마스킹된 위치의 logits와 targets
+            masked_logits = logits[masked_indices]
+            masked_targets = original_tokens[masked_indices]
+
+            # CE Loss
+            token_loss = loss_fct(masked_logits, masked_targets)
+
+            # Importance weighting: 1/p_mask
+            weighted_token_loss = token_loss / p_mask
+
+            # 샘플별로 weighted loss 누적
+            batch_indices = torch.where(masked_indices)[0]
+            for i, (b_idx, w_loss) in enumerate(zip(batch_indices, weighted_token_loss)):
+                instance_weighted_loss_sum[b_idx] += w_loss
+
+        # 각 샘플의 최종 loss: weighted_loss_sum / (answer_length * steps)
+        # steps로 나누는 이유: 각 토큰이 여러 step에서 마스킹될 수 있으므로
+        instance_loss = instance_weighted_loss_sum / ((answer_lengths + 1e-8) * steps)
+
+        # 전체 평균 loss
+        loss = instance_loss.mean()
+
+        return {
+            "loss": loss,
+            "instance_loss": instance_loss,
         }
 
     def _log_special_token_embedding_status(self):
@@ -677,6 +821,222 @@ class Blip2LLaDA(Blip2OPT):
             logger.error(f"✅ NaN log saved to: {log_file}")
         except Exception as e:
             logger.error(f"❌ Failed to save NaN log: {e}")
+
+    def _analyze_new_token_contribution(
+        self,
+        original_tokens,
+        masked_indices,
+        masked_targets,
+        token_loss,
+        masked_logits,
+    ):
+        """
+        새로 추가된 토큰(SELFIES 등)의 Loss 기여도 및 학습 상태 분석
+
+        분석 항목:
+        1. 전체 토큰 중 새 토큰 비율 (input, masked)
+        2. 새 토큰 vs 기존 토큰의 Loss 비교
+        3. 새 토큰에 대한 모델 예측 정확도
+        4. Embedding gradient 분석
+        """
+        debug_info = {}
+
+        try:
+            # 기존 vocab size (LLaDA 기본)
+            orig_vocab_size = getattr(self.args, 'original_vocab_size', 128256)
+
+            batch_size, seq_len = original_tokens.shape
+
+            # ================================================================
+            # 1. 토큰 비율 분석
+            # ================================================================
+            # 전체 input에서 새 토큰 비율
+            is_new_token_input = (original_tokens >= orig_vocab_size)
+            total_tokens = original_tokens.numel()
+            new_token_count_input = is_new_token_input.sum().item()
+            new_token_ratio_input = new_token_count_input / total_tokens * 100
+
+            debug_info['token_ratio/input_new_token_count'] = new_token_count_input
+            debug_info['token_ratio/input_new_token_pct'] = new_token_ratio_input
+            debug_info['token_ratio/input_total_tokens'] = total_tokens
+
+            # Masked 토큰 중 새 토큰 비율
+            if masked_targets is not None and len(masked_targets) > 0:
+                is_new_token_masked = (masked_targets >= orig_vocab_size)
+                masked_total = len(masked_targets)
+                new_token_count_masked = is_new_token_masked.sum().item()
+                new_token_ratio_masked = new_token_count_masked / masked_total * 100
+
+                debug_info['token_ratio/masked_new_token_count'] = new_token_count_masked
+                debug_info['token_ratio/masked_new_token_pct'] = new_token_ratio_masked
+                debug_info['token_ratio/masked_total'] = masked_total
+
+                # ================================================================
+                # 2. Loss 분석 (새 토큰 vs 기존 토큰)
+                # ================================================================
+                if token_loss is not None and len(token_loss) > 0:
+                    # 새 토큰에 대한 loss
+                    if is_new_token_masked.sum() > 0:
+                        new_token_loss = token_loss[is_new_token_masked]
+                        debug_info['loss/new_token_mean'] = new_token_loss.mean().item()
+                        debug_info['loss/new_token_max'] = new_token_loss.max().item()
+                        debug_info['loss/new_token_min'] = new_token_loss.min().item()
+                        debug_info['loss/new_token_sum'] = new_token_loss.sum().item()
+                    else:
+                        debug_info['loss/new_token_mean'] = 0.0
+                        debug_info['loss/new_token_sum'] = 0.0
+
+                    # 기존 토큰에 대한 loss
+                    is_orig_token_masked = ~is_new_token_masked
+                    if is_orig_token_masked.sum() > 0:
+                        orig_token_loss = token_loss[is_orig_token_masked]
+                        debug_info['loss/orig_token_mean'] = orig_token_loss.mean().item()
+                        debug_info['loss/orig_token_max'] = orig_token_loss.max().item()
+                        debug_info['loss/orig_token_min'] = orig_token_loss.min().item()
+                        debug_info['loss/orig_token_sum'] = orig_token_loss.sum().item()
+                    else:
+                        debug_info['loss/orig_token_mean'] = 0.0
+                        debug_info['loss/orig_token_sum'] = 0.0
+
+                    # Loss 기여도 비율
+                    total_loss = token_loss.sum().item()
+                    if total_loss > 0:
+                        debug_info['loss/new_token_contribution_pct'] = debug_info.get('loss/new_token_sum', 0) / total_loss * 100
+                        debug_info['loss/orig_token_contribution_pct'] = debug_info.get('loss/orig_token_sum', 0) / total_loss * 100
+
+                # ================================================================
+                # 3. 예측 정확도 분석
+                # ================================================================
+                if masked_logits is not None and len(masked_logits) > 0:
+                    predictions = masked_logits.argmax(dim=-1)
+
+                    # 새 토큰에 대한 정확도
+                    if is_new_token_masked.sum() > 0:
+                        new_token_preds = predictions[is_new_token_masked]
+                        new_token_targets = masked_targets[is_new_token_masked]
+                        new_token_correct = (new_token_preds == new_token_targets).float().mean().item()
+                        debug_info['accuracy/new_token'] = new_token_correct * 100
+
+                        # 새 토큰이 새 토큰으로 예측되었는지 (vocab 범위 체크)
+                        pred_is_new = (new_token_preds >= orig_vocab_size).float().mean().item()
+                        debug_info['accuracy/new_token_pred_in_new_vocab_pct'] = pred_is_new * 100
+                    else:
+                        debug_info['accuracy/new_token'] = 0.0
+
+                    # 기존 토큰에 대한 정확도
+                    if is_orig_token_masked.sum() > 0:
+                        orig_token_preds = predictions[is_orig_token_masked]
+                        orig_token_targets = masked_targets[is_orig_token_masked]
+                        orig_token_correct = (orig_token_preds == orig_token_targets).float().mean().item()
+                        debug_info['accuracy/orig_token'] = orig_token_correct * 100
+                    else:
+                        debug_info['accuracy/orig_token'] = 0.0
+
+            # ================================================================
+            # 4. Embedding Gradient 분석
+            # ================================================================
+            embed_layer = self.llm_model.get_input_embeddings()
+            output_layer = self.llm_model.get_output_embeddings()
+
+            # Input Embedding gradient
+            if embed_layer is not None:
+                # 실제 weight 가져오기 (PEFT wrapper 처리)
+                if hasattr(embed_layer, 'modules_to_save'):
+                    # PEFT ModulesToSaveWrapper인 경우
+                    actual_embed = embed_layer.modules_to_save.get('default', embed_layer)
+                    if hasattr(actual_embed, 'weight'):
+                        embed_weight = actual_embed.weight
+                    else:
+                        embed_weight = embed_layer.weight
+                elif hasattr(embed_layer, 'weight'):
+                    embed_weight = embed_layer.weight
+                else:
+                    embed_weight = None
+
+                if embed_weight is not None and embed_weight.grad is not None:
+                    vocab_size = embed_weight.shape[0]
+
+                    if vocab_size > orig_vocab_size:
+                        # 새 토큰 gradient
+                        new_token_grad = embed_weight.grad[orig_vocab_size:]
+                        new_grad_norms = new_token_grad.norm(dim=1)
+                        debug_info['grad/embed_new_mean'] = new_grad_norms.mean().item()
+                        debug_info['grad/embed_new_max'] = new_grad_norms.max().item()
+                        debug_info['grad/embed_new_nonzero_count'] = (new_grad_norms > 1e-10).sum().item()
+                        debug_info['grad/embed_new_nonzero_pct'] = (new_grad_norms > 1e-10).sum().item() / len(new_grad_norms) * 100
+
+                        # 기존 토큰 gradient (비교용)
+                        orig_token_grad = embed_weight.grad[:orig_vocab_size]
+                        orig_grad_norms = orig_token_grad.norm(dim=1)
+                        debug_info['grad/embed_orig_mean'] = orig_grad_norms.mean().item()
+                        debug_info['grad/embed_orig_max'] = orig_grad_norms.max().item()
+
+                        # Gradient 비율
+                        if debug_info['grad/embed_orig_mean'] > 0:
+                            debug_info['grad/embed_new_vs_orig_ratio'] = debug_info['grad/embed_new_mean'] / debug_info['grad/embed_orig_mean']
+
+            # Output (LM Head) gradient
+            if output_layer is not None:
+                if hasattr(output_layer, 'modules_to_save'):
+                    actual_output = output_layer.modules_to_save.get('default', output_layer)
+                    if hasattr(actual_output, 'weight'):
+                        output_weight = actual_output.weight
+                    else:
+                        output_weight = output_layer.weight
+                elif hasattr(output_layer, 'weight'):
+                    output_weight = output_layer.weight
+                else:
+                    output_weight = None
+
+                if output_weight is not None and output_weight.grad is not None:
+                    vocab_size = output_weight.shape[0]
+
+                    if vocab_size > orig_vocab_size:
+                        # 새 토큰 gradient
+                        new_head_grad = output_weight.grad[orig_vocab_size:]
+                        new_head_grad_norms = new_head_grad.norm(dim=1)
+                        debug_info['grad/head_new_mean'] = new_head_grad_norms.mean().item()
+                        debug_info['grad/head_new_max'] = new_head_grad_norms.max().item()
+                        debug_info['grad/head_new_nonzero_count'] = (new_head_grad_norms > 1e-10).sum().item()
+
+                        # 기존 토큰 gradient
+                        orig_head_grad = output_weight.grad[:orig_vocab_size]
+                        orig_head_grad_norms = orig_head_grad.norm(dim=1)
+                        debug_info['grad/head_orig_mean'] = orig_head_grad_norms.mean().item()
+
+            # ================================================================
+            # 5. 콘솔 로깅 (요약)
+            # ================================================================
+            logger.info("\n" + "=" * 70)
+            logger.info(f"[Step {self._log_step_counter}] NEW TOKEN DEBUG ANALYSIS")
+            logger.info("=" * 70)
+            logger.info(f"[Token Ratio]")
+            logger.info(f"  Input:  {new_token_count_input}/{total_tokens} ({new_token_ratio_input:.2f}%)")
+            if 'token_ratio/masked_total' in debug_info:
+                logger.info(f"  Masked: {debug_info.get('token_ratio/masked_new_token_count', 0)}/{debug_info['token_ratio/masked_total']} ({debug_info.get('token_ratio/masked_new_token_pct', 0):.2f}%)")
+
+            logger.info(f"\n[Loss Analysis]")
+            logger.info(f"  New Token Loss Mean:  {debug_info.get('loss/new_token_mean', 'N/A')}")
+            logger.info(f"  Orig Token Loss Mean: {debug_info.get('loss/orig_token_mean', 'N/A')}")
+            logger.info(f"  New Token Loss Contribution: {debug_info.get('loss/new_token_contribution_pct', 'N/A'):.2f}%")
+
+            logger.info(f"\n[Prediction Accuracy]")
+            logger.info(f"  New Token Accuracy:  {debug_info.get('accuracy/new_token', 'N/A'):.2f}%")
+            logger.info(f"  Orig Token Accuracy: {debug_info.get('accuracy/orig_token', 'N/A'):.2f}%")
+
+            logger.info(f"\n[Gradient Analysis]")
+            logger.info(f"  Embed New Grad Mean:  {debug_info.get('grad/embed_new_mean', 'N/A')}")
+            logger.info(f"  Embed Orig Grad Mean: {debug_info.get('grad/embed_orig_mean', 'N/A')}")
+            logger.info(f"  Embed New/Orig Ratio: {debug_info.get('grad/embed_new_vs_orig_ratio', 'N/A')}")
+            logger.info(f"  Embed New Nonzero:    {debug_info.get('grad/embed_new_nonzero_count', 'N/A')}/{vocab_size - orig_vocab_size if 'grad/embed_new_mean' in debug_info else 'N/A'}")
+            logger.info("=" * 70 + "\n")
+
+        except Exception as e:
+            logger.error(f"Error in _analyze_new_token_contribution: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+        return debug_info
 
     @staticmethod
     def add_gumbel_noise(logits, temperature):

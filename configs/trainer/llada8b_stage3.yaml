@@ -62,14 +62,26 @@ min_len: 8
 apply_sequence_packing: false
 max_packing_size: -1
 
-weight_decay: 0.1               
-min_lr: 0.0000025               
-init_lr: 0.000025               
-warmup_lr: 0.0                  
-warmup_steps: 50                
-# warmup_epochs: 0.5            
-scheduler: warmup_stable_decay_lr 
+weight_decay: 0.1
+min_lr: 0.0000025
+init_lr: 0.000025
+warmup_lr: 0.0
+warmup_steps: 50
+# warmup_epochs: 0.5
+scheduler: warmup_stable_decay_lr
 optimizer: adamw
+
+# 파라미터 그룹별 Learning Rate 설정
+# 1. LoRA 파라미터
+lr_lora: 0.0002                 # 2e-4
+# 2. Embedding Layer (WTE / embed_tokens)
+lr_embed_orig: 0.00001          # 1e-5 (기존 vocab)
+lr_embed_new: 0.0001            # 1e-4 (새로 추가된 vocab)
+# 3. Classifier (LM Head / ff_out)
+lr_head_orig: 0.00001           # 1e-5 (기존 vocab)
+lr_head_new: 0.0001             # 1e-4 (새로 추가된 vocab)
+# Original vocab size (LLaDA Llama-3 8B 기준)
+original_vocab_size: 128256
 log_every_n_steps: 10
 gradient_clip_val: 1.0          
 

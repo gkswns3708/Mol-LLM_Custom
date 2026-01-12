@@ -483,9 +483,51 @@ class DataCollator(DataCollatorForSeq2Seq):
                     label[:len_label], dtype=torch.int64
                 )
 
-        labels_ids = labels_ids.masked_fill(
-            labels_ids == self.tokenizer.pad_token_id, -100
-        )
+        # ========================================================================
+        # [LLaDA SFT] Padding EOS 토큰 처리
+        #
+        # LLaDA 논문 Appendix B.1:
+        # "the padding |EOS| tokens are treated as part of the response,
+        #  i.e., masked and included in the training objective."
+        #
+        # LLaDA SFT에서는 padding EOS도 response의 일부로 취급하여 loss 계산에 포함
+        # → 모델이 응답 길이를 스스로 조절하도록 학습
+        #
+        # 주의: labels_ids는 pad_token_id로 초기화되어 있으므로:
+        # - prompt 부분: pad_token_id → -100으로 마스킹 필요 (loss 제외)
+        # - response 실제 토큰: 유지
+        # - response 끝 padding EOS: LLaDA에서는 유지, 다른 모델은 -100
+        #
+        # 따라서 prompt 영역(response 시작 전)만 -100으로 마스킹하고,
+        # response 영역의 padding은 LLaDA에서 유지
+        # ========================================================================
+        is_llada = hasattr(self.args, 'llm_model') and 'llada' in self.args.llm_model.lower()
+
+        # 1. 먼저 prompt 영역(left padding)을 -100으로 마스킹
+        #    left padding이므로 각 샘플의 앞부분이 pad_token_id
+        #    response는 오른쪽 끝에 위치
+        batch_size, seq_len = labels_ids.shape
+        for i in range(batch_size):
+            # prompt 길이 = max_length - (실제 response 길이)
+            # labels_ids[i]에서 pad_token_id가 아닌 첫 번째 위치 찾기
+            non_pad_mask = (labels_ids[i] != self.tokenizer.pad_token_id)
+            if non_pad_mask.any():
+                first_non_pad_idx = non_pad_mask.nonzero(as_tuple=True)[0][0].item()
+                # prompt 영역(0 ~ first_non_pad_idx-1)을 -100으로 마스킹
+                labels_ids[i, :first_non_pad_idx] = -100
+            else:
+                # 전체가 pad_token_id인 경우 (response 없음)
+                labels_ids[i, :] = -100
+
+        # 2. Response 영역의 padding EOS 처리
+        if is_llada and self.train:
+            # LLaDA SFT: response 끝의 padding EOS도 loss에 포함 (마스킹하지 않음)
+            pass
+        else:
+            # 다른 모델: response 영역의 남은 padding도 -100으로 마스킹
+            labels_ids = labels_ids.masked_fill(
+                labels_ids == self.tokenizer.pad_token_id, -100
+            )
         features["labels"] = labels_ids
         if self.apply_molpo:
             molpo_labels_ids = labels_ids.clone()

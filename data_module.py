@@ -39,7 +39,8 @@ class Stage3DM(LightningDataModule):
                 self.train_dataset = get_dataset("train", tokenizer, args)
             self.test_dataset = get_dataset("test", tokenizer, args)
             self.val_dataset = get_dataset("test", tokenizer, args)
-        print(os.path.join(args.raw_data_root, "InstructGraph.py"), "-os.path.join(args.raw_data_root, 'InstructGraph.py')")
+        if args.debug:
+            print(os.path.join(args.raw_data_root, "InstructGraph.py"), "-os.path.join(args.raw_data_root, 'InstructGraph.py')")
         builder = load_dataset_builder(
             os.path.join(args.raw_data_root, "InstructGraph.py"),
             trust_remote_code=True,
@@ -134,9 +135,10 @@ def get_dataset(split, tokenizer, args):
             dataset = load_from_disk(taged_preprocessed_data_path)
         elif os.path.exists(preprocessed_data_path):
             assert args.tasks is not None
-            print(
-                f"preprocessed data not found: {taged_preprocessed_data_path}, filtering from {preprocessed_data_path}"
-            )
+            if getattr(args, 'debug', False):
+                print(
+                    f"preprocessed data not found: {taged_preprocessed_data_path}, filtering from {preprocessed_data_path}"
+                )
             dataset = load_from_disk(preprocessed_data_path)
             dataset = dataset.filter(lambda x: x["task"] in args.tasks)
             dataset.save_to_disk(taged_preprocessed_data_path)

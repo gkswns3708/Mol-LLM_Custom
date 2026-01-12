@@ -1,5 +1,5 @@
 export TOKENIZERS_PARALLELISM=false;
-file_name='stage1_Tpod_chebi_mol2text'
+file_name='stage1_Tpod_merged_bace_chebi_mol2text_chebi-20-text2mol_qm9_homo'
 gpus="'0,1,2,3'"
 
 python Mol-LLM_Custom/stage3.py \

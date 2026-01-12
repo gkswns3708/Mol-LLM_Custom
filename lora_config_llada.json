@@ -5,7 +5,7 @@
     "inference_mode": false,
     "init_lora_weights": true,
     "lora_alpha": 32,
-    "lora_dropout": 0.05,
+    "lora_dropout": 0.1,
     "target_modules": [
         "q_proj",
         "k_proj",
@@ -16,7 +16,7 @@
         "down_proj"
     ],
     "peft_type": "LORA",
-    "r": 16,
-    "modules_to_save": [],
+    "r": 64,
+    "modules_to_save": ["model.transformer.wte", "model.transformer.ff_out"],
     "task_type": "CAUSAL_LM"
 }

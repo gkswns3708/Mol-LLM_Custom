@@ -152,4 +152,15 @@ log_model_init_details: true         # 모델 초기화 상세 로깅
 # NaN/Inf 발생 시 상세 로깅
 log_nan_details: true                # NaN 발생 시 상세 정보 저장
 nan_log_dir: './nan_logs'            # NaN 로그 저장 디렉토리
-# ======================================================================
+
+# ==================== NEW TOKEN DEBUG ANALYSIS ====================
+# 새로 추가된 토큰(SELFIES 등)의 학습 상태 분석
+# wandb에 다음 항목들이 로깅됩니다:
+#   - token_ratio/*: 새 토큰 비율 (input, masked)
+#   - loss/*: 새 토큰 vs 기존 토큰 loss 비교
+#   - accuracy/*: 새 토큰 예측 정확도
+#   - grad/*: embedding/head gradient 분석
+log_new_token_debug: true            # 새 토큰 디버깅 로깅 활성화
+new_token_debug_interval: 100        # N step마다 분석 (0 = 비활성화)
+original_vocab_size: 128256          # LLaDA 기본 vocab size (새 토큰 구분용)
+# ==================================================================

@@ -244,7 +244,8 @@ class Blip2OPT(Blip2Base):
                     peft_config = LoraConfig(
                         **LoraConfig.from_json_file(self.args.peft_config)
                     )
-                    print(peft_config, "- peft_config")
+                    if self.args.debug:
+                        print(peft_config, "- peft_config")
                 else:
                     peft_config = LoraConfig(
                         target_modules=self.get_lora_target_modules(),
@@ -257,6 +258,18 @@ class Blip2OPT(Blip2Base):
                 self.peft_config = peft_config
                 self.llm_model = get_peft_model(self.llm_model, peft_config)
                 self.llm_model.print_trainable_parameters()
+
+                # [CRITICAL FIX] PEFT 적용 후 llm_embed_tokens 참조 업데이트
+                # PEFT modules_to_save가 적용되면 embedding layer가 ModulesToSaveWrapper로 래핑됨
+                # 래핑된 버전을 사용해야 gradient가 modules_to_save.default로 흐름
+                if hasattr(self, 'llm_embed_tokens'):
+                    old_embed = self.llm_embed_tokens
+                    self.llm_embed_tokens = self.llm_model.get_input_embeddings()
+                    if getattr(self.args, 'log_model_init_details', False):
+                        print(f"\n[PEFT FIX] Updated llm_embed_tokens reference after PEFT wrapping")
+                        print(f"  Old: {type(old_embed).__name__}")
+                        print(f"  New: {type(self.llm_embed_tokens).__name__}")
+
         elif tune_llm == "freeze":
             for name, param in self.llm_model.named_parameters():
                 param.requires_grad = False
@@ -318,6 +331,13 @@ class Blip2OPT(Blip2Base):
                 if '.blocks.' in name or 'transformer.blocks' in name:
                     continue
 
+                # [CRITICAL] PEFT modules_to_save가 적용된 경우:
+                # - modules_to_save.default: 실제 학습되는 weights (trainable로 설정)
+                # - original_module: frozen copy (forward에서 사용 안됨, trainable로 설정하면 안됨)
+                # original_module을 trainable로 설정하면 gradient가 흐르지 않아 weight가 변하지 않음
+                if 'original_module' in name:
+                    continue  # PEFT original_module은 건드리지 않음
+
                 # 1. LLaDA: Input Embedding (wte)
                 if 'wte' in name.lower():
                     param.requires_grad = True
@@ -365,7 +385,8 @@ class Blip2OPT(Blip2Base):
                     param.requires_grad = False
                 self.graph_encoder = self.graph_encoder.eval()
                 self.graph_encoder.train = disabled_train
-                print("freeze graph encoder")
+                if self.args.debug:
+                    print("freeze graph encoder")
 
             if self.args.projector_type == "qformer":
 
@@ -433,7 +454,8 @@ class Blip2OPT(Blip2Base):
             # remove '.' from the marked list for selfies token
             # self.llm_tokenizer.added_selfies_tokens.remove(".")
             # self.llm_tokenizer.selfies_token_ids.remove(36)
-            print(f"Added {len(selfies_tokens)} selfies tokens to the tokenizer")
+            if self.args.debug:
+                print(f"Added {len(selfies_tokens)} selfies tokens to the tokenizer")
 
         additional_tokens = [
             getattr(added_tokens, tokens)
@@ -484,6 +506,9 @@ class Blip2OPT(Blip2Base):
                 self.llm_model = PeftModel.from_pretrained(
                     self.llm_model, self.peft_dir, is_trainable=True
                 )
+                # [CRITICAL FIX] PEFT 적용 후 llm_embed_tokens 참조 업데이트
+                if hasattr(self, 'llm_embed_tokens'):
+                    self.llm_embed_tokens = self.llm_model.get_input_embeddings()
             else:
                 if self.args.peft_config:
                     peft_config = LoraConfig(
@@ -500,6 +525,11 @@ class Blip2OPT(Blip2Base):
                 self.peft_config = peft_config
                 self.llm_model = get_peft_model(self.llm_model, peft_config)
                 self.llm_model.print_trainable_parameters()
+
+                # [CRITICAL FIX] PEFT 적용 후 llm_embed_tokens 참조 업데이트
+                if hasattr(self, 'llm_embed_tokens'):
+                    self.llm_embed_tokens = self.llm_model.get_input_embeddings()
+
         elif self.tune_llm == "freeze":
             for name, param in self.llm_model.named_parameters():
                 param.requires_grad = False

@@ -54,7 +54,7 @@ class Blip2Base(BaseModel):
         bert_num_hidden_layers=-1,
     ):
         assert model_name == "scibert"
-        print("bert load scibert")
+        # print("bert load scibert")  # Disabled for cleaner logs
         if True:
             bert_name = "allenai/scibert_scivocab_uncased"
         else:
@@ -116,13 +116,15 @@ class Blip2Base(BaseModel):
                     if k.startswith("molecule_node_model."):
                         renamed_state_dict[k.replace("molecule_node_model.", "")] = v
                 ckpt = renamed_state_dict
-                print(f"load graph encoder from {args.graph_encoder_ckpt}")
+                if getattr(args, 'debug', False):
+                    print(f"load graph encoder from {args.graph_encoder_ckpt}")
                 missing_keys, unexpected_keys = graph_encoder.load_state_dict(
                     ckpt, strict=False
                 )
                 if len(missing_keys) or len(unexpected_keys):
-                    print(missing_keys)
-                    print(unexpected_keys)
+                    if getattr(args, 'debug', False):
+                        print(missing_keys)
+                        print(unexpected_keys)
         elif "Custom_gnn_models" in args.graph_encoder_ckpt:
             ckpt = torch.load(args.graph_encoder_ckpt, map_location=torch.device("cpu"))
             renamed_state_dict = {}
@@ -130,7 +132,8 @@ class Blip2Base(BaseModel):
                 if param.startswith("gnn."):
                     renamed_state_dict[param.replace("gnn.", "")] = value
             graph_encoder.load_state_dict(renamed_state_dict, strict=True)
-            print(f"load graph encoder from {args.graph_encoder_ckpt}")
+            if getattr(args, 'debug', False):
+                print(f"load graph encoder from {args.graph_encoder_ckpt}")
         elif "scratch" in args.graph_encoder_ckpt:
             pass
         else:
