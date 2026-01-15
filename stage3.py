@@ -419,7 +419,7 @@ def main(cfg):
             except Exception as e:
                 print(f"  - Could not read checkpoint info: {e}")
             print("="*70 + "\n")
-        else:
+        else: # TODO: training resume을 했다면 다른 logging나오도록 해야함.
             print("\n" + "="*70)
             print("[TRAINING] Starting training from scratch")
             print("="*70 + "\n")
@@ -428,9 +428,16 @@ def main(cfg):
         outputs = trainer.test(model, datamodule=dm)
         assert "Training done"
     elif cfg.mode == "test":
-        ckpt = torch.load(cfg.ckpt_path, map_location="cpu", weights_only=False)
-        model.load_state_dict(ckpt["state_dict"], strict=False)
-        print(f"loaded trained model from {cfg.ckpt_path}")
+        # test 모드에서는 pretrained_ckpt_path 또는 ckpt_path 사용 가능
+        test_ckpt_path = cfg.pretrained_ckpt_path if cfg.pretrained_ckpt_path is not None else cfg.ckpt_path
+        if test_ckpt_path is None:
+            raise ValueError("test 모드에서는 pretrained_ckpt_path 또는 ckpt_path를 지정해야 합니다.")
+
+        # pretrained_ckpt_path가 있으면 이미 위에서 로드됨, 아니면 여기서 로드
+        if cfg.pretrained_ckpt_path is None:
+            ckpt = torch.load(test_ckpt_path, map_location="cpu", weights_only=False)
+            model.load_state_dict(ckpt["state_dict"], strict=False)
+            print(f"loaded trained model from {test_ckpt_path}")
         outputs = trainer.test(model, datamodule=dm)
         if cfg.filename is not None:
             update_result_csv(

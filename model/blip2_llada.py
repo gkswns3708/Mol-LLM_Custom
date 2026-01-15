@@ -45,7 +45,245 @@ class Blip2LLaDA(Blip2OPT):
         # 새 토큰 디버깅 로깅 설정
         self._log_new_token_debug = getattr(args, 'log_new_token_debug', False)
         self._new_token_debug_interval = getattr(args, 'new_token_debug_interval', 100)
+
+        # Step-wise denoising 추적 설정
+        self._log_stepwise_denoising = getattr(args, 'log_stepwise_denoising', False)
+        self._stepwise_log_dir_base = getattr(args, 'stepwise_log_dir', './stepwise_logs')
+        self._stepwise_max_samples_config = str(getattr(args, 'stepwise_max_samples', '4'))  # 숫자 또는 '10%' 형식
+
+        # mode별(val/test) + 전략별(random/semi_ar) 독립적인 카운터와 설정
+        # 구조: {'val': {'random': 0, 'semi_ar': 0}, 'test': {'random': 0, 'semi_ar': 0}}
+        self._stepwise_sample_counter = {'val': {}, 'test': {}}  # mode+전략별 GPU 샘플 카운터
+        self._stepwise_max_per_gpu = {'val': None, 'test': None}  # mode별 GPU당 최대 샘플 수
+        self._stepwise_total_samples = {'val': None, 'test': None}  # mode별 비율 계산용 전체 샘플 수
+        self._current_stepwise_file = None  # 현재 로깅 파일
+        self._current_stepwise_mode = None  # 현재 로깅 mode (val/test)
+        self._current_stepwise_strategy = None  # 현재 로깅 strategy (random/semi_ar)
         # =====================================================================
+
+    def _should_log_stepwise(self, num_gpus: int = 1, total_dataset_size: int = None, global_rank: int = 0, mode: str = 'val', strategy: str = 'random') -> bool:
+        """
+        현재 샘플을 step-wise 로깅할지 결정
+
+        Args:
+            num_gpus: 사용 중인 GPU 수
+            total_dataset_size: 전체 데이터셋 크기 (비율 계산용, 비율 설정 시 필수)
+            global_rank: 현재 GPU의 global rank (0번 GPU에서만 로깅)
+            mode: 'val' 또는 'test' - 각 mode별로 독립적인 카운터 사용
+            strategy: 'random' 또는 'semi_ar' - 각 전략별로 독립적인 카운터 사용
+
+        Returns:
+            bool: 로깅 여부
+
+        Config 형식:
+            - "4": 전체 4개 샘플 로깅 (GPU 4개면 각 GPU당 1개, 각 전략별로 별도 적용)
+            - "10%": 전체의 10% 샘플 로깅 (GPU 수에 맞게 조정)
+            - "0": 무제한 (모든 샘플 로깅)
+
+        Note:
+            GPU rank 0에서만 step-wise 로깅을 수행하여 I/O 병목 최소화
+            각 전략(random, semi_ar)별로 독립적인 카운터를 유지하여 모든 전략이 로깅됨
+        """
+        if not self._log_stepwise_denoising:
+            return False
+
+        # GPU rank 0에서만 로깅 수행
+        if global_rank != 0:
+            return False
+
+        # mode 유효성 검사
+        if mode not in ['val', 'test']:
+            mode = 'val'
+
+        # 현재 mode와 strategy 설정 (로그 디렉토리 결정용)
+        self._current_stepwise_mode = mode
+        self._current_stepwise_strategy = strategy
+
+        # 전략별 카운터 초기화 (해당 전략의 첫 호출 시)
+        if strategy not in self._stepwise_sample_counter[mode]:
+            self._stepwise_sample_counter[mode][strategy] = 0
+
+        # GPU당 최대 샘플 수 계산 (mode별 최초 1회만)
+        if self._stepwise_max_per_gpu[mode] is None:
+            config = self._stepwise_max_samples_config.strip()
+
+            if config == '0':
+                # 무제한
+                self._stepwise_max_per_gpu[mode] = float('inf')
+            elif config.endswith('%'):
+                # 비율 지정: 전체의 N%
+                if total_dataset_size is None:
+                    # 데이터셋 크기를 모르면 첫 호출에서 계산 불가 → 일단 로깅
+                    return True
+                percentage = float(config[:-1]) / 100.0
+                total_target = int(total_dataset_size * percentage)
+                # GPU 수의 배수로 조정: (total_target // num_gpus) * num_gpus
+                adjusted_total = (total_target // num_gpus) * num_gpus
+                self._stepwise_max_per_gpu[mode] = max(1, adjusted_total // num_gpus) if adjusted_total > 0 else 0
+                print(f"[Stepwise Log/{mode}] Config: {config} of {total_dataset_size} = {total_target} → adjusted to {adjusted_total} (per GPU per strategy: {self._stepwise_max_per_gpu[mode]})")
+            else:
+                # 숫자 지정: 전체 N개
+                total_target = int(config)
+                # GPU 수의 배수로 조정
+                adjusted_total = (total_target // num_gpus) * num_gpus
+                self._stepwise_max_per_gpu[mode] = max(1, adjusted_total // num_gpus) if adjusted_total > 0 else 0
+                print(f"[Stepwise Log/{mode}] Config: {config} samples → adjusted to {adjusted_total} (per GPU per strategy: {self._stepwise_max_per_gpu[mode]})")
+
+        # 현재 GPU에서 해당 전략에 대해 이미 충분히 로깅했는지 확인
+        if self._stepwise_sample_counter[mode][strategy] >= self._stepwise_max_per_gpu[mode]:
+            return False
+
+        return True
+
+    def _format_token_fixed_width(self, token_str: str, width: int = 12) -> str:
+        """토큰 문자열을 고정 폭으로 포맷팅 (출력 정렬용)"""
+        # 특수 문자 처리
+        token_str = token_str.replace('\n', '\\n').replace('\t', '\\t')
+        if len(token_str) > width:
+            return token_str[:width-2] + '..'
+        return token_str.ljust(width)
+
+    def _init_stepwise_log_file(self, remasking_strategy: str = 'unknown',
+                                 sampling_strategy: str = 'random',
+                                 steps: int = 64,
+                                 semi_ar_block_size: int = None,
+                                 target_label: str = None, input_text: str = None,
+                                 global_step: int = None):
+        """
+        새 샘플에 대한 step-wise 로그 파일 초기화
+
+        Args:
+            remasking_strategy: 'low_confidence' | 'random' | 'none' - 마스킹된 토큰 재선택 전략
+            sampling_strategy: 'random' | 'semi_ar' - 전체 동시 생성 vs 블록 단위 순차 생성
+            steps: 총 디퓨전 스텝 수
+            semi_ar_block_size: Semi-AR 블록 크기 (semi_ar 전략일 때만 유효)
+            target_label: 정답 레이블
+            input_text: 입력 텍스트
+            global_step: 현재 학습 global step
+        """
+        import os
+        from datetime import datetime
+
+        # mode 기반 디렉토리 생성 (val/ 또는 test/)
+        mode = self._current_stepwise_mode or 'val'
+        strategy = self._current_stepwise_strategy or 'random'
+        stepwise_log_dir = os.path.join(self._stepwise_log_dir_base, mode)
+        os.makedirs(stepwise_log_dir, exist_ok=True)
+
+        # 전략별 카운터 가져오기
+        if strategy not in self._stepwise_sample_counter[mode]:
+            self._stepwise_sample_counter[mode][strategy] = 0
+        counter = self._stepwise_sample_counter[mode][strategy]
+
+        # 파일명 생성: {strategy}_sample_{counter}_step{global_step}_{timestamp}.txt
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        step_str = f"_step{global_step}" if global_step is not None else ""
+        filename = f"{strategy}_sample_{counter:04d}{step_str}_{timestamp}.txt"
+        filepath = os.path.join(stepwise_log_dir, filename)
+
+        self._current_stepwise_file = filepath
+        self._stepwise_sample_counter[mode][strategy] += 1
+
+        # 파일 헤더 작성
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"{'='*120}\n")
+            f.write(f"Step-wise Denoising Log - {strategy.upper()} Sample {self._stepwise_sample_counter[mode][strategy]} ({mode})\n")
+            f.write(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            if global_step is not None:
+                f.write(f"Global Step: {global_step}\n")
+            f.write(f"{'='*120}\n")
+            # Sampling Config 섹션 추가
+            f.write(f"[Sampling Config]\n")
+            f.write(f"  - Sampling Strategy: {sampling_strategy}\n")
+            f.write(f"  - Remasking Strategy: {remasking_strategy}\n")
+            f.write(f"  - Total Steps: {steps}\n")
+            if sampling_strategy == 'semi_ar' and semi_ar_block_size is not None:
+                f.write(f"  - Semi-AR Block Size: {semi_ar_block_size}\n")
+            f.write(f"{'='*120}\n\n")
+            if input_text:
+                f.write(f"[Input]\n{input_text}\n\n")
+            if target_label:
+                f.write(f"[Target Label]\n{target_label}\n\n")
+            f.write(f"{'='*120}\n\n")
+
+        return filepath
+
+    def _log_denoising_step(self, step: int, total_steps: int, gen_tokens: torch.Tensor,
+                            t: float, s: float, num_unmasked: int, gen_len: int,
+                            remasking_strategy: str = 'unknown',
+                            sampling_strategy: str = 'random',
+                            steps: int = 64,
+                            semi_ar_block_size: int = None,
+                            target_label: str = None,
+                            input_text: str = None,
+                            global_step: int = None):
+        """
+        Step-wise denoising 과정을 파일로 저장
+
+        LLaDA 논문 Algorithm 5 기준:
+        - t: 현재 timestep (1 → 0으로 감소)
+        - s: 다음 timestep
+        - num_unmasked: unmask된 토큰 수 = ⌊L × (1-s)⌋
+
+        저장 위치: {stepwise_log_dir}/{strategy}_sample_{counter}_step{global_step}_{timestamp}.txt
+
+        Args:
+            sampling_strategy: 'random' | 'semi_ar' - 생성 전략
+            steps: 총 디퓨전 스텝 수
+            semi_ar_block_size: Semi-AR 블록 크기
+            global_step: 현재 학습 global step
+        """
+        # Step 0일 때 새 파일 생성
+        if step == 0:
+            self._init_stepwise_log_file(
+                remasking_strategy=remasking_strategy,
+                sampling_strategy=sampling_strategy,
+                steps=steps,
+                semi_ar_block_size=semi_ar_block_size,
+                target_label=target_label,
+                input_text=input_text,
+                global_step=global_step
+            )
+            print(f"[Stepwise Log] Saving to: {self._current_stepwise_file}")
+
+        # 첫 번째 배치만 로깅
+        tokens = gen_tokens[0].cpu().tolist()
+
+        # 토큰을 문자열로 변환
+        token_strs = []
+        for tid in tokens:
+            if tid == self.mask_token_id:
+                token_strs.append("[MASK]")
+            else:
+                decoded = self.llm_tokenizer.decode([tid])
+                token_strs.append(decoded if decoded.strip() else f"[{tid}]")
+
+        # 고정 폭으로 포맷팅
+        width = 18
+        formatted_tokens = [self._format_token_fixed_width(t, width) for t in token_strs]
+
+        # 마스크 비율 계산
+        num_masked = sum(1 for tid in tokens if tid == self.mask_token_id)
+        mask_ratio = num_masked / gen_len * 100
+
+        # 파일에 저장
+        with open(self._current_stepwise_file, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*120}\n")
+            f.write(f"[Step {step:3d}/{total_steps}] t={t:.4f} → s={s:.4f} | "
+                    f"Unmasked: {num_unmasked:3d}/{gen_len} ({100-mask_ratio:.1f}%) | "
+                    f"Masked: {num_masked:3d} ({mask_ratio:.1f}%)\n")
+            f.write(f"{'='*120}\n")
+
+            # 토큰들을 한 줄에 6개씩 출력 (더 넓게)
+            tokens_per_line = 6
+            for i in range(0, len(formatted_tokens), tokens_per_line):
+                line_tokens = formatted_tokens[i:i+tokens_per_line]
+                f.write(f"  [{i:3d}-{min(i+tokens_per_line-1, len(formatted_tokens)-1):3d}] " + " | ".join(line_tokens) + "\n")
+            f.write("\n")
+
+        # 마지막 step일 때 완료 메시지
+        if step == total_steps - 1:
+            print(f"[Stepwise Log] Completed: {self._current_stepwise_file}")
 
     def get_lora_target_modules(self):
         return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -121,14 +359,37 @@ class Blip2LLaDA(Blip2OPT):
         if _log_details:
             logger.info(f"[Token Check] Added {num_added_toks} special tokens to tokenizer.")
 
-        # 4. 모델 임베딩 크기 조정 (Input Embedding)
+        # 4. 모델 임베딩 크기 조정 (Input Embedding) + 수동 mean_resizing
+        # transformers 4.46+ 에서는 mean_resizing=True 파라미터 사용 가능하지만,
+        # lavis 호환성을 위해 4.44.2 사용 중이므로 수동 구현
         new_vocab_size = len(self.llm_tokenizer)
         if _log_details:
             logger.info(f"[DEBUG] Resizing Input Embeddings to {new_vocab_size}")
+
+        # 기존 임베딩 통계 저장 (mean_resizing 수동 구현)
+        old_embeddings = self.llm_model.get_input_embeddings()
+        old_weight = old_embeddings.weight.data
+        old_num_tokens = old_weight.shape[0]
+        old_mean = old_weight.mean(dim=0)
+        old_std = old_weight.std(dim=0)
+
+        # 리사이즈 수행
         self.llm_model.resize_token_embeddings(new_vocab_size)
 
+        # 새 토큰만 기존 분포(mean, std)로 재초기화
+        if new_vocab_size > old_num_tokens:
+            new_embeddings = self.llm_model.get_input_embeddings()
+            num_new = new_vocab_size - old_num_tokens
+            with torch.no_grad():
+                # 기존 임베딩의 mean + std * randn 으로 초기화
+                new_embeddings.weight.data[-num_new:] = (
+                    old_mean + old_std * torch.randn(num_new, old_weight.shape[1], device=old_weight.device, dtype=old_weight.dtype)
+                )
+            if _log_details:
+                logger.info(f"[DEBUG] Initialized {num_new} new token embeddings with mean_resizing (mean={old_mean.mean():.4f}, std={old_std.mean():.4f})") 
+
         # ==============================================================================
-        # [중요] 5. 출력 레이어(LM Head) 강제 리사이징 (이 부분이 핵심 해결책입니다)
+        # [중요] 5. 출력 레이어(LM Head) 강제 리사이징 + mean_resizing
         # ==============================================================================
         output_embeddings = self.llm_model.get_output_embeddings()
 
@@ -137,19 +398,36 @@ class Blip2LLaDA(Blip2OPT):
                 logger.info(f"[DEBUG] Output embedding size mismatch! Input: {new_vocab_size}, Output: {output_embeddings.weight.shape[0]}")
                 logger.info("[DEBUG] Forcing resize of output embeddings (lm_head)...")
 
-            # 새로운 출력 헤드 생성 (기존 가중치 복사)
+            # 기존 output embedding 통계 저장 (mean_resizing 수동 구현)
+            old_output_weight = output_embeddings.weight.data
+            n_orig = old_output_weight.shape[0]
+            # LM Head weight shape: [vocab_size, hidden_dim]
+            old_output_mean = old_output_weight.mean(dim=0)
+            old_output_std = old_output_weight.std(dim=0)
+
+            # 새로운 출력 헤드 생성
             new_lm_head = nn.Linear(
                 output_embeddings.in_features,
                 new_vocab_size,
                 bias=output_embeddings.bias is not None
             ).to(self.llm_model.device).to(output_embeddings.weight.dtype)
 
-            # 기존 가중치 복사
-            n_orig = output_embeddings.weight.shape[0]
+            # 기존 가중치 복사 + 새 토큰은 기존 분포로 초기화
+            num_new_output = new_vocab_size - n_orig
             with torch.no_grad():
-                new_lm_head.weight[:n_orig, :] = output_embeddings.weight
+                # 기존 토큰 가중치 복사
+                new_lm_head.weight[:n_orig, :] = old_output_weight
                 if output_embeddings.bias is not None:
                     new_lm_head.bias[:n_orig] = output_embeddings.bias
+
+                # 새 토큰은 기존 분포(mean, std)로 초기화 (mean_resizing)
+                if num_new_output > 0:
+                    new_lm_head.weight[n_orig:, :] = (
+                        old_output_mean + old_output_std * torch.randn(
+                            num_new_output, old_output_weight.shape[1],
+                            device=old_output_weight.device, dtype=old_output_weight.dtype
+                        )
+                    )
 
             # 모델에 새로운 헤드 설정
             self.llm_model.set_output_embeddings(new_lm_head)
@@ -158,7 +436,7 @@ class Blip2LLaDA(Blip2OPT):
             # 여기서 설정해도 get_peft_model() 호출 시 래핑되면서 무시될 수 있음
             if _log_details:
                 logger.info(f"[DEBUG] Output embedding force resize complete. New shape: {new_lm_head.weight.shape}")
-                logger.info(f"[DEBUG] Set lm_head.weight.requires_grad = True")
+                logger.info(f"[DEBUG] Initialized {num_new_output} new output embeddings with mean_resizing (mean={old_output_mean.mean():.4f}, std={old_output_std.mean():.4f})")
         else:
             if _log_details:
                 logger.info(f"[DEBUG] Output embedding size is correct: {output_embeddings.weight.shape[0]}")
@@ -330,6 +608,7 @@ class Blip2LLaDA(Blip2OPT):
         if masked_indices.sum() == 0:
             loss = torch.tensor(0.0, device=self.device, requires_grad=True)
             instance_loss = torch.zeros(batch_size, device=self.device)
+            instance_loss_no_eos = torch.zeros(batch_size, device=self.device)
         else:
             # ================================================================
             # [핵심 수정] SMDM 원본 방식으로 loss 계산
@@ -367,6 +646,22 @@ class Blip2LLaDA(Blip2OPT):
             batch_indices = torch.where(masked_indices)[0]  # 각 마스킹된 토큰이 어떤 배치에 속하는지
             instance_loss.scatter_add_(0, batch_indices, weighted_loss)
             instance_loss = instance_loss / (answer_lengths + 1e-8)
+
+            # Instance-level loss (EOS 제외) 계산
+            # EOS padding을 제외한 실제 response 영역만의 loss
+            eos_token_id = self.llm_tokenizer.eos_token_id
+            is_not_eos = (masked_targets != eos_token_id)  # [num_masked]
+
+            instance_loss_no_eos = torch.zeros(batch_size, device=self.device)
+            if is_not_eos.sum() > 0:
+                # EOS가 아닌 토큰들의 weighted loss만 scatter
+                weighted_loss_no_eos = weighted_loss * is_not_eos.float()  # EOS 위치는 0
+                instance_loss_no_eos.scatter_add_(0, batch_indices, weighted_loss_no_eos)
+
+                # EOS가 아닌 토큰 개수로 나눔 (샘플별)
+                non_eos_counts = torch.zeros(batch_size, device=self.device)
+                non_eos_counts.scatter_add_(0, batch_indices, is_not_eos.float())
+                instance_loss_no_eos = instance_loss_no_eos / (non_eos_counts + 1e-8)
         if torch.isnan(loss) or torch.isinf(loss):
             # NaN 로깅 (config로 제어)
             if self._log_nan_details:
@@ -411,6 +706,7 @@ class Blip2LLaDA(Blip2OPT):
         return {
             "loss": loss,
             "instance_loss": instance_loss,
+            "instance_loss_no_eos": instance_loss_no_eos,
             "logits": logits,
             "graph_avg_norm": graph_avg_norm,
             "moltoken_avg_norm": moltoken_avg_norm,
@@ -637,8 +933,8 @@ class Blip2LLaDA(Blip2OPT):
 
             # 새로 추가된 토큰 전체의 gradient 통계
             if embed_layer.weight.grad is not None:
-                # LLaDA 원래 vocab size (대략적인 값, 실제로는 config에서 가져와야 함)
-                orig_vocab_size = 128256
+                # LLaDA 원래 vocab size (config에서 가져오거나 기본값 사용)
+                orig_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
                 if embed_layer.weight.shape[0] > orig_vocab_size:
                     new_token_grads = embed_layer.weight.grad[orig_vocab_size:]
                     grad_norms = new_token_grads.norm(dim=1)
@@ -843,7 +1139,7 @@ class Blip2LLaDA(Blip2OPT):
 
         try:
             # 기존 vocab size (LLaDA 기본)
-            orig_vocab_size = getattr(self.args, 'original_vocab_size', 128256)
+            orig_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
 
             batch_size, seq_len = original_tokens.shape
 
@@ -1071,6 +1367,14 @@ class Blip2LLaDA(Blip2OPT):
         use_semi_ar=False,
         semi_ar_block_size=32,
         task_name=None,
+        target_label=None,
+        input_text=None,
+        num_gpus=1,
+        total_dataset_size=None,
+        global_rank=0,
+        mode='val',
+        strategy='random',
+        global_step=None,
         **kwargs
     ):
         """
@@ -1101,7 +1405,16 @@ class Blip2LLaDA(Blip2OPT):
             use_semi_ar: Semi-Autoregressive 모드 사용 여부
             semi_ar_block_size: Semi-AR 블록 크기
             task_name: Task 이름 (Semi-AR 모드에서 format token 결정용)
+            num_gpus: GPU 수 (step-wise 로깅 샘플 분배용)
+            total_dataset_size: 전체 데이터셋 크기 (step-wise 로깅 비율 계산용)
+            global_rank: 현재 GPU의 global rank (0번 GPU에서만 로깅)
+            mode: 'val' 또는 'test' - step-wise 로깅 시 mode별 디렉토리 분리
+            strategy: 'random' 또는 'semi_ar' - step-wise 로깅 시 전략별 독립 카운터용
+            global_step: 현재 학습 global step (로그 파일명에 포함)
         """
+        # Step-wise 로깅 활성화 여부 확인 (GPU rank 0에서만, 전략별 독립 카운터)
+        do_stepwise_log = self._should_log_stepwise(num_gpus=num_gpus, total_dataset_size=total_dataset_size, global_rank=global_rank, mode=mode, strategy=strategy)
+
         # Semi-AR 모드 분기
         if use_semi_ar:
             return self._generate_semi_ar(
@@ -1115,6 +1428,10 @@ class Blip2LLaDA(Blip2OPT):
                 remasking_strategy=remasking_strategy,
                 block_size=semi_ar_block_size,
                 task_name=task_name,
+                target_label=target_label,
+                input_text=input_text,
+                do_stepwise_log=do_stepwise_log,
+                global_step=global_step,
                 **kwargs
             )
 
@@ -1150,6 +1467,10 @@ class Blip2LLaDA(Blip2OPT):
                 gen_len=gen_len,
                 steps=steps,
                 temperature=temperature,
+                target_label=target_label,
+                input_text=input_text,
+                do_stepwise_log=do_stepwise_log,
+                global_step=global_step,
             )
         else:
             # Algorithm 4 (random) 또는 Algorithm 5 (low_confidence)
@@ -1163,6 +1484,10 @@ class Blip2LLaDA(Blip2OPT):
                 steps=steps,
                 temperature=temperature,
                 remasking_strategy=remasking_strategy,
+                target_label=target_label,
+                input_text=input_text,
+                do_stepwise_log=do_stepwise_log,
+                global_step=global_step,
             )
 
     def _generate_no_remask(
@@ -1175,6 +1500,10 @@ class Blip2LLaDA(Blip2OPT):
         gen_len,
         steps,
         temperature,
+        target_label=None,
+        input_text=None,
+        do_stepwise_log=False,
+        global_step=None,
     ):
         """
         Remasking 없는 생성 (기존 방식)
@@ -1229,6 +1558,29 @@ class Blip2LLaDA(Blip2OPT):
 
             full_ids[transfer_mask] = x0_pred[transfer_mask]
 
+            # Step-wise denoising 로깅 (no_remask 방식)
+            if do_stepwise_log:
+                t = 1.0 - step / steps
+                s = max(0.0, t - 1.0 / steps)
+                # 현재까지 unmask된 토큰 수 계산
+                num_unmasked = (full_ids[:, prompt_len:] != self.mask_token_id).sum(dim=1)[0].item()
+                self._log_denoising_step(
+                    step=step,
+                    total_steps=steps,
+                    gen_tokens=full_ids[:, prompt_len:],
+                    t=t,
+                    s=s,
+                    num_unmasked=int(num_unmasked),
+                    gen_len=gen_len,
+                    remasking_strategy='none',
+                    sampling_strategy='random',
+                    steps=steps,
+                    semi_ar_block_size=None,
+                    target_label=target_label,
+                    input_text=input_text,
+                    global_step=global_step
+                )
+
         generated_tokens = full_ids[:, prompt_len:]
         generated_text = self.llm_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
 
@@ -1250,6 +1602,10 @@ class Blip2LLaDA(Blip2OPT):
         steps,
         temperature,
         remasking_strategy,
+        target_label=None,
+        input_text=None,
+        do_stepwise_log=False,
+        global_step=None,
     ):
         """
         LLaDA 논문 Algorithm 4 (random) & Algorithm 5 (low_confidence) 구현
@@ -1350,6 +1706,44 @@ class Blip2LLaDA(Blip2OPT):
                         # 가장 높은 confidence의 토큰만 복원
                         full_ids[b, prompt_len + keep_indices] = x0_pred[b, prompt_len + keep_indices]
 
+                # Step-wise denoising 로깅
+                if do_stepwise_log:
+                    self._log_denoising_step(
+                        step=step,
+                        total_steps=steps,
+                        gen_tokens=full_ids[:, prompt_len:],
+                        t=t,
+                        s=s,
+                        num_unmasked=nun,
+                        gen_len=gen_len,
+                        remasking_strategy=remasking_strategy,
+                        sampling_strategy='random',
+                        steps=steps,
+                        semi_ar_block_size=None,
+                        target_label=target_label,
+                        input_text=input_text,
+                        global_step=global_step
+                    )
+            else:
+                # 마지막 step 로깅
+                if do_stepwise_log:
+                    self._log_denoising_step(
+                        step=step,
+                        total_steps=steps,
+                        gen_tokens=full_ids[:, prompt_len:],
+                        t=t,
+                        s=s,
+                        num_unmasked=gen_len,
+                        gen_len=gen_len,
+                        remasking_strategy=remasking_strategy,
+                        sampling_strategy='random',
+                        steps=steps,
+                        semi_ar_block_size=None,
+                        target_label=target_label,
+                        input_text=input_text,
+                        global_step=global_step
+                    )
+
         generated_tokens = full_ids[:, prompt_len:]
         generated_text = self.llm_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
 
@@ -1372,16 +1766,26 @@ class Blip2LLaDA(Blip2OPT):
         remasking_strategy,
         block_size,
         task_name=None,
+        target_label=None,
+        input_text=None,
+        do_stepwise_log=False,
+        global_step=None,
         **kwargs
     ):
         """
         Semi-Autoregressive Generation (논문 Appendix A.3, Figure 4)
 
         시퀀스를 여러 블록으로 나누어 왼쪽에서 오른쪽으로 순차 생성.
-        각 블록 내에서는 지정된 remasking_strategy 사용.
+        각 블록 내에서는 지정된 remasking_strategy로 디퓨전 스텝 수행.
+
+        블록당 스텝 수 결정 방식:
+        - 블록 크기(block_size) 기반으로 결정
+        - steps_per_block = block_size (블록 크기만큼 꼼꼼하게 디퓨전)
+        - 또는 config의 steps가 더 작으면 steps 사용
 
         Args:
             block_size: 각 블록의 크기 (토큰 수)
+            steps: 블록당 최대 디퓨전 스텝 수
             remasking_strategy: 블록 내 remasking 전략
         """
         batch_size = input_ids.shape[0]
@@ -1404,8 +1808,9 @@ class Blip2LLaDA(Blip2OPT):
         # 블록 수 계산
         num_blocks = (gen_len + block_size - 1) // block_size
 
-        # 각 블록에 할당할 step 수
-        steps_per_block = max(1, steps // num_blocks)
+        # 각 블록에 할당할 step 수: 블록 크기만큼 (또는 config steps가 더 작으면 그 값)
+        # 블록 하나를 "꼼꼼하게" 디퓨전하려면 블록 크기만큼 스텝 필요
+        steps_per_block = min(block_size, steps)
 
         for block_idx in range(num_blocks):
             block_start = prompt_len + block_idx * block_size
@@ -1415,10 +1820,13 @@ class Blip2LLaDA(Blip2OPT):
             if current_block_size <= 0:
                 break
 
+            # 현재 블록 크기에 맞게 스텝 수 조정 (마지막 블록이 작을 수 있음)
+            actual_steps = min(steps_per_block, current_block_size)
+
             # 현재 블록에 대해 diffusion 수행
-            for step in range(steps_per_block):
-                t = 1.0 - step / steps_per_block
-                s = max(0.0, t - 1.0 / steps_per_block)
+            for step in range(actual_steps):
+                t = 1.0 - step / actual_steps
+                s = max(0.0, t - 1.0 / actual_steps)
 
                 # Forward pass (전체 시퀀스)
                 current_embeds = self.llm_embed_tokens(full_ids)
@@ -1490,6 +1898,29 @@ class Blip2LLaDA(Blip2OPT):
                             # 높은 confidence 토큰만 복원
                             for idx in keep_indices:
                                 full_ids[b, block_start + idx] = x0_pred[b, block_start + idx]
+
+                # Step-wise denoising 로깅 (semi_ar 방식)
+                if do_stepwise_log:
+                    # 전체 진행 상황 계산 (블록별 actual_steps가 다를 수 있으므로 근사치)
+                    diffusion_step = block_idx * steps_per_block + step
+                    total_diffusion_steps = num_blocks * steps_per_block
+                    num_unmasked = (full_ids[:, prompt_len:] != self.mask_token_id).sum(dim=1)[0].item()
+                    self._log_denoising_step(
+                        step=diffusion_step,
+                        total_steps=total_diffusion_steps,
+                        gen_tokens=full_ids[:, prompt_len:],
+                        t=t,
+                        s=s,
+                        num_unmasked=int(num_unmasked),
+                        gen_len=gen_len,
+                        remasking_strategy=f'{remasking_strategy} [blk{block_idx+1}/{num_blocks}]',
+                        sampling_strategy='semi_ar',
+                        steps=steps,
+                        semi_ar_block_size=block_size,
+                        target_label=target_label,
+                        input_text=input_text,
+                        global_step=global_step
+                    )
 
         generated_tokens = full_ids[:, prompt_len:]
         generated_text = self.llm_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
@@ -1823,120 +2254,126 @@ class Blip2LLaDA(Blip2OPT):
             format_info=format_info  # 디버깅용
         )
 
-    @torch.no_grad()
-    def generate(
-        self,
-        graphs,
-        input_ids,
-        attention_mask,
-        is_mol_token=None,
-        max_length=128,
-        steps=64,
-        temperature=0.0,
-        remasking_strategy='low_confidence',
-        use_semi_ar=False,  # Semi-AR 모드 활성화 플래그
-        task_name=None,     # Semi-AR용 task 이름
-        **kwargs
-    ):
-        """
-        LLaDA Generation (기본 또는 Semi-AR 모드)
-
-        Args:
-            use_semi_ar: True이면 semi-autoregressive 모드 사용
-            task_name: Semi-AR 모드에서 format 결정에 사용
-            (나머지 인자는 기존과 동일)
-        """
-        # Semi-AR 모드 분기
-        if use_semi_ar and task_name is not None:
-            return self.generate_semi_ar(
-                graphs=graphs,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                is_mol_token=is_mol_token,
-                task_name=task_name,
-                max_length=max_length,
-                steps=steps,
-                temperature=temperature,
-                remasking_strategy=remasking_strategy,
-                **kwargs
-            )
-
-        # 기존 generation 로직
-        batch_size = input_ids.shape[0]
-        prompt_len = input_ids.shape[1]
-        gen_len = max_length
-
-        gen_tokens = torch.full((batch_size, gen_len), self.mask_token_id, device=self.device, dtype=torch.long)
-        full_ids = torch.cat([input_ids, gen_tokens], dim=1)
-
-        gen_mask = torch.ones((batch_size, gen_len), device=self.device, dtype=attention_mask.dtype)
-        full_attention_mask = torch.cat([attention_mask, gen_mask], dim=1)
-
-        if is_mol_token is not None:
-            is_mol_token_gen = torch.zeros((batch_size, gen_len), device=self.device, dtype=torch.bool)
-            full_is_mol_token = torch.cat([is_mol_token, is_mol_token_gen], dim=1)
-        else:
-            full_is_mol_token = None
-
-        mask_index = (full_ids[:, prompt_len:] == self.mask_token_id)
-        num_transfer_tokens = self.get_num_transfer_tokens(mask_index, steps)
-
-        for step in range(steps):
-            cur_mask_index = (full_ids == self.mask_token_id)
-
-            current_embeds = self.llm_embed_tokens(full_ids)
-
-            # 그래프 주입 (오버라이딩된 메서드 사용)
-            if graphs is not None:
-                current_embeds, _, _ = self.inject_graph_embeds2input_embeds(
-                    input_embeds=current_embeds,
-                    is_mol_token=full_is_mol_token,
-                    graphs=graphs
-                )
-
-            outputs = self.llm_model(
-                inputs_embeds=current_embeds,
-                attention_mask=full_attention_mask,
-                return_dict=True
-            )
-            logits = outputs.logits
-
-            logits_with_noise = self.add_gumbel_noise(logits, temperature)
-            x0_pred = torch.argmax(logits_with_noise, dim=-1)
-
-            if remasking_strategy == 'low_confidence':
-                p = F.softmax(logits, dim=-1)
-                x0_p = torch.squeeze(
-                    torch.gather(p, dim=-1, index=torch.unsqueeze(x0_pred, -1)), -1
-                )
-            elif remasking_strategy == 'random':
-                x0_p = torch.rand_like(logits[:, :, 0])
-            else:
-                raise NotImplementedError(f"Unknown remasking strategy: {remasking_strategy}")
-
-            x0_p[:, :prompt_len] = -np.inf
-            confidence = torch.where(cur_mask_index, x0_p, torch.tensor(-np.inf, device=self.device))
-
-            transfer_mask = torch.zeros_like(full_ids, dtype=torch.bool)
-
-            for b in range(batch_size):
-                k = num_transfer_tokens[b, step]
-                if k > 0:
-                    _, select_indices = torch.topk(confidence[b], k=k)
-                    transfer_mask[b, select_indices] = True
-
-            full_ids[transfer_mask] = x0_pred[transfer_mask]
-
-        generated_tokens = full_ids[:, prompt_len:]
-        generated_text = self.llm_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-
-        # [수정] attentions=None 추가하여 에러 방지
-        return AttrDict(
-            predictions=generated_text,
-            sequences=full_ids,
-            logits=logits,
-            attentions=None
-        )
+    # ==========================================================================
+    # [주석 처리] 중복된 generate 함수 - 1135줄의 generate가 모든 케이스를 커버함
+    # - remasking_strategy='none' → _generate_no_remask (기존 방식)
+    # - remasking_strategy='random'/'low_confidence' → _generate_with_remask (논문 Algorithm 4/5)
+    # 이 함수는 remasking 없이 한번 unmask된 토큰을 유지하는 방식 (논문과 다름)
+    # ==========================================================================
+    # @torch.no_grad()
+    # def generate(
+    #     self,
+    #     graphs,
+    #     input_ids,
+    #     attention_mask,
+    #     is_mol_token=None,
+    #     max_length=128,
+    #     steps=64,
+    #     temperature=0.0,
+    #     remasking_strategy='low_confidence',
+    #     use_semi_ar=False,  # Semi-AR 모드 활성화 플래그
+    #     task_name=None,     # Semi-AR용 task 이름
+    #     **kwargs
+    # ):
+    #     """
+    #     LLaDA Generation (기본 또는 Semi-AR 모드)
+    #
+    #     Args:
+    #         use_semi_ar: True이면 semi-autoregressive 모드 사용
+    #         task_name: Semi-AR 모드에서 format 결정에 사용
+    #         (나머지 인자는 기존과 동일)
+    #     """
+    #     # Semi-AR 모드 분기
+    #     if use_semi_ar and task_name is not None:
+    #         return self.generate_semi_ar(
+    #             graphs=graphs,
+    #             input_ids=input_ids,
+    #             attention_mask=attention_mask,
+    #             is_mol_token=is_mol_token,
+    #             task_name=task_name,
+    #             max_length=max_length,
+    #             steps=steps,
+    #             temperature=temperature,
+    #             remasking_strategy=remasking_strategy,
+    #             **kwargs
+    #         )
+    #
+    #     # 기존 generation 로직
+    #     batch_size = input_ids.shape[0]
+    #     prompt_len = input_ids.shape[1]
+    #     gen_len = max_length
+    #
+    #     gen_tokens = torch.full((batch_size, gen_len), self.mask_token_id, device=self.device, dtype=torch.long)
+    #     full_ids = torch.cat([input_ids, gen_tokens], dim=1)
+    #
+    #     gen_mask = torch.ones((batch_size, gen_len), device=self.device, dtype=attention_mask.dtype)
+    #     full_attention_mask = torch.cat([attention_mask, gen_mask], dim=1)
+    #
+    #     if is_mol_token is not None:
+    #         is_mol_token_gen = torch.zeros((batch_size, gen_len), device=self.device, dtype=torch.bool)
+    #         full_is_mol_token = torch.cat([is_mol_token, is_mol_token_gen], dim=1)
+    #     else:
+    #         full_is_mol_token = None
+    #
+    #     mask_index = (full_ids[:, prompt_len:] == self.mask_token_id)
+    #     num_transfer_tokens = self.get_num_transfer_tokens(mask_index, steps)
+    #
+    #     for step in range(steps):
+    #         cur_mask_index = (full_ids == self.mask_token_id)
+    #
+    #         current_embeds = self.llm_embed_tokens(full_ids)
+    #
+    #         # 그래프 주입 (오버라이딩된 메서드 사용)
+    #         if graphs is not None:
+    #             current_embeds, _, _ = self.inject_graph_embeds2input_embeds(
+    #                 input_embeds=current_embeds,
+    #                 is_mol_token=full_is_mol_token,
+    #                 graphs=graphs
+    #             )
+    #
+    #         outputs = self.llm_model(
+    #             inputs_embeds=current_embeds,
+    #             attention_mask=full_attention_mask,
+    #             return_dict=True
+    #         )
+    #         logits = outputs.logits
+    #
+    #         logits_with_noise = self.add_gumbel_noise(logits, temperature)
+    #         x0_pred = torch.argmax(logits_with_noise, dim=-1)
+    #
+    #         if remasking_strategy == 'low_confidence':
+    #             p = F.softmax(logits, dim=-1)
+    #             x0_p = torch.squeeze(
+    #                 torch.gather(p, dim=-1, index=torch.unsqueeze(x0_pred, -1)), -1
+    #             )
+    #         elif remasking_strategy == 'random':
+    #             x0_p = torch.rand_like(logits[:, :, 0])
+    #         else:
+    #             raise NotImplementedError(f"Unknown remasking strategy: {remasking_strategy}")
+    #
+    #         x0_p[:, :prompt_len] = -np.inf
+    #         confidence = torch.where(cur_mask_index, x0_p, torch.tensor(-np.inf, device=self.device))
+    #
+    #         transfer_mask = torch.zeros_like(full_ids, dtype=torch.bool)
+    #
+    #         for b in range(batch_size):
+    #             k = num_transfer_tokens[b, step]
+    #             if k > 0:
+    #                 _, select_indices = torch.topk(confidence[b], k=k)
+    #                 transfer_mask[b, select_indices] = True
+    #
+    #         full_ids[transfer_mask] = x0_pred[transfer_mask]
+    #
+    #     generated_tokens = full_ids[:, prompt_len:]
+    #     generated_text = self.llm_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+    #
+    #     # [수정] attentions=None 추가하여 에러 방지
+    #     return AttrDict(
+    #         predictions=generated_text,
+    #         sequences=full_ids,
+    #         logits=logits,
+    #         attentions=None
+    #     )
 
     # ==========================================================================
     # LLaDA Paper Eq. 6: Monte Carlo Likelihood Estimation

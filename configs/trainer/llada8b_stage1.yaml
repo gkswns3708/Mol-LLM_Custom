@@ -75,7 +75,7 @@ prompt: "[START_I_SMILES]{}[END_I_SMILES]"  # 분자 입력 프롬프트 템플�
 # [필수] 학습 설정
 # ============================================
 max_steps: -1                 # 최대 step 수 (-1: epoch 기반)
-max_epochs: 12                # 최대 epoch 수 (Stage 1: 12 | Stage 2/3: 10~30)
+max_epochs: 200                # 최대 epoch 수 (Stage 1: 12 | Stage 2/3: 10~30)
 every_n_epochs: 1             # N epoch마다 체크포인트 저장
 task: null                    # 특정 task만 학습 (null: 전체)
 num_beams: 1                  # Beam search 크기 (1: greedy | 3~5: beam search)
@@ -128,14 +128,20 @@ min_lr_ratio: 0.1             # Decay 종료 시 초기 LR의 10%까지 감소
 # | Head (orig)    | 2.5e-5       | 2.5e-6          |
 # | Head (new)     | 2.5e-4       | 2.5e-5          |
 # ============================================
-lr_lora:       0.00025        # 2.5e-4 (LoRA 파라미터)
-lr_embed_orig: 0.00025       # 2.5e-5 (기존 vocab embedding, idx < 128256)
-lr_embed_new:  0.0025        # 2.5e-4 (새 vocab embedding, idx >= 128256)
-lr_head_orig:  0.000025       # 2.5e-5 (기존 vocab lm_head/ff_out)
-lr_head_new:   0.00025        # 2.5e-4 (새 vocab lm_head/ff_out)
+# lr_lora:       0.000025        # 2.5e-5 (LoRA 파라미터)
+# lr_embed_orig: 0.000025        # 2.5e-5 (기존 vocab embedding, idx < 126349)
+# lr_embed_new:  0.000025        # 2.5e-5 (새 vocab embedding, idx >= 126349)
+# lr_head_orig:  0.000025        # 2.5e-5 (기존 vocab lm_head/ff_out)
+# lr_head_new:   0.000025        # 2.5e-5 (새 vocab lm_head/ff_out)
 
-# Original vocab size (LLaDA Llama-3 8B)
-original_vocab_size: 128256
+lr_lora:       0.00025        # 2.5e-4 (LoRA 파라미터)
+lr_embed_orig: 0.00025       # 2.5e-5 (기존 vocab embedding, idx < 126349)
+lr_embed_new:  0.025        # 2.5e-4 (새 vocab embedding, idx >= 126349)
+lr_head_orig:  0.00025       # 2.5e-5 (기존 vocab lm_head/ff_out)
+lr_head_new:   0.025        # 2.5e-4 (새 vocab lm_head/ff_out)
+
+# Original vocab size (LLaDA-8B len(tokenizer) before adding new tokens)
+original_vocab_size: 126349
 
 # ============================================
 # [필수] LLaDA 전용 설정
@@ -151,12 +157,12 @@ remasking_strategy: 'low_confidence'
 #   - 32: 기본값 (품질/속도 균형)
 #   - 64~128: 높은 품질 (느림)
 #   - seq_len: 최대 품질 (매우 느림)
-sampling_steps: 16
+sampling_steps: 256
 
 # Semi-Autoregressive 생성 모드
 # Format token을 먼저 생성한 후 content를 diffusion으로 채움
 use_semi_ar: false          # true: Semi-AR 활성화 | false: 전체 diffusion
-semi_ar_block_size: 8      # Semi-AR 블록 크기: 8 | 16 | 32
+semi_ar_block_size: 2      # Semi-AR 블록 크기: 8 | 16 | 32
 
 # Validation 시 사용할 generation 전략들 (비교 실험용)
 #   - "random": 전체 diffusion + random remasking
@@ -200,7 +206,7 @@ save_every_n_epochs: 1      # N epoch마다 저장: 0 (비활성화) | 1 | 5
 
 # Validation 설정
 val_check_interval: 1.0     # Epoch 내 validation 비율: 0.5 | 1.0 (epoch 끝), integer의 경우 step으로 지정됨
-check_val_every_n_epoch: 1    # N epoch마다 validation: 1 | 5 | 10
+check_val_every_n_epoch: 15    # N epoch마다 validation: 1 | 5 | 10
 test_on_trainset: false       # Train set에서도 테스트 수행
 limit_val_batches: 1.0     # Validation set 비율: 1.0 (전체) | 0.1 (10%) | 0.01 (1%), integer의 경우 batch 수로 지정됨
 
@@ -216,6 +222,26 @@ eval_modality_util: null    # "graph" | "text" | null (전체)
 log_weight_norm_layers: ["wte", "ff_out", "lora", 'blocks.0.attn_out']
 log_weight_norm_interval: 10   # N step마다 로깅: 50 | 100 | 500
 
+# 상위 빈도 SELFIES 토큰 norm 추적 (wandb: top_selfies/top5, top10, top15)
+# 빈도 분석 결과: [C] 38.98%, [O] 9.63%, [Branch1] 9.32%, [Ring1] 9.02%, [=C] 5.83%...
+# 전체 embed_new로 보면 변화가 작아 보이므로, 상위 토큰만 별도 추적
+top_selfies_tokens:
+  - '[C]'         # 1위: 38.98%
+  - '[O]'         # 2위: 9.63%
+  - '[Branch1]'   # 3위: 9.32%
+  - '[Ring1]'     # 4위: 9.02%
+  - '[=C]'        # 5위: 5.83%
+  - '[=Branch1]'  # 6위: 4.04%
+  - '[N]'         # 7위: 3.40%
+  - '[=O]'        # 8위: 2.76%
+  - '[C@H1]'      # 9위: 2.43%
+  - '[Ring2]'     # 10위: 2.38%
+  - '[C@@H1]'     # 11위: 2.01%
+  - '[Branch2]'   # 12위: 1.51%
+  - '[=N]'        # 13위: 1.29%
+  - '[#Branch1]'  # 14위: 1.19%
+  - '[/C]'        # 15위: 0.78%
+
 # ============================================
 # Debug Logging
 # ============================================
@@ -224,6 +250,21 @@ embedding_log_interval: 10     # N step마다 로깅: 100 | 500 | 1000
 log_model_init_details: true   # 모델 초기화 시 상세 로깅
 log_nan_details: true          # NaN/Inf 발생 시 상세 로깅
 nan_log_dir: './nan_logs'      # NaN 로그 저장 디렉토리
+
+# ============================================
+# Step-wise Denoising 로깅 (Inference 디버깅용)
+# ============================================
+# 활성화 시 generation 과정에서 매 step마다 토큰 상태를 파일로 저장
+# 저장 위치: {stepwise_log_dir}/sample_{counter}_{timestamp}.txt
+# 출력 형식: [Step N/총steps] t=X → s=Y | Unmasked: A/B (C%) | Masked: D (E%)
+# 각 토큰은 18자 고정 폭으로 정렬되어 저장됨
+log_stepwise_denoising: true       # true: 활성화 (디버깅용) | false: 비활성화 (기본)
+stepwise_log_dir: './stepwise_logs'  # Step-wise 로그 저장 디렉토리
+# stepwise_max_samples: 로깅할 최대 샘플 수 (전체 GPU 합산)
+#   - "4": 전체 4개 샘플 (GPU 4개면 각 GPU당 1개씩, 총 4개)
+#   - "10%": 전체 데이터셋의 10% 샘플 (GPU 수에 맞게 조정됨)
+#   - "0": 무제한 (모든 샘플 로깅, 주의: I/O 병목 발생 가능)
+stepwise_max_samples: '4'            # 기본값: 4개 샘플만 로깅
 
 # ============================================
 # [주의] 반드시 False로 설정

@@ -7,4 +7,5 @@ trainer.devices=${gpus} \
 filename=${file_name} \
 trainer=llada8b_stage1 \
 trainer.mol_representation=string_only \
-trainer.skip_sanity_check=true \
+wandb_id=3she8m78 \
+trainer.skip_sanity_check=false \

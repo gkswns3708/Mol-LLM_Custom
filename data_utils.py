@@ -372,7 +372,16 @@ class DataCollator(DataCollatorForSeq2Seq):
                         num_nodes_mol, prompt_text[i]
                     )
 
-        self.tokenizer.padding_side = "left"
+        # ========================================================================
+        # [LLaDA SFT] Right Padding 사용
+        #
+        # LLaDA 논문 구조: [Prompt] + [Response] + [EOS] [EOS] ... (Right Padding)
+        # - 프롬프트와 응답을 하나로 연결
+        # - 오른쪽에 EOS 토큰으로 패딩
+        # - 패딩 EOS도 response의 일부로 취급하여 학습
+        # ========================================================================
+        is_llada = hasattr(self.args, 'llm_model') and 'llada' in self.args.llm_model.lower()
+
         prompt_tokenized = self.tokenizer(
             prompt_text,
             truncation=True,
@@ -423,13 +432,46 @@ class DataCollator(DataCollatorForSeq2Seq):
             f_ids[: self.max_length] for f_ids in full_attention_mask
         ]
 
-        self.tokenizer.padding_side = "left"
-        features = self.tokenizer.pad(
-            {"input_ids": full_input_ids, "attention_mask": full_attention_mask},
-            padding=self.padding,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-            return_tensors=return_tensors,
-        )
+        # ========================================================================
+        # [LLaDA SFT] Right Padding으로 변경
+        #
+        # LLaDA 논문 구조: [Prompt] + [Response] + [EOS] [EOS] ... (Right Padding)
+        # 기존 Left Padding: [PAD] [PAD] ... [Prompt] [Response] [EOS]
+        #
+        # LLaDA 논문 Appendix B.1:
+        # "We append |EOS| tokens to the end of short pairs in each mini-batch
+        #  to ensure equal lengths across all data."
+        # → 모든 시퀀스를 max_length로 고정하고 EOS 토큰으로 패딩
+        # ========================================================================
+        if is_llada and self.train:
+            self.tokenizer.padding_side = "right"
+            # LLaDA: max_length로 고정 패딩
+            features = self.tokenizer.pad(
+                {"input_ids": full_input_ids, "attention_mask": full_attention_mask},
+                padding="max_length",
+                max_length=self.max_length,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                return_tensors=return_tensors,
+            )
+            # LLaDA: PAD 토큰을 EOS 토큰으로 교체
+            # 논문: "We treat |EOS| as a normal token during training"
+            eos_token_id = self.tokenizer.eos_token_id
+            pad_token_id = self.tokenizer.pad_token_id
+            if eos_token_id is not None and pad_token_id is not None:
+                features["input_ids"] = features["input_ids"].masked_fill(
+                    features["input_ids"] == pad_token_id,
+                    eos_token_id
+                )
+                # attention_mask는 모두 1로 설정 (EOS도 실제 토큰이므로 attend)
+                features["attention_mask"] = torch.ones_like(features["attention_mask"])
+        else:
+            self.tokenizer.padding_side = "left"
+            features = self.tokenizer.pad(
+                {"input_ids": full_input_ids, "attention_mask": full_attention_mask},
+                padding=self.padding,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                return_tensors=return_tensors,
+            )
 
         if not self.train:
             prompt_features = self.tokenizer.pad(
@@ -472,62 +514,59 @@ class DataCollator(DataCollatorForSeq2Seq):
 
             features["input_mol_strings"] = input_mol_strings_tokenized.input_ids
 
-        labels_ids = torch.full_like(features["input_ids"], self.tokenizer.pad_token_id)
-        for i, target in enumerate(target_tokenized["input_ids"]):
-            label = target
-            if prompt_length[i] >= self.max_length:
-                continue
-            else:
-                len_label = min(len(label), self.max_length - prompt_length[i])
-                labels_ids[i, -len_label:] = torch.tensor(
-                    label[:len_label], dtype=torch.int64
-                )
-
         # ========================================================================
-        # [LLaDA SFT] Padding EOS 토큰 처리
+        # [LLaDA SFT] Labels 생성 - Right Padding 지원
         #
         # LLaDA 논문 Appendix B.1:
         # "the padding |EOS| tokens are treated as part of the response,
         #  i.e., masked and included in the training objective."
         #
-        # LLaDA SFT에서는 padding EOS도 response의 일부로 취급하여 loss 계산에 포함
-        # → 모델이 응답 길이를 스스로 조절하도록 학습
+        # Right Padding 구조:
+        #   input_ids: [Prompt] [Response] [EOS] [PAD] [PAD] ...
+        #   labels:    [-100]   [Response] [EOS] [EOS] [EOS] ...
+        #              ↑ prompt 영역      ↑ response + padding EOS (loss 포함)
         #
-        # 주의: labels_ids는 pad_token_id로 초기화되어 있으므로:
-        # - prompt 부분: pad_token_id → -100으로 마스킹 필요 (loss 제외)
-        # - response 실제 토큰: 유지
-        # - response 끝 padding EOS: LLaDA에서는 유지, 다른 모델은 -100
-        #
-        # 따라서 prompt 영역(response 시작 전)만 -100으로 마스킹하고,
-        # response 영역의 padding은 LLaDA에서 유지
+        # Left Padding 구조 (기존, 비-LLaDA 모델용):
+        #   input_ids: [PAD] [PAD] ... [Prompt] [Response] [EOS]
+        #   labels:    [-100][-100]... [-100]   [Response] [EOS]
         # ========================================================================
-        is_llada = hasattr(self.args, 'llm_model') and 'llada' in self.args.llm_model.lower()
+        batch_size, seq_len = features["input_ids"].shape
+        labels_ids = torch.full_like(features["input_ids"], -100)  # -100으로 초기화
 
-        # 1. 먼저 prompt 영역(left padding)을 -100으로 마스킹
-        #    left padding이므로 각 샘플의 앞부분이 pad_token_id
-        #    response는 오른쪽 끝에 위치
-        batch_size, seq_len = labels_ids.shape
-        for i in range(batch_size):
-            # prompt 길이 = max_length - (실제 response 길이)
-            # labels_ids[i]에서 pad_token_id가 아닌 첫 번째 위치 찾기
-            non_pad_mask = (labels_ids[i] != self.tokenizer.pad_token_id)
-            if non_pad_mask.any():
-                first_non_pad_idx = non_pad_mask.nonzero(as_tuple=True)[0][0].item()
-                # prompt 영역(0 ~ first_non_pad_idx-1)을 -100으로 마스킹
-                labels_ids[i, :first_non_pad_idx] = -100
-            else:
-                # 전체가 pad_token_id인 경우 (response 없음)
-                labels_ids[i, :] = -100
-
-        # 2. Response 영역의 padding EOS 처리
         if is_llada and self.train:
-            # LLaDA SFT: response 끝의 padding EOS도 loss에 포함 (마스킹하지 않음)
-            pass
+            # ====================================================================
+            # LLaDA Right Padding: prompt_length 기준으로 labels 배치
+            # ====================================================================
+            eos_token_id = self.tokenizer.eos_token_id
+            for i, target in enumerate(target_tokenized["input_ids"]):
+                if prompt_length[i] >= self.max_length:
+                    continue
+
+                # prompt 바로 다음 위치부터 response 시작
+                start_idx = prompt_length[i]
+                len_label = min(len(target), self.max_length - prompt_length[i])
+
+                # response 토큰 배치
+                labels_ids[i, start_idx:start_idx + len_label] = torch.tensor(
+                    target[:len_label], dtype=torch.int64
+                )
+
+                # response 끝부터 시퀀스 끝까지 EOS로 채움 (loss 포함)
+                # LLaDA: padding EOS도 response의 일부로 취급
+                if eos_token_id is not None:
+                    labels_ids[i, start_idx + len_label:] = eos_token_id
         else:
-            # 다른 모델: response 영역의 남은 padding도 -100으로 마스킹
-            labels_ids = labels_ids.masked_fill(
-                labels_ids == self.tokenizer.pad_token_id, -100
-            )
+            # ====================================================================
+            # Left Padding (기존 방식): 오른쪽 끝에 labels 배치
+            # ====================================================================
+            for i, target in enumerate(target_tokenized["input_ids"]):
+                if prompt_length[i] >= self.max_length:
+                    continue
+                len_label = min(len(target), self.max_length - prompt_length[i])
+                labels_ids[i, -len_label:] = torch.tensor(
+                    target[:len_label], dtype=torch.int64
+                )
+
         features["labels"] = labels_ids
         if self.apply_molpo:
             molpo_labels_ids = labels_ids.clone()

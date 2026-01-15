@@ -185,6 +185,15 @@ class Blip2Stage3(pl.LightningModule):
         self._log_weight_norm_interval = getattr(args, 'log_weight_norm_interval', 100)
         self._weight_norm_param_cache = {}  # layer별 파라미터 캐싱
         self._initial_weight_norms = {}  # 초기 weight norm 저장 (변화량 추적)
+
+        # 상위 빈도 SELFIES 토큰 norm 추적 설정
+        self._top_selfies_tokens = getattr(args, 'top_selfies_tokens', [
+            '[C]', '[O]', '[Branch1]', '[Ring1]', '[=C]',
+            '[=Branch1]', '[N]', '[=O]', '[C@H1]', '[Ring2]',
+            '[C@@H1]', '[Branch2]', '[=N]', '[#Branch1]', '[/C]'
+        ])
+        self._top_selfies_token_ids = None  # 토큰 ID 캐싱 (첫 호출 시 초기화)
+        self._top_selfies_initial_norms = {}  # 초기 norm 저장
         if "galactica" in args.llm_model:
             blip2model = Blip2OPT
         elif "llama" in args.llm_model:
@@ -238,7 +247,7 @@ class Blip2Stage3(pl.LightningModule):
         lr_other = getattr(self.args, 'init_lr', lr_lora)  # 기타 파라미터는 lr_lora와 동일하게
 
         # Original vocab size (LLaDA Llama-3 8B 기준, args에서 오버라이드 가능)
-        original_vocab_size = getattr(self.args, 'original_vocab_size', 128256)
+        original_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
 
         # 파라미터 그룹 분류
         params_lora = []
@@ -1093,7 +1102,7 @@ class Blip2Stage3(pl.LightningModule):
         log = logging.getLogger(__name__)
 
         # original_vocab_size 가져오기
-        original_vocab_size = getattr(self.args, 'original_vocab_size', 128256)
+        original_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
 
         log.info("\n" + "=" * 70)
         log.info(f"[Batch {batch_idx}] Weight Norm Logging (5-group split)")
@@ -1114,10 +1123,13 @@ class Blip2Stage3(pl.LightningModule):
                 # 기존 방식 (전체 합산)
                 self._log_single_weight_norm(layer_name, params, batch_idx, log)
 
+        # 상위 빈도 SELFIES 토큰 norm 로깅
+        self._log_top_selfies_token_norms(batch_idx, log)
+
         log.info("=" * 70 + "\n")
 
     def _log_split_weight_norms(self, layer_name, params, original_vocab_size, is_embed, batch_idx, log):
-        """wte/ff_out을 orig/new vocab으로 분리하여 로깅"""
+        """wte/ff_out을 orig/new vocab으로 분리하여 로깅 (개별 토큰 norm의 평균 방식)"""
         prefix = "embed" if is_embed else "head"
 
         for name, param in params:
@@ -1149,48 +1161,65 @@ class Blip2Stage3(pl.LightningModule):
                 orig_grad = param.grad[..., :original_vocab_size] if param.grad is not None else None
                 new_grad = param.grad[..., original_vocab_size:] if param.grad is not None else None
 
-            # orig 로깅
-            orig_weight_norm = orig_weight.norm(2).item()
-            orig_grad_norm = orig_grad.norm(2).item() if orig_grad is not None else 0.0
+            # orig 로깅 (개별 토큰 norm의 평균)
+            # orig_weight: [num_orig_tokens, hidden_dim] 또는 [hidden_dim, num_orig_tokens]
+            if vocab_dim == 0:
+                orig_token_norms = orig_weight.norm(2, dim=1)  # 각 토큰별 L2 norm
+                orig_grad_token_norms = orig_grad.norm(2, dim=1) if orig_grad is not None else None
+            else:
+                orig_token_norms = orig_weight.norm(2, dim=0)  # [hidden_dim, vocab] → dim=0
+                orig_grad_token_norms = orig_grad.norm(2, dim=0) if orig_grad is not None else None
+
+            orig_avg_norm = orig_token_norms.mean().item()
+            orig_avg_grad_norm = orig_grad_token_norms.mean().item() if orig_grad_token_norms is not None else 0.0
             orig_key = f"{prefix}_orig"
 
             if orig_key not in self._initial_weight_norms:
-                self._initial_weight_norms[orig_key] = orig_weight_norm
+                self._initial_weight_norms[orig_key] = orig_avg_norm
             orig_init = self._initial_weight_norms[orig_key]
-            orig_change = orig_weight_norm - orig_init
+            orig_change = orig_avg_norm - orig_init
             orig_pct = (orig_change / orig_init * 100) if orig_init != 0 else 0
 
-            log.info(f"  [{orig_key}] size={orig_weight.shape}, "
-                     f"weight_norm={orig_weight_norm:.4f} (init={orig_init:.4f}, {orig_pct:+.2f}%), "
-                     f"grad_norm={orig_grad_norm:.6f}")
+            num_orig_tokens = orig_weight.shape[0] if vocab_dim == 0 else orig_weight.shape[-1]
+            log.info(f"  [{orig_key}] n_tokens={num_orig_tokens}, "
+                     f"avg_norm={orig_avg_norm:.4f} (init={orig_init:.4f}, {orig_pct:+.2f}%), "
+                     f"avg_grad_norm={orig_avg_grad_norm:.6f}")
 
-            self.log(f"weight_norm/{orig_key}/weight_norm", orig_weight_norm,
+            self.log(f"weight_norm/{orig_key}/avg_norm", orig_avg_norm,
                      batch_size=self.args.batch_size, sync_dist=False)
-            self.log(f"weight_norm/{orig_key}/grad_norm", orig_grad_norm,
+            self.log(f"weight_norm/{orig_key}/avg_grad_norm", orig_avg_grad_norm,
                      batch_size=self.args.batch_size, sync_dist=False)
-            self.log(f"weight_norm/{orig_key}/weight_norm_change_pct", orig_pct,
+            self.log(f"weight_norm/{orig_key}/avg_norm_change_pct", orig_pct,
                      batch_size=self.args.batch_size, sync_dist=False)
 
-            # new 로깅
-            new_weight_norm = new_weight.norm(2).item()
-            new_grad_norm = new_grad.norm(2).item() if new_grad is not None else 0.0
+            # new 로깅 (개별 토큰 norm의 평균)
+            if vocab_dim == 0:
+                new_token_norms = new_weight.norm(2, dim=1)
+                new_grad_token_norms = new_grad.norm(2, dim=1) if new_grad is not None else None
+            else:
+                new_token_norms = new_weight.norm(2, dim=0)
+                new_grad_token_norms = new_grad.norm(2, dim=0) if new_grad is not None else None
+
+            new_avg_norm = new_token_norms.mean().item()
+            new_avg_grad_norm = new_grad_token_norms.mean().item() if new_grad_token_norms is not None else 0.0
             new_key = f"{prefix}_new"
 
             if new_key not in self._initial_weight_norms:
-                self._initial_weight_norms[new_key] = new_weight_norm
+                self._initial_weight_norms[new_key] = new_avg_norm
             new_init = self._initial_weight_norms[new_key]
-            new_change = new_weight_norm - new_init
+            new_change = new_avg_norm - new_init
             new_pct = (new_change / new_init * 100) if new_init != 0 else 0
 
-            log.info(f"  [{new_key}] size={new_weight.shape}, "
-                     f"weight_norm={new_weight_norm:.4f} (init={new_init:.4f}, {new_pct:+.2f}%), "
-                     f"grad_norm={new_grad_norm:.6f}")
+            num_new_tokens = new_weight.shape[0] if vocab_dim == 0 else new_weight.shape[-1]
+            log.info(f"  [{new_key}] n_tokens={num_new_tokens}, "
+                     f"avg_norm={new_avg_norm:.4f} (init={new_init:.4f}, {new_pct:+.2f}%), "
+                     f"avg_grad_norm={new_avg_grad_norm:.6f}")
 
-            self.log(f"weight_norm/{new_key}/weight_norm", new_weight_norm,
+            self.log(f"weight_norm/{new_key}/avg_norm", new_avg_norm,
                      batch_size=self.args.batch_size, sync_dist=False)
-            self.log(f"weight_norm/{new_key}/grad_norm", new_grad_norm,
+            self.log(f"weight_norm/{new_key}/avg_grad_norm", new_avg_grad_norm,
                      batch_size=self.args.batch_size, sync_dist=False)
-            self.log(f"weight_norm/{new_key}/weight_norm_change_pct", new_pct,
+            self.log(f"weight_norm/{new_key}/avg_norm_change_pct", new_pct,
                      batch_size=self.args.batch_size, sync_dist=False)
 
     def _log_single_weight_norm(self, layer_name, params, batch_idx, log):
@@ -1243,6 +1272,199 @@ class Blip2Stage3(pl.LightningModule):
                  batch_size=self.args.batch_size, sync_dist=False)
         self.log(f"weight_norm/{layer_name}/weight_norm_change_pct", pct_change,
                  batch_size=self.args.batch_size, sync_dist=False)
+
+    def _log_top_selfies_token_norms(self, batch_idx, log):
+        """
+        상위 빈도 SELFIES 토큰들의 Embedding/LM Head weight norm 추적
+
+        wandb에 Top5/Top10/Top15/Total 그룹별 평균 norm과 변화율 로깅
+        - top5/top10/top15: 상위 빈도 SELFIES 토큰
+        - total: 전체 새 토큰 (idx >= original_vocab_size)
+        """
+        if not self._top_selfies_tokens:
+            return
+
+        # 첫 호출 시 토큰 ID 캐싱
+        if self._top_selfies_token_ids is None:
+            self._initialize_top_selfies_token_ids()
+            if self._top_selfies_token_ids is None:
+                return
+
+        # Embedding, LM Head 파라미터 찾기
+        embed_param = None
+        head_param = None
+
+        for layer_name, params in self._weight_norm_param_cache.items():
+            if 'wte' in layer_name.lower() or 'embed_tokens' in layer_name.lower():
+                for name, param in params:
+                    if param.requires_grad and param.dim() >= 2:
+                        embed_param = param
+                        break
+            elif 'ff_out' in layer_name.lower() or 'lm_head' in layer_name.lower():
+                for name, param in params:
+                    if param.requires_grad and param.dim() >= 2:
+                        head_param = param
+                        break
+
+        if embed_param is None and head_param is None:
+            return
+
+        log.info("-" * 50)
+        log.info("[Top SELFIES Token Norm Tracking]")
+
+        # original_vocab_size 가져오기
+        original_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
+
+        # 전체 새 토큰 ID 리스트 생성 (idx >= original_vocab_size)
+        if embed_param is not None:
+            vocab_size = embed_param.shape[0]
+            total_new_token_ids = list(range(original_vocab_size, vocab_size))
+        elif head_param is not None:
+            is_vocab_first = head_param.shape[0] > head_param.shape[-1]
+            vocab_size = head_param.shape[0] if is_vocab_first else head_param.shape[-1]
+            total_new_token_ids = list(range(original_vocab_size, vocab_size))
+        else:
+            total_new_token_ids = []
+
+        # 그룹별 토큰 인덱스 (top5, top10, top15, total)
+        groups = {
+            'top5': self._top_selfies_token_ids[:5],
+            'top10': self._top_selfies_token_ids[:10],
+            'top15': self._top_selfies_token_ids[:15],
+            'total': total_new_token_ids  # 전체 새 토큰 (idx >= original_vocab_size)
+        }
+
+        for group_name, token_ids in groups.items():
+            valid_ids = [tid for tid in token_ids if tid is not None]
+            if not valid_ids:
+                continue
+
+            # Embedding norm 계산
+            if embed_param is not None:
+                embed_norms = self._compute_token_norms(embed_param, valid_ids, is_vocab_first=True)
+                if embed_norms:
+                    avg_embed_norm = sum(embed_norms) / len(embed_norms)
+                    key = f"embed_{group_name}"
+
+                    if key not in self._top_selfies_initial_norms:
+                        self._top_selfies_initial_norms[key] = avg_embed_norm
+                    init_norm = self._top_selfies_initial_norms[key]
+                    pct_change = ((avg_embed_norm - init_norm) / init_norm * 100) if init_norm != 0 else 0
+
+                    log.info(f"  Embed {group_name}: avg_norm={avg_embed_norm:.4f} "
+                             f"(init={init_norm:.4f}, {pct_change:+.2f}%)")
+
+                    self.log(f"top_selfies/{group_name}/embed_norm", avg_embed_norm,
+                             batch_size=self.args.batch_size, sync_dist=False)
+                    self.log(f"top_selfies/{group_name}/embed_change_pct", pct_change,
+                             batch_size=self.args.batch_size, sync_dist=False)
+
+            # LM Head norm 계산
+            if head_param is not None:
+                # LM Head는 [hidden_dim, vocab_size] 형태일 수 있음
+                is_vocab_first = head_param.shape[0] > head_param.shape[-1]
+                head_norms = self._compute_token_norms(head_param, valid_ids, is_vocab_first=is_vocab_first)
+                if head_norms:
+                    avg_head_norm = sum(head_norms) / len(head_norms)
+                    key = f"head_{group_name}"
+
+                    if key not in self._top_selfies_initial_norms:
+                        self._top_selfies_initial_norms[key] = avg_head_norm
+                    init_norm = self._top_selfies_initial_norms[key]
+                    pct_change = ((avg_head_norm - init_norm) / init_norm * 100) if init_norm != 0 else 0
+
+                    log.info(f"  Head  {group_name}: avg_norm={avg_head_norm:.4f} "
+                             f"(init={init_norm:.4f}, {pct_change:+.2f}%)")
+
+                    self.log(f"top_selfies/{group_name}/head_norm", avg_head_norm,
+                             batch_size=self.args.batch_size, sync_dist=False)
+                    self.log(f"top_selfies/{group_name}/head_change_pct", pct_change,
+                             batch_size=self.args.batch_size, sync_dist=False)
+
+            # Gradient norm (학습 진행 상태 확인용)
+            if embed_param is not None and embed_param.grad is not None:
+                embed_grad_norms = self._compute_token_norms(embed_param.grad, valid_ids, is_vocab_first=True)
+                if embed_grad_norms:
+                    avg_grad_norm = sum(embed_grad_norms) / len(embed_grad_norms)
+                    self.log(f"top_selfies/{group_name}/embed_grad_norm", avg_grad_norm,
+                             batch_size=self.args.batch_size, sync_dist=False)
+
+            if head_param is not None and head_param.grad is not None:
+                is_vocab_first = head_param.shape[0] > head_param.shape[-1]
+                head_grad_norms = self._compute_token_norms(head_param.grad, valid_ids, is_vocab_first=is_vocab_first)
+                if head_grad_norms:
+                    avg_head_grad_norm = sum(head_grad_norms) / len(head_grad_norms)
+                    self.log(f"top_selfies/{group_name}/head_grad_norm", avg_head_grad_norm,
+                             batch_size=self.args.batch_size, sync_dist=False)
+
+    def _initialize_top_selfies_token_ids(self):
+        """상위 SELFIES 토큰의 ID를 토크나이저에서 조회하여 캐싱"""
+        import logging
+        log = logging.getLogger(__name__)
+
+        # LLaDA의 경우 llm_tokenizer에 SELFIES 토큰이 추가됨
+        tokenizer = None
+        if hasattr(self, 'blip2model') and hasattr(self.blip2model, 'llm_tokenizer'):
+            tokenizer = self.blip2model.llm_tokenizer
+        elif hasattr(self, 'tokenizer') and self.tokenizer is not None:
+            tokenizer = self.tokenizer
+
+        if tokenizer is None:
+            log.warning("[Top SELFIES] Tokenizer not available")
+            if self.debug:
+                print("[Top SELFIES] WARNING: Tokenizer not available")
+            return
+
+        self._top_selfies_token_ids = []
+        log.info("[Top SELFIES Token ID Mapping]")
+        if self.debug:
+            print("\n[Top SELFIES Token ID Mapping]")
+
+        for token in self._top_selfies_tokens:
+            try:
+                token_id = tokenizer.convert_tokens_to_ids(token)
+                # UNK 토큰이면 None으로 설정
+                if token_id == tokenizer.unk_token_id:
+                    log.warning(f"  {token}: UNK (not found)")
+                    if self.debug:
+                        print(f"  {token}: UNK (not found)")
+                    self._top_selfies_token_ids.append(None)
+                else:
+                    log.info(f"  {token}: {token_id}")
+                    if self.debug:
+                        print(f"  {token}: {token_id}")
+                    self._top_selfies_token_ids.append(token_id)
+            except Exception as e:
+                log.warning(f"  {token}: Error - {e}")
+                if self.debug:
+                    print(f"  {token}: Error - {e}")
+                self._top_selfies_token_ids.append(None)
+
+        # 유효한 토큰 ID 개수 확인
+        valid_count = sum(1 for tid in self._top_selfies_token_ids if tid is not None)
+        log.info(f"[Top SELFIES] Initialized {valid_count}/{len(self._top_selfies_tokens)} token IDs")
+        if self.debug:
+            print(f"[Top SELFIES] Initialized {valid_count}/{len(self._top_selfies_tokens)} token IDs\n")
+
+    def _compute_token_norms(self, param, token_ids, is_vocab_first=True):
+        """특정 토큰들의 weight norm 계산"""
+        norms = []
+        vocab_size = param.shape[0] if is_vocab_first else param.shape[-1]
+
+        for tid in token_ids:
+            if tid is None or tid >= vocab_size:
+                continue
+
+            if is_vocab_first:
+                # [vocab_size, hidden_dim] 형태
+                token_weight = param.data[tid]
+            else:
+                # [hidden_dim, vocab_size] 형태
+                token_weight = param.data[..., tid]
+
+            norms.append(token_weight.norm(2).item())
+
+        return norms
 
     def _log_sample_predictions(self, batch, outputs, tasks, batch_idx, mode="train",
                                  num_samples=2, predictions=None, targets=None, prompts=None, generated_ids=None):
@@ -1997,6 +2219,15 @@ class Blip2Stage3(pl.LightningModule):
                 gen_is_mol_token = is_mol_token[gen_indices] if is_mol_token is not None else None
                 gen_gen_labels = batch.gen_labels[gen_indices]
 
+                # Step-wise 로깅용 target_label, input_text 계산 (첫 번째 샘플만)
+                _log_target_ids = torch.where(
+                    gen_gen_labels[0:1] == -100,
+                    self.blip2model.llm_tokenizer.pad_token_id,
+                    gen_gen_labels[0:1],
+                )
+                _log_target_label = self.blip2model.llm_tokenizer.decode(_log_target_ids[0]).replace(self.blip2model.llm_tokenizer.pad_token, "").strip()
+                _log_input_text = self.blip2model.llm_tokenizer.decode(gen_prompt_input_ids[0], skip_special_tokens=False).replace(self.blip2model.llm_tokenizer.pad_token, "").strip()
+
                 # 각 전략별 Generation 수행
                 for strategy in self.active_val_strategies:
                     gen_kwargs = {
@@ -2005,6 +2236,14 @@ class Blip2Stage3(pl.LightningModule):
                         "attention_mask": gen_prompt_attention_mask,
                         "is_mol_token": gen_is_mol_token,
                         "max_length": self.gen_max_len,
+                        "target_label": _log_target_label,
+                        "input_text": _log_input_text,
+                        "num_gpus": self.trainer.world_size,
+                        "total_dataset_size": len(self.trainer.val_dataloaders.dataset) if hasattr(self.trainer, 'val_dataloaders') and self.trainer.val_dataloaders else None,
+                        "global_rank": self.trainer.global_rank,  # GPU rank 0에서만 step-wise 로깅
+                        "mode": mode,  # val/test mode 전달 (step-wise 로깅 디렉토리 분리용)
+                        "strategy": strategy,  # step-wise 로깅 전략별 독립 카운터용
+                        "global_step": self.trainer.global_step,  # 학습 global step (로그 파일명용)
                     }
 
                     # LLaDA 전용 옵션
@@ -2150,6 +2389,19 @@ class Blip2Stage3(pl.LightningModule):
         if not skip_generation_loop:
             strategy_outputs = {}
 
+        # Step-wise 로깅용 target_label, input_text 계산 (첫 번째 샘플만)
+        if not skip_generation_loop and batch.gen_labels is not None and len(batch.gen_labels) > 0:
+            _log_target_ids_2 = torch.where(
+                batch.gen_labels[0:1] == -100,
+                self.blip2model.llm_tokenizer.pad_token_id,
+                batch.gen_labels[0:1],
+            )
+            _log_target_label_2 = self.blip2model.llm_tokenizer.decode(_log_target_ids_2[0]).replace(self.blip2model.llm_tokenizer.pad_token, "").strip()
+            _log_input_text_2 = self.blip2model.llm_tokenizer.decode(batch.prompt_input_ids[0], skip_special_tokens=False).replace(self.blip2model.llm_tokenizer.pad_token, "").strip()
+        else:
+            _log_target_label_2 = None
+            _log_input_text_2 = None
+
         for strategy in self.active_val_strategies if not skip_generation_loop else []:
             gen_kwargs = {
                 "graphs": (graphs, additional_graphs),
@@ -2157,6 +2409,14 @@ class Blip2Stage3(pl.LightningModule):
                 "attention_mask": batch.prompt_attention_mask,
                 "is_mol_token": is_mol_token,
                 "max_length": self.gen_max_len,
+                "target_label": _log_target_label_2,
+                "input_text": _log_input_text_2,
+                "num_gpus": self.trainer.world_size,
+                "total_dataset_size": len(self.trainer.val_dataloaders.dataset) if hasattr(self.trainer, 'val_dataloaders') and self.trainer.val_dataloaders else None,
+                "global_rank": self.trainer.global_rank,  # GPU rank 0에서만 step-wise 로깅
+                "mode": mode,  # val/test mode 전달 (step-wise 로깅 디렉토리 분리용)
+                "strategy": strategy,  # step-wise 로깅 전략별 독립 카운터용
+                "global_step": self.trainer.global_step,  # 학습 global step (로그 파일명용)
             }
 
             if is_llada:
@@ -2909,7 +3169,7 @@ class Blip2Stage3(pl.LightningModule):
                 tokenizer=self.blip2model.llm_tokenizer,
                 total_task_subtask_pairs=self.task_subtask_name_pairs,
             )
-
+            
             all_strategy_results[strategy] = {
                 "evaluation_results": evaluation_results,
                 "failed_cases": failed_cases,
@@ -3603,7 +3863,7 @@ class Blip2Stage3(pl.LightningModule):
         - grad_norm/head_orig: 기존 vocab head (idx < original_vocab_size)
         - grad_norm/head_new: 새 vocab head (idx >= original_vocab_size)
         """
-        original_vocab_size = getattr(self.args, 'original_vocab_size', 128256)
+        original_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
 
         grad_norms = {
             'lora': 0.0,
