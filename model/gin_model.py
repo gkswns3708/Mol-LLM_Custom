@@ -533,8 +533,9 @@ class GNN_graphpred(torch.nn.Module):
     def from_pretrained(self, model_file):
         # self.gnn = GNN(self.num_layer, self.emb_dim, JK = self.JK, drop_ratio = self.drop_ratio)
         missing_keys, unexpected_keys = self.gnn.load_state_dict(torch.load(model_file))
-        print(missing_keys)
-        print(unexpected_keys)
+        # Debug output disabled - uncomment if needed
+        # print(missing_keys)
+        # print(unexpected_keys)
 
     def forward(self, *argv):
         if len(argv) == 4:

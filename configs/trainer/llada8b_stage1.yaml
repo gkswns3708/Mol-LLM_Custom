@@ -1,84 +1,272 @@
 # ============================================
+# LLaDA 8B Stage 1 Configuration
+# Text-only LLM Fine-tuning (LoRA)
+# ============================================
+
+# ============================================
+# [필수] Global Options
+# ============================================
+debug: true                 # true: 디버그 출력 활성화 | false: 비활성화
+
+# ============================================
 # [필수] Stage 식별자
 # ============================================
-llava_pretraining: 0        # ❌ Q-Former 학습 비활성화
-train_molpo: false          # ❌ MolPO 비활성화
-second_stage_start_epoch: 0 # Stage 내 전환 없음
+# Stage 1: Text-only LLM 학습 (Q-Former 없이)
+# Stage 2: Q-Former + LLM 학습
+# Stage 3: Full multi-modal 학습
+llava_pretraining: 0          # 0: Q-Former 학습 비활성화 | 1: 활성화
+train_molpo: false            # MolPO 학습 (DPO 스타일) | true/false
+eval_molpo: false             # MolPO 평가 모드 | true/false
+second_stage_start_epoch: 0   # Stage 전환 시작 epoch (0 = 전환 없음)
+
+# ============================================
+# [필수] Hardware 설정
+# ============================================
+strategy_name: null           # null: auto | "ddp" | "fsdp" | "deepspeed_stage_2"
+accelerator: gpu              # "gpu" | "cpu" | "tpu"
+devices: "0,1,2,3"            # 사용할 GPU 인덱스 (예: "0,1,2,3" 또는 4)
+precision: bf16-mixed         # "bf16-mixed" (권장) | "16-mixed" | "32"
+num_workers: 0                # DataLoader workers (0: main process에서 로드)
+find_unused_parameters: true  # DDP unused param 체크 (modules_to_save 사용 시 필수)
 
 # ============================================
 # [필수] 모델 아키텍처
 # ============================================
-llm_model: "GSAI-ML/LLaDA-8B-Instruct"
-tune_llm: lora                   # ✅ LoRA 학습
-tune_gnn: false                  # ❌ GNN 없음 (Text-only)
-mol_representation: string_only  # ✅ SMILES/SELFIES만 사용
+llm_model: "GSAI-ML/LLaDA-8B-Instruct"  # LLaDA-8B-Base | LLaDA-8B-Instruct
+tune_llm: lora                # "lora": LoRA 학습 | "full": Full FT | "freeze": 동결
+tune_gnn: false               # GNN 학습 여부 (Stage 1에서는 false)
+mol_representation: string_only  # "string_only": SMILES/SELFIES | "graph_only" | "both"
+load_in_8bit: false           # 8bit 양자화 로드 (메모리 절약, 성능 약간 감소)
 
 # ============================================
 # [필수] LoRA 설정
 # ============================================
-peft_config: "/home/jovyan/CHJ/Mol-LLM_Custom/lora_config_llada.json"
-peft_dir: ""                # 처음부터 학습
-lora_r: 16                  # JSON과 일치시켜야 함
-lora_alpha: 32
-lora_dropout: 0.05
+# LoRA rank (r): 모델 표현력 vs 메모리 트레이드오프
+#   - 8: 최소 (빠른 실험용)
+#   - 16: 기본값 (대부분의 경우 충분)
+#   - 32~64: 높은 표현력 (복잡한 task)
+#   - 128: 최대 (Full FT에 근접)
+# LoRA alpha: 보통 r의 2배 권장 (alpha/r = scaling factor)
+peft_config: "Mol-LLM_Custom/lora_config_llada.json"  # LoRA config JSON 경로
+peft_dir: ""                  # 기존 LoRA 체크포인트 경로 (빈 문자열 = 처음부터 학습)
+lora_r: 16                    # LoRA rank: 8 | 16 | 32 | 64 | 128
+lora_alpha: 32                # LoRA alpha: 보통 r*2 (16 | 32 | 64 | 128)
+lora_dropout: 0.05            # LoRA dropout: 0.0 | 0.05 | 0.1
 
 # ============================================
 # [필수] Projector (Stage 1에서는 미사용)
 # ============================================
-projector_type: qformer     # 초기화만 되고 학습 안 됨
-num_query_token: 32
-bert_name: scibert
-cross_attention_freq: 2
-bert_num_hidden_layers: 5
+# Stage 2/3에서 Graph → LLM 연결에 사용
+projector_type: qformer       # "qformer" | "linear" | "mlp"
+num_query_token: 32           # Q-Former query 토큰 수: 8 | 16 | 32 | 64
+bert_name: scibert            # "scibert" | "bert-base-uncased"
+bert_hidden_dim: 768          # BERT hidden dimension (scibert: 768)
+cross_attention_freq: 2       # Cross-attention 빈도: 1 | 2 | 4
+bert_num_hidden_layers: 5     # Q-Former layer 수: 3 | 5 | 8
 
 # ============================================
 # [필수] 토크나이저
 # ============================================
-add_selfies_tokens: true
-selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt
+add_selfies_tokens: true    # SELFIES 특수 토큰 추가 여부
+selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt  # SELFIES 토큰 사전 경로
+prompt: "[START_I_SMILES]{}[END_I_SMILES]"  # 분자 입력 프롬프트 템플릿
 
 # ============================================
 # [필수] 학습 설정
 # ============================================
-max_epochs: 3               # Stage 1은 짧게 (3-5 epoch)
-batch_size: 4
-total_batch_size: 512       # = batch_size * devices * accumulate
-accumulate_grad_batches: 16 # 512/(4*8) = 16
+max_steps: -1                 # 최대 step 수 (-1: epoch 기반)
+max_epochs: 200                # 최대 epoch 수 (Stage 1: 12 | Stage 2/3: 10~30)
+every_n_epochs: 1             # N epoch마다 체크포인트 저장
+task: null                    # 특정 task만 학습 (null: 전체)
+num_beams: 1                  # Beam search 크기 (1: greedy | 3~5: beam search)
+skip_sanity_check: true       # Sanity validation 스킵 (true 권장)
+num_sanity_val_steps: 0       # Sanity check step 수 (0: 스킵)
 
-# Optimizer
-optimizer: adamw
-init_lr: 0.0001             # Stage 1은 높은 LR
-min_lr: 0.00001
-warmup_steps: 100
+# Batch Size 설정
+# effective_batch_size = batch_size * num_devices * accumulate_grad_batches
+# 예: 4 * 8 * 16 = 512
+batch_size: 4                 # GPU당 batch size: 2 | 4 | 8 (VRAM에 따라)
+total_batch_size: 256         # 목표 effective batch size: 256 | 512 | 1024
+accumulate_grad_batches: 8    # Gradient 누적: total / (batch * devices)
+
+# ============================================
+# Optimizer 및 Learning Rate 설정
+# ============================================
+# 실제 학습되는 파라미터는 5개 그룹뿐:
+#   1. LoRA
+#   2. Embedding (기존 vocab)
+#   3. Embedding (새 vocab)
+#   4. LM Head (기존 vocab)
+#   5. LM Head (새 vocab)
+# ============================================
+optimizer: adamw              # "adamw" (권장) | "adam" | "sgd"
+weight_decay: 0.1             # Weight decay: 0.01 | 0.05 | 0.1
+gradient_clip_val: 1.0        # Gradient clipping: 0.5 | 1.0 | 2.0
+log_every_n_steps: 10         # 로깅 빈도: 10 | 50 | 100
+
+# WSD Scheduler 설정
 scheduler: warmup_stable_decay_lr
-weight_decay: 0.05
-gradient_clip_val: 1.0
+warmup_steps: 100             # Warmup step 수
+warmup_lr: 0.0                # Warmup 시작 (0: 0에서 시작)
+decay_ratio: 0.1              # 마지막 10%에서 decay (min_lr_ratio까지)
+min_lr_ratio: 0.1             # Decay 종료 시 초기 LR의 10%까지 감소
+
+# [Legacy] 하위 호환성용 - 실제로는 각 그룹 LR이 사용됨
+# init_lr: 0.00025              # 기준값 (lr_lora와 동일하게 설정)
+# min_lr: 0.000025              # init_lr × min_lr_ratio
+
+# ============================================
+# 파라미터 그룹별 Learning Rate
+# ============================================
+# 각 그룹은 독립적인 LR로 학습되며, WSD scheduler가 비율을 유지하며 decay
+#
+# | 그룹           | 초기 LR      | Decay 후 (×0.1) |
+# |----------------|--------------|-----------------|
+# | LoRA           | 2.5e-4       | 2.5e-5          |
+# | Embed (orig)   | 2.5e-5       | 2.5e-6          |
+# | Embed (new)    | 2.5e-4       | 2.5e-5          |
+# | Head (orig)    | 2.5e-5       | 2.5e-6          |
+# | Head (new)     | 2.5e-4       | 2.5e-5          |
+# ============================================
+# lr_lora:       0.000025        # 2.5e-5 (LoRA 파라미터)
+# lr_embed_orig: 0.000025        # 2.5e-5 (기존 vocab embedding, idx < 126349)
+# lr_embed_new:  0.000025        # 2.5e-5 (새 vocab embedding, idx >= 126349)
+# lr_head_orig:  0.000025        # 2.5e-5 (기존 vocab lm_head/ff_out)
+# lr_head_new:   0.000025        # 2.5e-5 (새 vocab lm_head/ff_out)
+
+lr_lora:       0.00025        # 2.5e-4 (LoRA 파라미터)
+lr_embed_orig: 0.00025       # 2.5e-5 (기존 vocab embedding, idx < 126349)
+lr_embed_new:  0.025        # 2.5e-4 (새 vocab embedding, idx >= 126349)
+lr_head_orig:  0.00025       # 2.5e-5 (기존 vocab lm_head/ff_out)
+lr_head_new:   0.025        # 2.5e-4 (새 vocab lm_head/ff_out)
+
+# Original vocab size (LLaDA-8B len(tokenizer) before adding new tokens)
+original_vocab_size: 126349
 
 # ============================================
 # [필수] LLaDA 전용 설정
 # ============================================
-remasking_strategy: 'random'     # low_confidence or random
-sampling_steps: 16               # Generation 시 diffusion steps
+# Remasking Strategy (Generation 시 사용)
+#   - 'low_confidence': Algorithm 5 - 낮은 confidence 토큰을 다시 mask (LLaDA 논문 권장)
+#   - 'random': Algorithm 4 - 랜덤하게 다시 mask
+#   - 'none': Remasking 없이 매 step마다 top-k 토큰만 unmask
+remasking_strategy: 'low_confidence'
+
+# Sampling Steps: Generation 시 diffusion step 수
+#   - 8~16: 빠른 추론 (품질 약간 감소)
+#   - 32: 기본값 (품질/속도 균형)
+#   - 64~128: 높은 품질 (느림)
+#   - seq_len: 최대 품질 (매우 느림)
+sampling_steps: 256
+
+# Semi-Autoregressive 생성 모드
+# Format token을 먼저 생성한 후 content를 diffusion으로 채움
+use_semi_ar: false          # true: Semi-AR 활성화 | false: 전체 diffusion
+semi_ar_block_size: 2      # Semi-AR 블록 크기: 8 | 16 | 32
+
+# Validation 시 사용할 generation 전략들 (비교 실험용)
+#   - "random": 전체 diffusion + random remasking
+#   - "semi_ar": Semi-AR + random remasking
+#   - "low_confidence": 전체 diffusion + low_confidence remasking
+#   - "semi_ar_low_confidence": Semi-AR + low_confidence remasking
+val_strategies: ["random", "semi_ar"]
 
 # ============================================
 # [필수] 데이터
 # ============================================
-# defaults:
-#   - data: multi_task_stage1  # SMILES/SELFIES 기반 Task
-max_length: 512
-inference_max_length: 512
-gen_max_len: 256
-min_len: 8
+truncation: 1               # Truncation 활성화: 0 | 1
+padding: max_length         # "max_length" | "longest"
+max_length: 512             # 최대 시퀀스 길이: 256 | 512 | 1024 | 2048
+inference_max_length: 512   # 추론 시 최대 길이 (보통 max_length와 동일)
+gen_max_len: 256            # 생성 최대 길이: 128 | 256 | 512
+min_len: 8                  # 생성 최소 길이: 1 | 8 | 16
+inference_batch_size: 11    # 추론 batch size (VRAM에 따라 조정)
+
+# Sequence Packing (긴 시퀀스 효율화)
+apply_sequence_packing: false  # true: 짧은 시퀀스들을 하나로 묶음
+max_packing_size: -1        # 최대 packing 크기 (-1: 자동)
+
+# Data Augmentation (분자 표현 다양화)
+selfies_enumeration: false  # SELFIES 랜덤 순서 변환
+isomericSmiles: false       # 입체화학 정보 포함
+canonical: false            # Canonical SMILES 사용
+allHsExplicit: false        # 모든 수소 명시적 표현
 
 # ============================================
-# [필수] 로깅
+# [필수] 로깅 및 체크포인트
 # ============================================
-logging_dir: /home/jovyan/CHJ/checkpoint/LLaDA_Stage1
-filename: llada_stage1_text_only
-save_on_n_steps: 500
-val_check_interval: 0.5     # 0.5 epoch마다 validation
+logging_dir: Mol-LLM_Custom/checkpoint/LLaDA_Stage1  # 체크포인트 저장 디렉토리
+filename: llada_stage1_text_only      # 체크포인트 파일명 prefix
+
+# Checkpoint 저장 설정
+save_on_n_steps: 500        # N step마다 저장: 0 (비활성화) | 100 | 500 | 1000
+save_top_k_checkpoints: -1  # 유지할 step 체크포인트 수: -1 (전체) | 3 | 5
+save_top_k_best: 3          # 유지할 best 모델 수: 1 | 3 | 5
+save_every_n_epochs: 1      # N epoch마다 저장: 0 (비활성화) | 1 | 5
+
+# Validation 설정
+val_check_interval: 1.0     # Epoch 내 validation 비율: 0.5 | 1.0 (epoch 끝), integer의 경우 step으로 지정됨
+check_val_every_n_epoch: 15    # N epoch마다 validation: 1 | 5 | 10
+test_on_trainset: false       # Train set에서도 테스트 수행
+limit_val_batches: 1.0     # Validation set 비율: 1.0 (전체) | 0.1 (10%) | 0.01 (1%), integer의 경우 batch 수로 지정됨
+
+# Multimodal 설정 (Stage 1에서는 미사용)
+eval_modality_util: null    # "graph" | "text" | null (전체)
+
+# ============================================
+# Weight Norm Logging (학습 모니터링)
+# ============================================
+# 로깅할 layer 이름 목록
+# LLaDA: wte (embedding), ff_out (lm_head), lora
+# 기타 모델: embed_tokens, lm_head, graph_encoder, opt_proj, ln_graph
+log_weight_norm_layers: ["wte", "ff_out", "lora", 'blocks.0.attn_out']
+log_weight_norm_interval: 10   # N step마다 로깅: 50 | 100 | 500
+
+# 상위 빈도 SELFIES 토큰 norm 추적 (wandb: top_selfies/top5, top10, top15)
+# 빈도 분석 결과: [C] 38.98%, [O] 9.63%, [Branch1] 9.32%, [Ring1] 9.02%, [=C] 5.83%...
+# 전체 embed_new로 보면 변화가 작아 보이므로, 상위 토큰만 별도 추적
+top_selfies_tokens:
+  - '[C]'         # 1위: 38.98%
+  - '[O]'         # 2위: 9.63%
+  - '[Branch1]'   # 3위: 9.32%
+  - '[Ring1]'     # 4위: 9.02%
+  - '[=C]'        # 5위: 5.83%
+  - '[=Branch1]'  # 6위: 4.04%
+  - '[N]'         # 7위: 3.40%
+  - '[=O]'        # 8위: 2.76%
+  - '[C@H1]'      # 9위: 2.43%
+  - '[Ring2]'     # 10위: 2.38%
+  - '[C@@H1]'     # 11위: 2.01%
+  - '[Branch2]'   # 12위: 1.51%
+  - '[=N]'        # 13위: 1.29%
+  - '[#Branch1]'  # 14위: 1.19%
+  - '[/C]'        # 15위: 0.78%
+
+# ============================================
+# Debug Logging
+# ============================================
+log_embedding_status: true     # Embedding 학습 상태 로깅
+embedding_log_interval: 10     # N step마다 로깅: 100 | 500 | 1000
+log_model_init_details: true   # 모델 초기화 시 상세 로깅
+log_nan_details: true          # NaN/Inf 발생 시 상세 로깅
+nan_log_dir: './nan_logs'      # NaN 로그 저장 디렉토리
+
+# ============================================
+# Step-wise Denoising 로깅 (Inference 디버깅용)
+# ============================================
+# 활성화 시 generation 과정에서 매 step마다 토큰 상태를 파일로 저장
+# 저장 위치: {stepwise_log_dir}/sample_{counter}_{timestamp}.txt
+# 출력 형식: [Step N/총steps] t=X → s=Y | Unmasked: A/B (C%) | Masked: D (E%)
+# 각 토큰은 18자 고정 폭으로 정렬되어 저장됨
+log_stepwise_denoising: true       # true: 활성화 (디버깅용) | false: 비활성화 (기본)
+stepwise_log_dir: './stepwise_logs'  # Step-wise 로그 저장 디렉토리
+# stepwise_max_samples: 로깅할 최대 샘플 수 (전체 GPU 합산)
+#   - "4": 전체 4개 샘플 (GPU 4개면 각 GPU당 1개씩, 총 4개)
+#   - "10%": 전체 데이터셋의 10% 샘플 (GPU 수에 맞게 조정됨)
+#   - "0": 무제한 (모든 샘플 로깅, 주의: I/O 병목 발생 가능)
+stepwise_max_samples: '4'            # 기본값: 4개 샘플만 로깅
 
 # ============================================
 # [주의] 반드시 False로 설정
 # ============================================
-log_attn_score: false       # ⚠️ LLaDA는 Attention logging 미지원
+log_attn_score: false          # ⚠️ LLaDA는 Attention logging 미지원 (true 시 에러)

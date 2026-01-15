@@ -5,17 +5,17 @@
     5  bash Miniconda3-latest-Linux-x86_64.sh 
     6  clear
     7  bash Miniconda3-latest-Linux-x86_64.sh 
-    8  bash /home/jovyan/CHJ/Miniconda3-latest-Linux-x86_64.sh
-    9  sh /home/jovyan/CHJ/Miniconda3-latest-Linux-x86_64.sh
-   10  chmod +x /home/jovyan/CHJ/Miniconda3-latest-Linux-x86_64.sh
-   11  bash /home/jovyan/CHJ/Miniconda3-latest-Linux-x86_64.sh
-   12  bash /home/jovyan/CHJ/Miniconda3-latest-Linux-x86_64.sh -b -p /home/jovyan/miniconda3
+    8  bash Miniconda3-latest-Linux-x86_64.sh
+    9  sh Miniconda3-latest-Linux-x86_64.sh
+   10  chmod +x Miniconda3-latest-Linux-x86_64.sh
+   11  bash Miniconda3-latest-Linux-x86_64.sh
+   12  bash Miniconda3-latest-Linux-x86_64.sh -b -p /home/jovyan/miniconda3
    13  df -Th .
    14  cd CHJ
    15  unzip Mol-LLM_Custom.zip 
    16  conda
-   17  bash /home/jovyan/CHJ/Miniconda3-latest-Linux-x86_64.sh -b -p /home/jovyan/miniconda3
-   18  bash /home/jovyan/CHJ/Miniconda3-latest-Linux-x86_64.sh
+   17  bash Miniconda3-latest-Linux-x86_64.sh -b -p /home/jovyan/miniconda3
+   18  bash Miniconda3-latest-Linux-x86_64.sh
    19  conda create -n MolDA_CHJ python=3.10 -y
    20  conda activate MolDA_CHJ
    21  # 2. PyTorch 설치 (중요: Flash Attention을 위해 가장 먼저 설치되어야 함)
@@ -45,37 +45,37 @@
    45  # 5. Hugging Face 관련 핵심 라이브러리 설치 (최종 버전 반영)
    46  # transformers, peft, datasets는 지정된 버전으로, accelerate는 최신 버전으로 설치
    47  pip install transformers==4.44.2 peft==0.12.0 datasets==2.21.0 accelerate
-   48  cd /home/jovyan/CHJ/Mol-LLM_Custom
+   48  cd Mol-LLM_Custom
    49  clear
-   50  bash /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
+   50  bash Mol-LLM_Custom/bashes/mol-llm_test.sh
    51  cd ..
-   52  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
-   53  chmod +x /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
-   54  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
+   52  Mol-LLM_Custom/bashes/mol-llm_test.sh
+   53  chmod +x Mol-LLM_Custom/bashes/mol-llm_test.sh
+   54  Mol-LLM_Custom/bashes/mol-llm_test.sh
    55  pip install pytorch_lightning
-   56  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
+   56  Mol-LLM_Custom/bashes/mol-llm_test.sh
    57  pip install torch_geometric
-   58  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
+   58  Mol-LLM_Custom/bashes/mol-llm_test.sh
    59  pip install selfies
-   60  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
+   60  Mol-LLM_Custom/bashes/mol-llm_test.sh
    61  pip install rdkit
-   62  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
+   62  Mol-LLM_Custom/bashes/mol-llm_test.sh
    63  pip install ogb
-   64  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
+   64  Mol-LLM_Custom/bashes/mol-llm_test.sh
    65  cd Mol-LLM_Custom
    66  pip install -r requirements.txt 
    67  cd ..
-   68  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
+   68  Mol-LLM_Custom/bashes/mol-llm_test.sh
    69  pip install flash-attn --no-build-isolation
    70  pip install numpy==1.24.4 scipy ninja packaging
    71  pip install flash-attn --no-build-isolation
    72  pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
-   73  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test.sh
-   74  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh
-   75  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
+   73  Mol-LLM_Custom/bashes/mol-llm_test.sh
+   74  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh
+   75  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
    76  conda install -y ipykernel
    77  python -m ipykernel install --user --name=MolDA_CHJ --display-name "MolDA_CHJ"
-   78  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
+   78  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
    79  kill -9 1981
    80  df -T .
    81  pgrep -af 'miniconda/bin/python -c .*spawn_main'   | awk '{print $1}'   | xargs -r kill -TERM
@@ -86,9 +86,9 @@
    86  watch -d -n 0.1 nvidia-smi
    87  conda activate MolDA_CHJ
    88  history
-   89  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
+   89  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
    90  cd CHJ
-   91  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
+   91  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
    92  pgrep -af 'miniconda/bin/python -c .*spawn_main'   | awk '{print $1}'   | xargs -r kill -TERM
    93  sleep 5
    94  pgrep -af 'miniconda/bin/python -c .*spawn_main'   | awk '{print $1}'   | xargs -r kill -KILL
@@ -132,23 +132,23 @@
   132  git status
   133  conda activate MolDA_CHJ
   134  cd ..
-  135  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh
-  136  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
+  135  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh
+  136  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
   137  wget -q --spider http://google.com
   138  if [ $? -eq 0 ]; then     echo "인터넷 연결됨 (Online)"; else     echo "인터넷 연결 안됨 (Offline)"; fi
   139  clear
   140  conda activate MolDA_CHJ
-  141  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh
-  142  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
+  141  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh
+  142  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
   143  printenv > "/tmp/tmp-1555901rYJYf4FqsApe.txt"
   144  def molecule_evaluate(
   145  ):
   146  conda activate MolDA_CHJ
   147  /home/jovyan/miniconda3/envs/MolDA_CHJ/bin/python
   148  conda activate MolDA_CHJ
-  149  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
-  150  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom_downloaddataset.txt
-  151  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom_original.txt
+  149  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom.txt
+  150  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom_downloaddataset.txt
+  151  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom_original.txt
   152  tmux
   153  tmux attach -t 1
   154  clear
@@ -168,28 +168,28 @@
   168  python download_dataset_custom_v2.py
   169  python download_dataset_custom_v2.py > download_v2.txt
   170  pip freeze 
-  171  rm -rf /home/jovyan/CHJ/Mol-LLM_Custom/dataset/real_train/bace_subtask-0_train
-  172  rm -rf /home/jovyan/CHJ/Mol-LLM_Custom/dataset/real_train/bace_subtask-0_test
-  173  rm -rf /home/jovyan/CHJ/Mol-LLM_Custom/dataset/real_train/bace_subtask-0_val
+  171  rm -rf Mol-LLM_Custom/dataset/real_train/bace_subtask-0_train
+  172  rm -rf Mol-LLM_Custom/dataset/real_train/bace_subtask-0_test
+  173  rm -rf Mol-LLM_Custom/dataset/real_train/bace_subtask-0_val
   174  python download_dataset_custom_v2.py > download_v2.txt
   175  cd ..
-  176  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh
+  176  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh
   177  conda activate MolDA_CHJ
   178  cd Mol-LLM_Custom
   179  python download_dataset_custom_v2.py > download_v2.txt
   180  cd ..
-  181  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4.txt
-  182  ls -l --block-size=1  /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
+  181  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4.txt
+  182  ls -l --block-size=1  Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
   183  conda activate MolDA_CHJ
-  184  ls -l --block-size=1  /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
+  184  ls -l --block-size=1  Mol-LLM_Custom/checkpoint/Custom/mol-llm.ckpt
   185  tmux attach -t 1
   186  conda activate MolDA_CHJ
   187  cd Mol-LLM_Custom
   188  python download_dataset_custom_v2.py > download_v2.txt
   189  cd ..
   190  tmux attach -t 0
-  191  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4(공백 있는 버전).txt
-  192  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4.txt
+  191  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4(공백 있는 버전).txt
+  192  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4.txt
   193  clear
   194  git status
   195  cd Mol-LLM_Custom
@@ -198,11 +198,11 @@
   198  git commit -m "Add Module"
   199  git push
   200  cd ..
-  201  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4.txt
-  202  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writier_100_sampled_with_print.txt
-  203  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4.txt
-  204  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4_total.txt
-  205  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writier_100_sampled_with_print_total.txt
+  201  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4.txt
+  202  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writier_100_sampled_with_print.txt
+  203  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4.txt
+  204  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_new_download_4_total.txt
+  205  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writier_100_sampled_with_print_total.txt
   206  python download_dataset_custom_v2.py > download_v2_smol_retrosynthesis.txt
   207  cd Mol-LLM_Custom
   208  python download_dataset_custom_v2.py > download_v2_smol_retrosynthesis.txt
@@ -232,40 +232,40 @@
   232  pip install "datasets==2.19.1" "huggingface_hub>=0.23.2" "transformers==4.44.2"
   233  python download_dataset_custom_v2.py > download_v2_smol_retrosynthesis.txt
   234  cd ..
-  235  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_official_smol_retrosynthesis.txt
+  235  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_official_smol_retrosynthesis.txt
   236  python download_dataset_custom_v2.py > download_v2_smol_retrosynthesis_temp.txt
   237  cd Mol-LLM_Custom
   238  python download_dataset_custom_v2.py > download_v2_smol_retrosynthesis_temp.txt
   239  cd Mol-LLM_Custom
   240  cd ..
-  241  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_official_smol_retrosynthesis_tag수정.txt
+  241  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_official_smol_retrosynthesis_tag수정.txt
   242  ccd Mol-LLM_Custom
   243  ls
   244  cd Mol-LLM_Custom
   245  ls
   246  python download_dataset_custom_v2.py > download_v2_bace.txt
   247  cd ..
-  248  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom_bace.txt
-  249  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace.txt
+  248  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_custom_bace.txt
+  249  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace.txt
   250  pip install ogb=1.3.6
   251  pip install ogb==1.3.6
-  252  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace.txt
-  253  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writer_bace.txt
+  252  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace.txt
+  253  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writer_bace.txt
   254  cd Mol-LLM_Custom
   255  python download_dataset_InstructGraph.py > temp_downloaddataset_InstructGraph.txt
-  256  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC.txt
+  256  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC.txt
   257  cd ..
-  258  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC.txt
+  258  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC.txt
   259  cd Mol-LLM_Custom
-  260  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC.txt
+  260  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC.txt
   261  python download_dataset_InstructGraph.py > temp_download_bace_CC.txt
   262  cd ..
-  263  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC_INST.txt
+  263  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC_INST.txt
   264  cd Mol-LLM_Custom
-  265  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC_INST.txt
+  265  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_CC_INST.txt
   266  python download_dataset_InstructGraph.py > temp_download_bace_CC.txt
   267  cd ..
-  268  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_mod.txt
+  268  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_mod.txt
   269  pip freeze 
   270  pip uninstall ogb rdkit rdkit-pypi -y
   271  pip install ogb==1.3.5
@@ -273,7 +273,7 @@
   273  cd Mol-LLM_Custom
   274  python download_dataset_InstructGraph.py > temp_download_bace_CC.txt
   275  cd ..
-  276  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_mod.txt
+  276  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_mod.txt
   277  printenv > "/tmp/tmp-1911295ma1U6J1uIsj.txt"
   278  conda activate MolDA_CHJ
   279  cd ./Mol-LLM_Custom/
@@ -312,8 +312,8 @@
   312  git push
   313  cd ..
   314  clear
-  315  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writier_one.txt
-  316  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_one.txt
+  315  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writier_one.txt
+  316  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_download_bace_one.txt
   317  pip freeze > temp_requirements.txt
   318  ls
   319  python download_dataset_custom_v2.py > temp_download_bace_CC.txt
@@ -335,11 +335,11 @@
   335  python single_inference.py > temp_inference_download_InstructGraph_bace.txt
   336  python single_inference.py > temp_inference_writier_bace.txt
   337  cd ..
-  338  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writier_bace_one.txt
-  339  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferencedownload_InstructGraph_bace_FIXED 
-  340  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_download_InstructGraph_bace_FIXED.txt
-  341  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_download_InstructGraph_bace_SWAPPED.txt
-  342  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_writer_bace_SWAPPED.txt
+  338  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_writier_bace_one.txt
+  339  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferencedownload_InstructGraph_bace_FIXED 
+  340  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_download_InstructGraph_bace_FIXED.txt
+  341  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_download_InstructGraph_bace_SWAPPED.txt
+  342  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_writer_bace_SWAPPED.txt
   343  conda activate MolDA_CHJ
   344  htop
   345  curl www.goconda activate MolDA_CHJ
@@ -347,13 +347,13 @@
   347  conda activate MolDA_CHJ
   348  conda conda activate MolDA_CHJ
   349  conda activate MolDA_CHJ
-  350  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_writer_bace_SWAPPED.txt
-  351  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_wrtier_100_sampled.txt
-  352  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_infere.txt
+  350  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_writer_bace_SWAPPED.txt
+  351  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_wrtier_100_sampled.txt
+  352  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_infere.txt
   353  cd Mol-LLM_Custom
   354  python ./download_dataset_InstructGraph.py >  temp_download_InstructGraph_bace.txt
   355  cd ..
-  356  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_download_InstructGraph_blank_bace.txt
+  356  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > temp_inferenced_download_InstructGraph_blank_bace.txt
   357  conda activate MolDA_CHJ
   358  cd Mol-LLM_Custom
   359  python ./download_dataset_custom_v2.py > temp_download_reagent.txt
@@ -365,8 +365,8 @@
   365  cd ./Mol-LLM_Custom/
   366  python ./download_dataset_InstructGraph.py > ./download_log/temp_download_InstructGraph_bace.txt
   367  cd ..
-  368  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/InstructGraph_bace.txt
-  369  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writier_bace.txt
+  368  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/InstructGraph_bace.txt
+  369  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writier_bace.txt
   370  git status
   371  cd ./Mol-LLM_Custom/
   372  git status
@@ -374,20 +374,20 @@
   374  git commit -m "Mod Temporary issues"
   375  git push
   376  cd ..
-  377  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/download_InstructGraph_switched_bace.txt
-  378  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writier_bace_template_switched.txt
-  379  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writer_bace_template_switched.txt
+  377  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/download_InstructGraph_switched_bace.txt
+  378  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writier_bace_template_switched.txt
+  379  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writer_bace_template_switched.txt
   380  conda activate MolDA_CHJ
-  381  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writer_bace_template_switched.txt
-  382  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writer_bace_template_switched_aaa.txt
-  383  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writer_bace_template_rephrase\.txt
-  384  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writer_bace_template_rephrase.txt
-  385  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writer_bace_template_verification.txt
-  386  /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/writer_bace_remake.txt
+  381  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writer_bace_template_switched.txt
+  382  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writer_bace_template_switched_aaa.txt
+  383  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writer_bace_template_rephrase\.txt
+  384  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writer_bace_template_rephrase.txt
+  385  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writer_bace_template_verification.txt
+  386  Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/Inference_log/writer_bace_remake.txt
   387  cd Mol-LLM_Custom
   388  python ./download_dataset_InstructGraph.py > ./download_log/temp_download_InstructGraph_bace_blank.txt
   389  cd ..
-  390* /home/jovyan/CHJ/Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > /home/jovyan/CHJ/Mol-LLM_Custom/D.txt
+  390* Mol-LLM_Custom/bashes/mol-llm_test_CHJ.sh > Mol-LLM_Custom/D.txt
   391  cd ./Mol-LLM_Custom/
   392  python ./download_dataset_InstructGraph.py > ./download_log/temp_download_InstructGraph_total.txt
   393  pwd

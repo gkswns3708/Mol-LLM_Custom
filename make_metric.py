@@ -56,8 +56,8 @@ TOKENIZER_PATHS = {
 # Mol-LLM 커스텀 토크나이저 설정
 MOL_LLM_CONFIG = {
     'base_model': 'facebook/opt-1.3b',  # 또는 'meta-llama/Llama-2-7b-hf', 'mistralai/Mistral-7B-v0.1'
-    'selfies_dict_path': '/home/jovyan/CHJ/Mol-LLM_Custom/model/selfies_dict.txt',
-    'added_tokens_path': '/home/jovyan/CHJ/Mol-LLM_Custom/model/added_tokens.py',
+    'selfies_dict_path': 'Mol-LLM_Custom/model/selfies_dict.txt',
+    'added_tokens_path': 'Mol-LLM_Custom/model/added_tokens.py',
     'add_selfies_tokens': True,
 }
 
@@ -273,7 +273,7 @@ def calculate_row_metrics(row, group_name, model_name):
 # =============================================================================
 # 3. 설정 (Configuration)
 # =============================================================================
-BASE_DIR = "/home/jovyan/CHJ/Mol-LLM_Custom/Inference_log/Benchmark_inference_csv"
+BASE_DIR = "Mol-LLM_Custom/Inference_log/Benchmark_inference_csv"
 SAVE_DIR = "results_model_tokenized" # 저장 폴더
 
 os.makedirs(SAVE_DIR, exist_ok=True)

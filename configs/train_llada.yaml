@@ -6,11 +6,11 @@ defaults:
 # General settings
 filename: mol_llada_lora_run
 seed: 42
-mode: ft
+mode: ft # finetuning mode: 'ft' or 'pretrain'
 
 wandb_entity: hj_ai
 wandb_project: mol-llm_llada
-wandb_log_freq: 100
+wandb_log_freq: 10
 wandb_id: null
 
 custom_log: True
@@ -21,7 +21,7 @@ debug: false
 # 사용 예시:
 #   ckpt_path: "/path/to/checkpoint/epoch=03-step=001500-train.ckpt"
 #   ckpt_path: "/path/to/checkpoint/last.ckpt"  # 가장 최근 checkpoint
-ckpt_path: null
+ckpt_path: /app/Mol-LLM_Custom/checkpoint/LLaDA_Stage1/stage1_Tpod_chebi_mol2text_HighLR/epoch=59-end.ckpt
 
 # pretrained_ckpt_path: 사전 학습된 모델 가중치만 로드 (학습은 처음부터)
 # 사용 예시:

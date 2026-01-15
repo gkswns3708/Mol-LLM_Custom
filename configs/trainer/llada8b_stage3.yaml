@@ -13,7 +13,7 @@ projector_type: qformer
 # LLM Configuration
 llm_model: "GSAI-ML/LLaDA-8B-Instruct"
 tune_llm: lora
-peft_config: "/home/jovyan/CHJ/Mol-LLM_Custom/lora_config_llada.json"
+peft_config: "Mol-LLM_Custom/lora_config_llada.json"
 peft_dir: ""
 load_in_8bit: false
 lora_r: 64
@@ -33,7 +33,7 @@ max_steps: -1
 max_epochs: 12
 every_n_epochs: 1
 task: null
-logging_dir: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/Custom_LLaDA
+logging_dir: Mol-LLM_Custom/checkpoint/Custom_LLaDA
 llava_pretraining: 0
 second_stage_start_epoch: 0
 num_workers: 0
@@ -62,14 +62,26 @@ min_len: 8
 apply_sequence_packing: false
 max_packing_size: -1
 
-weight_decay: 0.1               
-min_lr: 0.0000025               
-init_lr: 0.000025               
-warmup_lr: 0.0                  
-warmup_steps: 50                
-# warmup_epochs: 0.5            
-scheduler: warmup_stable_decay_lr 
+weight_decay: 0.1
+min_lr: 0.0000025
+init_lr: 0.000025
+warmup_lr: 0.0
+warmup_steps: 50
+# warmup_epochs: 0.5
+scheduler: warmup_stable_decay_lr
 optimizer: adamw
+
+# 파라미터 그룹별 Learning Rate 설정
+# 1. LoRA 파라미터
+lr_lora: 0.0002                 # 2e-4
+# 2. Embedding Layer (WTE / embed_tokens)
+lr_embed_orig: 0.00001          # 1e-5 (기존 vocab)
+lr_embed_new: 0.0001            # 1e-4 (새로 추가된 vocab)
+# 3. Classifier (LM Head / ff_out)
+lr_head_orig: 0.00001           # 1e-5 (기존 vocab)
+lr_head_new: 0.0001             # 1e-4 (새로 추가된 vocab)
+# Original vocab size (LLaDA Llama-3 8B 기준)
+original_vocab_size: 128256
 log_every_n_steps: 10
 gradient_clip_val: 1.0          
 
@@ -103,4 +115,23 @@ allHsExplicit: false
 
 
 # Special LLaDA Configuration
-remasking_strategy: 'random' # low_confidence도 존재.
+# remasking_strategy 옵션:
+#   - 'low_confidence': Algorithm 5 - 낮은 confidence 토큰을 다시 mask (LLaDA 논문 권장)
+#   - 'random': Algorithm 4 - 랜덤하게 다시 mask
+#   - 'none': Remasking 없이 매 step마다 top-k 토큰만 unmask (기존 방식)
+remasking_strategy: 'random'
+
+# Semi-Autoregressive 생성 모드
+# True: 블록 단위로 순차 생성 (left-to-right)
+# False: 전체 영역 동시 생성
+use_semi_ar: false
+# block_size 권장값: 생성 길이에 따라 조정
+# - 짧은 텍스트 (mol2text 등): 8~16
+# - 긴 텍스트 (code, math): 32~64
+# LLaDA 논문 Table 8 참고: GSM8K=8, HumanEval=32, GPQA=64
+semi_ar_block_size: 16
+
+# Validation 전략 설정 (복수 전략 동시 평가 지원)
+# null이면 remasking_strategy와 use_semi_ar 설정에 따라 단일 전략 사용
+# 예시: ["random", "low_confidence", "semi_ar"]
+val_strategies: null

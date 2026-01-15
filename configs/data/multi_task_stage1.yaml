@@ -1,33 +1,36 @@
-raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/train_official # 실제 학습 해야하는 경로
-# raw_data_root: /home/jovyan/CHJ/Mol-LLM_Custom/dataset/llada_train # mistral로 학습 가능성 확인하는 경로 
+raw_data_root: Mol-LLM_Custom/dataset/train_official # 실제 학습 해야하는 경로
+# raw_data_root: Mol-LLM_Custom/dataset/llada_train # mistral로 학습 가능성 확인하는 경로 
 # data_tag: 3.3M_0415 # naive
 # data_tag: 3.3M_0415_verified_filtered_512 # verified version으로 학습할 경우(512로 Truncation됨)
 # data_tag: 3.3M_0415_verified_filtered_512_temp # 학습이 잘 되는지 확인하기 위한 Tag, Train set을 기존 original Test set이며, 추후 실제 학습은 다른 Tag로 진행해야함.
 # data_tag: 3.3M_0415_verified_filtered_512_sampled_100 # 학습이 잘 되는지 확인하기 위한 Tag, Train set을 기존 original Test set이며, 추후 실제 학습은 다른 Tag로 진행해야함.
 # data_tag: 3.3M_0415_deduplicate_CLEANED # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
-data_tag: 512_Truncation # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
+# data_tag: 512_Truncation_bace # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
+data_tag: 512_Truncation_chebi-20-mol2text # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
+# data_tag: 512_Truncation_chebi-20-text2mol # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
+# data_tag: 512_Truncation_merged_bace_chebi_mol2text_chebi_text2mol_qm9_homo # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
 
 target_benchmarks:
-  - bace
+  # - bace
   - chebi-20-mol2text
-  - chebi-20-text2mol
-  - forward_reaction_prediction
-  - qm9_homo
-  - qm9_homo_lumo_gap
-  - qm9_lumo
-  - reagent_prediction
-  - retrosynthesis
-  - smol-forward_synthesis
-  - smol-molecule_captioning
-  - smol-molecule_generation
-  - smol-property_prediction-bbbp
-  - smol-property_prediction-clintox
-  - smol-property_prediction-esol
-  - smol-property_prediction-hiv
-  - smol-property_prediction-lipo
-  - smol-property_prediction-sider
-  - smol-retrosynthesis
-  # - smol-name_conversion-i2f
-  - smol-name_conversion-i2s
-  # - smol-name_conversion-s2f
-  - smol-name_conversion-s2i
+  # - chebi-20-text2mol
+  # - forward_reaction_prediction
+  # - qm9_homo
+  # - qm9_homo_lumo_gap
+  # - qm9_lumo
+  # - reagent_prediction
+  # - retrosynthesis
+  # - smol-forward_synthesis
+  # - smol-molecule_captioning
+  # - smol-molecule_generation
+  # - smol-property_prediction-bbbp
+  # - smol-property_prediction-clintox
+  # - smol-property_prediction-esol
+  # - smol-property_prediction-hiv
+  # - smol-property_prediction-lipo
+  # - smol-property_prediction-sider
+  # - smol-retrosynthesis
+  # # - smol-name_conversion-i2f
+  # - smol-name_conversion-i2s
+  # # - smol-name_conversion-s2f
+  # - smol-name_conversion-s2i

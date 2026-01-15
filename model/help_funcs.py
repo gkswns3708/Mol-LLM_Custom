@@ -108,6 +108,8 @@ def caption_evaluate(predictions, targets, tokenizer, prompts, input_mol_strings
         rouge_2 = 0
         rouge_l = 0
 
+    failure_rate = len(failure_idxs) / len(predictions) if len(predictions) > 0 else 0
+
     evaluation_results = {
         "bleu2": bleu2,
         "bleu4": bleu4,
@@ -115,6 +117,7 @@ def caption_evaluate(predictions, targets, tokenizer, prompts, input_mol_strings
         "rouge2": rouge_2,
         "rougeL": rouge_l,
         "meteor": _meteor_score,
+        "failure_rate": failure_rate,
     }
     failed_cases = {
         "predictions": [predictions[i] for i in failure_idxs],
@@ -250,6 +253,8 @@ def molecule_evaluate(
     else:
         bleu_selfies = 0
 
+    failure_rate = len(failure_idxs) / len(predictions) if len(predictions) > 0 else 0
+
     results = {
         "validity_ratio": validity_ratio,
         "MACCS_FTS": MACCS_sim,
@@ -259,6 +264,7 @@ def molecule_evaluate(
         "levenshtein_score": levenshtein_score,
         "bleu_smiles": bleu_smiles,
         "bleu_selfies": bleu_selfies,
+        "failure_rate": failure_rate,
     }
     failed_cases = {
         "predictions": [predictions[i] for i in failure_idxs],
@@ -394,6 +400,7 @@ def per_device_evaluate(
                 "levenshtein_score": null_value,
                 "bleu_smiles": null_value,
                 "bleu_selfies": null_value,
+                "failure_rate": null_value,
             }
         elif task_name in MOL2TEXT_BENCHMARKS:
             results = {
@@ -403,6 +410,7 @@ def per_device_evaluate(
                 "rouge2": null_value,
                 "rougeL": null_value,
                 "meteor": null_value,
+                "failure_rate": null_value,
             }
         else:
             raise NotImplementedError("Task not implemented")
@@ -462,11 +470,34 @@ def per_device_evaluate(
 
 
 def classification_evaluate(total_labels, total_probs):
-    total_preds = total_probs.argmax(dim=-1)
+    # Count failures: probs with -1 values indicate failed predictions
+    # (set by convert_logit2binary_prob when boolean token pattern not found)
+    total_count = total_probs.shape[0]
+    valid_mask = total_probs[:, 0] != -1  # -1 indicates failure
+    failure_count = total_count - valid_mask.sum().item()
+    failure_rate = failure_count / total_count if total_count > 0 else 0
+
+    # Filter out failed predictions for metric calculation
+    valid_probs = total_probs[valid_mask]
+    valid_labels = total_labels[valid_mask]
+
+    if valid_probs.shape[0] == 0:
+        # All predictions failed
+        evaluation_results = {
+            "accuracy": float("nan"),
+            "f1": float("nan"),
+            "precision": float("nan"),
+            "recall": float("nan"),
+            "roc_auc": float("nan"),
+            "failure_rate": failure_rate,
+        }
+        return evaluation_results
+
+    total_preds = valid_probs.argmax(dim=-1)
 
     # Convert tensors to numpy arrays for use with scikit-learn metrics
     total_preds_np = total_preds.numpy()
-    total_labels_np = total_labels.numpy()
+    total_labels_np = valid_labels.numpy()
 
     # Calculate metrics
     acc = accuracy_score(y_true=total_labels_np, y_pred=total_preds_np)
@@ -476,7 +507,7 @@ def classification_evaluate(total_labels, total_probs):
     try:
         roc_auc = roc_auc_score(
             y_true=total_labels_np,
-            y_score=total_probs[
+            y_score=valid_probs[
                 :, 1
             ].numpy(),  # Use y_score here because roc_auc_score expects probability scores
         )
@@ -489,6 +520,7 @@ def classification_evaluate(total_labels, total_probs):
         "precision": prec,
         "recall": rec,
         "roc_auc": roc_auc,
+        "failure_rate": failure_rate,
     }
     return evaluation_results
 
@@ -509,6 +541,7 @@ def total_device_evaluate(
             "precision": null_value,
             "recall": null_value,
             "roc_auc": null_value,
+            "failure_rate": null_value,
             "num_instances": 0,
         }
         evaluation_results[t] = results
@@ -557,7 +590,7 @@ def convert_logit2binary_prob(logits, predictions, tokenizer):
     True_token_id = tokenizer.encode("True")[-1]
     False_token_id = tokenizer.encode("False")[-1]
 
-    bos_token, eos_token = added_tokens.BOOL    
+    bos_token, eos_token = added_tokens.BOOL
     # [수정] LLaDA와 기존 모델(Mistral) 모두 지원하도록 예외 처리 추가
     try:
         # 1. 표준 방식 (LLaDA, Llama-3 등 최신 토크나이저용: 문자열 입력)
@@ -572,18 +605,22 @@ def convert_logit2binary_prob(logits, predictions, tokenizer):
     ).to(logits.device)
 
     for idx, pred in enumerate(predictions):
-        # first, inspect that pred includes boolean tokens
-        # second, inspect that there is only one token between boolean tokens
-        # third, get position id of the prediction token between the boolean tokens
+        # <BOOLEAN> 토큰이 있으면, 그 바로 다음 토큰 위치의 True/False logit으로 prob 계산
+        # (형식이 완벽하지 않아도, <BOOLEAN> 태그만 있으면 prob 계산 수행)
         pred_token_ids = tokenizer.encode(pred, add_special_tokens=False)
         try:
-            assert re.search(
-                f"{bos_token}.+{eos_token}", pred
-            ).group(), f"pred should be searched by re pattern {bos_token}.+{eos_token}"
+            # <BOOLEAN> 토큰 위치 찾기
             boolean_bos_position = pred_token_ids.index(boolean_bos_id)
-            prediction_position_ids[idx, boolean_bos_position + 1] = True
-            is_using_prediction_position_ids[idx, :] = True
-        except:
+            # <BOOLEAN> 다음 위치의 토큰으로 prob 계산
+            if boolean_bos_position + 1 < len(pred_token_ids):
+                prediction_position_ids[idx, boolean_bos_position + 1] = True
+                is_using_prediction_position_ids[idx, :] = True
+            else:
+                # <BOOLEAN> 다음에 토큰이 없는 경우
+                prediction_position_ids[idx, 0] = True
+                is_using_prediction_position_ids[idx, :] = False
+        except ValueError:
+            # <BOOLEAN> 토큰을 찾지 못한 경우
             prediction_position_ids[idx, 0] = True
             is_using_prediction_position_ids[idx, :] = False
 

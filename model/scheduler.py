@@ -159,6 +159,17 @@ class LinearWarmupConstantLRScheduler:
 
 @registry.register_lr_scheduler("warmup_stable_decay_lr")
 class WarmupStableDecayLRScheduler:
+    """
+    Warmup-Stable-Decay LR Scheduler (WSD)
+
+    각 param group의 초기 LR 비율을 유지하면서 스케줄링:
+    - Warmup: 0 -> group_lr (비율 유지)
+    - Stable: group_lr 유지
+    - Decay: group_lr -> group_lr × min_lr_ratio (비율 유지, Linear Decay)
+
+    예: LoRA lr=2.5e-4, Embed lr=2.5e-5, min_lr_ratio=0.1인 경우
+        -> Decay 후: LoRA=2.5e-5, Embed=2.5e-6 (10:1 비율 유지)
+    """
     def __init__(
         self,
         optimizer,
@@ -167,32 +178,54 @@ class WarmupStableDecayLRScheduler:
         min_lr,
         warmup_steps=50,
         decay_ratio=0.1,
+        min_lr_ratio=None,  # 추가: 직접 비율 지정 가능
         **kwargs
     ):
         self.optimizer = optimizer
         self.max_step = max_step
-        self.init_lr = init_lr
-        self.min_lr = min_lr
         self.warmup_steps = warmup_steps
-        
+
         # 전체 step의 마지막 decay_ratio 만큼만 감쇠 (논문은 10%)
         self.decay_start_step = int(max_step * (1 - decay_ratio))
 
-    def step(self, cur_step):
-        # 1. Warmup Phase (0 -> init_lr)
-        if cur_step < self.warmup_steps:
-            lr = self.init_lr * (cur_step / max(1, self.warmup_steps))
-            
-        # 2. Stable Phase (init_lr 유지)
-        elif cur_step < self.decay_start_step:
-            lr = self.init_lr
-            
-        # 3. Decay Phase (init_lr -> min_lr, Linear Decay)
+        # min_lr_ratio 계산: 직접 지정되면 사용, 아니면 min_lr/init_lr로 계산
+        if min_lr_ratio is not None:
+            self.min_lr_ratio = min_lr_ratio
+        elif init_lr > 0:
+            self.min_lr_ratio = min_lr / init_lr
         else:
-            # 남은 스텝 수 계산
+            self.min_lr_ratio = 0.1  # 기본값
+
+        # 각 param group의 초기 LR 저장 (비율 계산용)
+        self.initial_lrs = []
+        self.initial_lrs_new = []  # embed/head의 new vocab용 LR
+        for group in self.optimizer.param_groups:
+            self.initial_lrs.append(group['lr'])
+            # embed/head 그룹은 lr_new 필드가 있음
+            self.initial_lrs_new.append(group.get('lr_new', group['lr']))
+
+    def step(self, cur_step):
+        # 스케줄링 비율 계산 (0.0 ~ 1.0)
+        if cur_step < self.warmup_steps:
+            # 1. Warmup Phase: 0 -> 1.0
+            ratio = cur_step / max(1, self.warmup_steps)
+        elif cur_step < self.decay_start_step:
+            # 2. Stable Phase: 1.0 유지
+            ratio = 1.0
+        else:
+            # 3. Decay Phase: 1.0 -> min_lr_ratio
             decay_steps = self.max_step - self.decay_start_step
             progress = (cur_step - self.decay_start_step) / max(1, decay_steps)
-            lr = self.init_lr - (self.init_lr - self.min_lr) * min(1.0, progress)
+            progress = min(1.0, progress)
+            # 1.0에서 min_lr_ratio까지 선형 감소
+            ratio = 1.0 - (1.0 - self.min_lr_ratio) * progress
 
-        for param_group in self.optimizer.param_groups:
-            param_group["lr"] = lr
+        # 각 param group에 비율 적용
+        for i, param_group in enumerate(self.optimizer.param_groups):
+            base_lr = self.initial_lrs[i]
+            param_group["lr"] = base_lr * ratio
+
+            # embed/head 그룹의 경우 lr_new도 업데이트
+            if 'lr_new' in param_group:
+                base_lr_new = self.initial_lrs_new[i]
+                param_group["lr_new"] = base_lr_new * ratio

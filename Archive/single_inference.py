@@ -111,7 +111,7 @@ def get_config_and_setup():
     cfg = flatten_dictconfig(cfg)
     OmegaConf.set_struct(cfg, False)
 
-    root_dir = "/home/jovyan/CHJ/Mol-LLM_Custom"
+    root_dir = "Mol-LLM_Custom"
     cfg.ckpt_path = os.path.join(root_dir, "checkpoint/Custom/mol-llm.ckpt")
     cfg.selfies_token_path = os.path.join(root_dir, "model/selfies_dict.txt")
     cfg.filename = "HJChoi"
@@ -127,7 +127,7 @@ def get_config_and_setup():
 # ==============================================================================
 def main():
     # [STEP 0] 데이터셋 무결성 검증 (요청하신 부분)
-    target_dataset_path = "/home/jovyan/CHJ/Mol-LLM_Custom/dataset/real_train/mistralai-Mistral-7B-Instruct-v0.3_string+graph_q32_test_3.3M_0415"
+    target_dataset_path = "Mol-LLM_Custom/dataset/real_train/mistralai-Mistral-7B-Instruct-v0.3_string+graph_q32_test_3.3M_0415"
     verify_dataset_integrity(target_dataset_path)
 
     # [STEP 1] 설정 및 모델 준비

@@ -244,7 +244,8 @@ class Blip2OPT(Blip2Base):
                     peft_config = LoraConfig(
                         **LoraConfig.from_json_file(self.args.peft_config)
                     )
-                    print(peft_config, "- peft_config")
+                    if self.args.debug:
+                        print(peft_config, "- peft_config")
                 else:
                     peft_config = LoraConfig(
                         target_modules=self.get_lora_target_modules(),
@@ -257,6 +258,18 @@ class Blip2OPT(Blip2Base):
                 self.peft_config = peft_config
                 self.llm_model = get_peft_model(self.llm_model, peft_config)
                 self.llm_model.print_trainable_parameters()
+
+                # [CRITICAL FIX] PEFT 적용 후 llm_embed_tokens 참조 업데이트
+                # PEFT modules_to_save가 적용되면 embedding layer가 ModulesToSaveWrapper로 래핑됨
+                # 래핑된 버전을 사용해야 gradient가 modules_to_save.default로 흐름
+                if hasattr(self, 'llm_embed_tokens'):
+                    old_embed = self.llm_embed_tokens
+                    self.llm_embed_tokens = self.llm_model.get_input_embeddings()
+                    if getattr(self.args, 'log_model_init_details', False):
+                        print(f"\n[PEFT FIX] Updated llm_embed_tokens reference after PEFT wrapping")
+                        print(f"  Old: {type(old_embed).__name__}")
+                        print(f"  New: {type(self.llm_embed_tokens).__name__}")
+
         elif tune_llm == "freeze":
             for name, param in self.llm_model.named_parameters():
                 param.requires_grad = False
@@ -268,11 +281,16 @@ class Blip2OPT(Blip2Base):
         # [CRITICAL FIX] PEFT modules_to_save에 포함된 모듈들을 명시적으로 학습 가능하게 설정
         # PEFT 적용 후에도 requires_grad를 강제로 설정해야 함
         if tune_llm == "lora":
-            print("\n" + "="*70)
-            print("[PEFT FIX] Setting embed_tokens and lm_head to trainable...")
+            # config에서 로깅 설정 가져오기
+            log_model_init_details = getattr(self.args, 'log_model_init_details', False)
 
-            # 디버깅: 모든 파라미터 이름 확인
-            print("[DEBUG] Searching for embedding/output layer parameters...")
+            if log_model_init_details:
+                print("\n" + "="*70)
+                print("[PEFT FIX] Setting embed_tokens and lm_head to trainable...")
+
+                # 디버깅: 모든 파라미터 이름 확인
+                print("[DEBUG] Searching for embedding/output layer parameters...")
+
             wte_count = 0  # Word Token Embedding (LLaDA)
             ff_out_count = 0  # Feed-Forward Output (LLaDA)
             embed_count = 0  # Standard embed_tokens
@@ -283,28 +301,29 @@ class Blip2OPT(Blip2Base):
                 # LLaDA specific names
                 if 'wte' in name_lower or '.wte.' in name:
                     wte_count += 1
-                    if wte_count <= 2:
+                    if log_model_init_details and wte_count <= 2:
                         print(f"  Found wte param: {name}, requires_grad={param.requires_grad}")
                 if 'ff_out' in name_lower or '.ff_out.' in name:
                     ff_out_count += 1
-                    if ff_out_count <= 2:
+                    if log_model_init_details and ff_out_count <= 2:
                         print(f"  Found ff_out param: {name}, requires_grad={param.requires_grad}")
                 # Standard names (for other models)
                 if 'embed' in name_lower and 'token' in name_lower:
                     embed_count += 1
-                    if embed_count <= 2:
+                    if log_model_init_details and embed_count <= 2:
                         print(f"  Found embed_tokens param: {name}, requires_grad={param.requires_grad}")
                 if 'lm_head' in name_lower:
                     lm_head_count += 1
-                    if lm_head_count <= 2:
+                    if log_model_init_details and lm_head_count <= 2:
                         print(f"  Found lm_head param: {name}, requires_grad={param.requires_grad}")
 
-            print(f"  Total: wte={wte_count}, ff_out={ff_out_count}, embed_tokens={embed_count}, lm_head={lm_head_count}")
+            if log_model_init_details:
+                print(f"  Total: wte={wte_count}, ff_out={ff_out_count}, embed_tokens={embed_count}, lm_head={lm_head_count}")
 
-            # [FIX] 정확한 경로 지정으로 INPUT embedding과 OUTPUT head만 학습
-            # blocks 내부의 ff_out은 제외하여 메모리 절약
-            print("[FIX] Setting ONLY input embedding (wte/embed_tokens) and output head (ff_out/lm_head) to trainable...")
-            print("      Excluding transformer blocks internal ff_out layers...")
+                # [FIX] 정확한 경로 지정으로 INPUT embedding과 OUTPUT head만 학습
+                # blocks 내부의 ff_out은 제외하여 메모리 절약
+                print("[FIX] Setting ONLY input embedding (wte/embed_tokens) and output head (ff_out/lm_head) to trainable...")
+                print("      Excluding transformer blocks internal ff_out layers...")
 
             trainable_count = 0
             for name, param in self.llm_model.named_parameters():
@@ -312,32 +331,44 @@ class Blip2OPT(Blip2Base):
                 if '.blocks.' in name or 'transformer.blocks' in name:
                     continue
 
+                # [CRITICAL] PEFT modules_to_save가 적용된 경우:
+                # - modules_to_save.default: 실제 학습되는 weights (trainable로 설정)
+                # - original_module: frozen copy (forward에서 사용 안됨, trainable로 설정하면 안됨)
+                # original_module을 trainable로 설정하면 gradient가 흐르지 않아 weight가 변하지 않음
+                if 'original_module' in name:
+                    continue  # PEFT original_module은 건드리지 않음
+
                 # 1. LLaDA: Input Embedding (wte)
                 if 'wte' in name.lower():
                     param.requires_grad = True
-                    print(f"  ✓ {name} set to requires_grad: True")
+                    if log_model_init_details:
+                        print(f"  ✓ {name} set to requires_grad: True")
                     trainable_count += 1
 
                 # 2. LLaDA: Output LM Head (ff_out at transformer level, NOT in blocks)
                 elif 'ff_out' in name.lower():
                     param.requires_grad = True
-                    print(f"  ✓ {name} set to requires_grad: True")
+                    if log_model_init_details:
+                        print(f"  ✓ {name} set to requires_grad: True")
                     trainable_count += 1
 
                 # 3. Standard models: embed_tokens
                 elif 'embed_tokens' in name.lower():
                     param.requires_grad = True
-                    print(f"  ✓ {name} set to requires_grad: True")
+                    if log_model_init_details:
+                        print(f"  ✓ {name} set to requires_grad: True")
                     trainable_count += 1
 
                 # 4. Standard models: lm_head
                 elif 'lm_head' in name.lower():
                     param.requires_grad = True
-                    print(f"  ✓ {name} set to requires_grad: True")
+                    if log_model_init_details:
+                        print(f"  ✓ {name} set to requires_grad: True")
                     trainable_count += 1
 
-            print(f"  Total parameters explicitly set to trainable: {trainable_count}")
-            print("="*70 + "\n") 
+            if log_model_init_details:
+                print(f"  Total parameters explicitly set to trainable: {trainable_count}")
+                print("="*70 + "\n") 
 
         #! Stage 2에서 Q-Former를 학습할 때, LoRA의 Gradient가 없어야 하는데, 아래는 이를 위한 코드
         if self.args.llava_pretraining:
@@ -354,7 +385,8 @@ class Blip2OPT(Blip2Base):
                     param.requires_grad = False
                 self.graph_encoder = self.graph_encoder.eval()
                 self.graph_encoder.train = disabled_train
-                print("freeze graph encoder")
+                if self.args.debug:
+                    print("freeze graph encoder")
 
             if self.args.projector_type == "qformer":
 
@@ -422,7 +454,8 @@ class Blip2OPT(Blip2Base):
             # remove '.' from the marked list for selfies token
             # self.llm_tokenizer.added_selfies_tokens.remove(".")
             # self.llm_tokenizer.selfies_token_ids.remove(36)
-            print(f"Added {len(selfies_tokens)} selfies tokens to the tokenizer")
+            if self.args.debug:
+                print(f"Added {len(selfies_tokens)} selfies tokens to the tokenizer")
 
         additional_tokens = [
             getattr(added_tokens, tokens)
@@ -473,6 +506,9 @@ class Blip2OPT(Blip2Base):
                 self.llm_model = PeftModel.from_pretrained(
                     self.llm_model, self.peft_dir, is_trainable=True
                 )
+                # [CRITICAL FIX] PEFT 적용 후 llm_embed_tokens 참조 업데이트
+                if hasattr(self, 'llm_embed_tokens'):
+                    self.llm_embed_tokens = self.llm_model.get_input_embeddings()
             else:
                 if self.args.peft_config:
                     peft_config = LoraConfig(
@@ -489,6 +525,11 @@ class Blip2OPT(Blip2Base):
                 self.peft_config = peft_config
                 self.llm_model = get_peft_model(self.llm_model, peft_config)
                 self.llm_model.print_trainable_parameters()
+
+                # [CRITICAL FIX] PEFT 적용 후 llm_embed_tokens 참조 업데이트
+                if hasattr(self, 'llm_embed_tokens'):
+                    self.llm_embed_tokens = self.llm_model.get_input_embeddings()
+
         elif self.tune_llm == "freeze":
             for name, param in self.llm_model.named_parameters():
                 param.requires_grad = False

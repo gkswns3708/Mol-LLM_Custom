@@ -1,4 +1,5 @@
 import os
+import math
 from typing import Any, Dict
 import torch
 from model.blip2_opt import Blip2OPT
@@ -23,7 +24,14 @@ from model.help_funcs import (
 )
 from transformers import Adafactor
 import json
-from data_utils import CLASSIFICATION_BENCHMARKS, id2task
+from data_utils import (
+    CLASSIFICATION_BENCHMARKS,
+    REGRESSION_BENCHMARKS,
+    MOL2TEXT_BENCHMARKS,
+    TEXT2MOL_BENCHMARKS,
+    REACTION_BENCHMARKS,
+    id2task,
+)
 from transformers.utils import logging
 
 from torch.nn import CrossEntropyLoss
@@ -51,6 +59,52 @@ def get_module_state_dict(state_dict, module_name):
     return module_state_dict
 
 
+def subset_batch_by_indices(batch, indices, device=None):
+    """
+    배치에서 특정 인덱스의 샘플만 추출하는 헬퍼 함수.
+    혼합 배치에서 Classification/Generation 샘플을 분리할 때 사용.
+
+    Args:
+        batch: 원본 배치 (AttrDict 또는 dict-like)
+        indices: 추출할 샘플 인덱스 리스트
+        device: 텐서를 이동할 디바이스 (None이면 원본 유지)
+
+    Returns:
+        subset_batch: 인덱스에 해당하는 샘플만 포함한 새 배치
+    """
+    if len(indices) == 0:
+        return None
+
+    indices_tensor = torch.tensor(indices, dtype=torch.long)
+    if device is not None:
+        indices_tensor = indices_tensor.to(device)
+
+    subset = AttrDict()
+
+    for key in batch.keys():
+        value = batch[key]
+        if value is None:
+            subset[key] = None
+        elif isinstance(value, torch.Tensor):
+            # 텐서인 경우 인덱싱
+            if device is not None:
+                subset[key] = value[indices_tensor].to(device)
+            else:
+                subset[key] = value[indices_tensor]
+        elif isinstance(value, list):
+            # 리스트인 경우 인덱싱
+            subset[key] = [value[i] for i in indices]
+        elif isinstance(value, dict):
+            # Graph 데이터 등 dict인 경우 (torch_geometric Batch)
+            # 이 경우는 복잡하므로 None 처리 (graph는 별도 처리 필요)
+            subset[key] = value  # 일단 전체 전달 (필요시 별도 처리)
+        else:
+            # 기타 타입은 그대로 전달
+            subset[key] = value
+
+    return subset
+
+
 class Blip2Stage3(pl.LightningModule):
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         to_be_removed = []
@@ -64,10 +118,16 @@ class Blip2Stage3(pl.LightningModule):
             ):
                 continue
 
-            # [CRITICAL FIX] modules_to_save (embed_tokens, lm_head)는 frozen이어도 저장
+            # [CRITICAL FIX] modules_to_save (embed_tokens, lm_head, wte, ff_out)는 frozen이어도 저장
             # Stage 2 (Q-Former pretraining)에서 LLM이 frozen이어도, 새 vocab이 추가된
             # embed_tokens/lm_head는 반드시 보존해야 Stage 3에서 계속 학습 가능
-            is_module_to_save = "embed_tokens" in key or "lm_head" in key
+            # LLaDA: wte (embedding), ff_out (lm_head)
+            # PEFT modules_to_save: *.modules_to_save.default.* 패턴
+            is_module_to_save = (
+                "embed_tokens" in key or "lm_head" in key or  # 일반 모델
+                "wte" in key or "ff_out" in key or  # LLaDA 모델
+                "modules_to_save" in key  # PEFT modules_to_save wrapper
+            )
 
             try:
                 # modules_to_save가 아니고, frozen이면 삭제
@@ -102,8 +162,10 @@ class Blip2Stage3(pl.LightningModule):
         super().__init__()
         if isinstance(args, dict):
             args = AttrDict(**args)
-        print(args, " - args")
         self.args = args
+        self.debug = getattr(args, 'debug', False)
+        if self.debug:
+            print(args, " - args")
         self.num_beams = args.num_beams
         self.gen_max_len = args.gen_max_len
         self.min_len = args.min_len
@@ -111,10 +173,27 @@ class Blip2Stage3(pl.LightningModule):
         self.on_second_stage = False
         # set strict_loading to False to load model in a lightweight way
         self.strict_loading = False
+        # 학습 완료 시점의 global_step을 저장 (test 시 파일명에 사용)
+        self._trained_global_step = None
 
         # [Fix 2.2] Gradient 로깅을 위한 파라미터 캐싱 (오버헤드 최소화)
         self._embed_tokens_param = None
         self._lm_head_param = None
+
+        # Weight Norm Logging 설정
+        self._log_weight_norm_layers = getattr(args, 'log_weight_norm_layers', [])
+        self._log_weight_norm_interval = getattr(args, 'log_weight_norm_interval', 100)
+        self._weight_norm_param_cache = {}  # layer별 파라미터 캐싱
+        self._initial_weight_norms = {}  # 초기 weight norm 저장 (변화량 추적)
+
+        # 상위 빈도 SELFIES 토큰 norm 추적 설정
+        self._top_selfies_tokens = getattr(args, 'top_selfies_tokens', [
+            '[C]', '[O]', '[Branch1]', '[Ring1]', '[=C]',
+            '[=Branch1]', '[N]', '[=O]', '[C@H1]', '[Ring2]',
+            '[C@@H1]', '[Branch2]', '[=N]', '[#Branch1]', '[/C]'
+        ])
+        self._top_selfies_token_ids = None  # 토큰 ID 캐싱 (첫 호출 시 초기화)
+        self._top_selfies_initial_norms = {}  # 초기 norm 저장
         if "galactica" in args.llm_model:
             blip2model = Blip2OPT
         elif "llama" in args.llm_model:
@@ -148,8 +227,113 @@ class Blip2Stage3(pl.LightningModule):
         return self
 
     def configure_optimizers(self):
+        """
+        각 파라미터 그룹별로 다른 Learning Rate를 적용:
+        1. LoRA: 2e-4 (args.lr_lora, default: 2e-4)
+        2. WTE (Token Embedding Layer):
+           - 2.1 기존 Vocab embedding: 1e-5 (args.lr_embed_orig, default: 1e-5)
+           - 2.2 새로 추가되는 Vocab embedding: 1e-4 (args.lr_embed_new, default: 1e-4)
+        3. Classifier (LM Head / ff_out):
+           - 3.1 기존 vocab weight matrix: 1e-5 (args.lr_head_orig, default: 1e-5)
+           - 3.2 새로 추가되는 Vocab weight matrix: 1e-4 (args.lr_head_new, default: 1e-4)
+        4. 기타 파라미터: args.init_lr
+        """
+        # LR 설정 (args에서 가져오거나 기본값 사용)
+        lr_lora = getattr(self.args, 'lr_lora', 2e-4)
+        lr_embed_orig = getattr(self.args, 'lr_embed_orig', 1e-5)
+        lr_embed_new = getattr(self.args, 'lr_embed_new', 1e-4)
+        lr_head_orig = getattr(self.args, 'lr_head_orig', 1e-5)
+        lr_head_new = getattr(self.args, 'lr_head_new', 1e-4)
+        lr_other = getattr(self.args, 'init_lr', lr_lora)  # 기타 파라미터는 lr_lora와 동일하게
+
+        # Original vocab size (LLaDA Llama-3 8B 기준, args에서 오버라이드 가능)
+        original_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
+
+        # 파라미터 그룹 분류
+        params_lora = []
+        params_embed_orig = []
+        params_embed_new = []
+        params_head_orig = []
+        params_head_new = []
+        params_other = []
+
+        # Embedding/LM Head 파라미터 찾기 및 분리
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            name_lower = name.lower()
+
+            # 1. LoRA 파라미터
+            if 'lora' in name_lower:
+                params_lora.append(param)
+                if self.debug:
+                    print(f"  [Optimizer] LoRA: {name}")
+
+            # 2. WTE (Embedding) 파라미터 - wte 또는 embed_tokens
+            elif ('wte' in name_lower or 'embed_tokens' in name_lower) and 'original_module' not in name_lower:
+                # Embedding weight를 original/new vocab으로 분리하여 wrapper로 처리
+                # 실제로는 하나의 weight지만, 학습 시 다른 LR 적용을 위해 별도 처리 필요
+                # 여기서는 전체 파라미터를 등록하고, scheduler에서 처리
+                params_embed_orig.append({'param': param, 'name': name, 'split_idx': original_vocab_size})
+                if self.debug:
+                    print(f"  [Optimizer] Embed (will split): {name}, shape={param.shape}")
+
+            # 3. Classifier (LM Head / ff_out) 파라미터
+            elif ('lm_head' in name_lower or ('ff_out' in name_lower and 'blocks' not in name_lower)) and 'original_module' not in name_lower:
+                params_head_orig.append({'param': param, 'name': name, 'split_idx': original_vocab_size})
+                if self.debug:
+                    print(f"  [Optimizer] Head (will split): {name}, shape={param.shape}")
+
+            # 4. 기타 파라미터
+            else:
+                params_other.append(param)
+                if self.debug:
+                    print(f"  [Optimizer] Other: {name}")
+
+        # Embedding과 Head 파라미터의 original/new 분리 처리
+        # PyTorch optimizer는 같은 파라미터를 여러 그룹에 넣을 수 없으므로,
+        # 전체 파라미터를 하나의 그룹에 넣되, 커스텀 훅으로 gradient scaling 적용
+        embed_params_all = [p['param'] for p in params_embed_orig]
+        head_params_all = [p['param'] for p in params_head_orig]
+
+        # Embedding/Head의 original/new vocab 인덱스 정보 저장 (gradient scaling용)
+        self._embed_head_split_info = {
+            'original_vocab_size': original_vocab_size,
+            'embed_params': [(p['param'], p['name']) for p in params_embed_orig],
+            'head_params': [(p['param'], p['name']) for p in params_head_orig],
+            'lr_ratio_embed': lr_embed_new / lr_embed_orig if lr_embed_orig > 0 else 1.0,
+            'lr_ratio_head': lr_head_new / lr_head_orig if lr_head_orig > 0 else 1.0,
+        }
+
+        if self.debug:
+            print(f"\n[Optimizer Summary]")
+            if self.debug:
+                print(f"  LoRA params: {len(params_lora)} (lr={lr_lora})")
+            if self.debug:
+                print(f"  Embed params: {len(embed_params_all)} (orig_lr={lr_embed_orig}, new_lr={lr_embed_new})")
+            if self.debug:
+                print(f"  Head params: {len(head_params_all)} (orig_lr={lr_head_orig}, new_lr={lr_head_new})")
+            if self.debug:
+                print(f"  Other params: {len(params_other)} (lr={lr_other})")
+            if self.debug:
+                print(f"  Original vocab size: {original_vocab_size}")
+
+        # 로깅
+        logger.info("="*70)
+        logger.info("[Optimizer] Parameter groups with different learning rates:")
+        logger.info(f"  1. LoRA:        {len(params_lora):4d} params, lr={lr_lora}")
+        logger.info(f"  2. Embed (orig): lr={lr_embed_orig} (idx < {original_vocab_size})")
+        logger.info(f"  3. Embed (new):  lr={lr_embed_new} (idx >= {original_vocab_size})")
+        logger.info(f"  4. Head (orig):  lr={lr_head_orig} (idx < {original_vocab_size})")
+        logger.info(f"  5. Head (new):   lr={lr_head_new} (idx >= {original_vocab_size})")
+        logger.info(f"  6. Other:       {len(params_other):4d} params, lr={lr_other}")
+        logger.info("="*70)
+
         if self.args.optimizer == "adafactor":
-            print("Using adafactor optimizer")
+            if self.debug:
+                print("Using adafactor optimizer")
+            # Adafactor는 param group을 지원하지만, 여기서는 기본 설정 유지
             optimizer = Adafactor(
                 self.parameters(),
                 lr=1e-3,
@@ -160,11 +344,46 @@ class Blip2Stage3(pl.LightningModule):
             self.scheduler = None
         else:
             self.trainer.fit_loop.setup_data()
+
+            # 파라미터 그룹 구성
+            # Embed/Head의 경우 base_lr로 orig LR을 사용하고, new vocab은 gradient scaling으로 처리
+            param_groups = []
+
+            if params_lora:
+                param_groups.append({
+                    'params': params_lora,
+                    'lr': lr_lora,
+                    'name': 'lora'
+                })
+
+            if embed_params_all:
+                param_groups.append({
+                    'params': embed_params_all,
+                    'lr': lr_embed_orig,
+                    'name': 'embed',
+                    'lr_new': lr_embed_new,  # 커스텀 필드: new vocab용 LR
+                })
+
+            if head_params_all:
+                param_groups.append({
+                    'params': head_params_all,
+                    'lr': lr_head_orig,
+                    'name': 'head',
+                    'lr_new': lr_head_new,  # 커스텀 필드: new vocab용 LR
+                })
+
+            if params_other:
+                param_groups.append({
+                    'params': params_other,
+                    'lr': lr_other,
+                    'name': 'other'
+                })
+
             optimizer = optim.AdamW(
-                self.parameters(),
-                lr=self.args.init_lr,
+                param_groups,
                 weight_decay=self.args.weight_decay,
             )
+
             self.steps_per_epoch = (
                 len(self.trainer.train_dataloader) / self.args.accumulate_grad_batches
             )
@@ -178,7 +397,7 @@ class Blip2Stage3(pl.LightningModule):
             # 3. 둘 다 없으면 0
             else:
                 warmup_steps = 0
-            
+
             if self.args.scheduler == "linear_warmup_cosine_lr":
                 self.scheduler = LinearWarmupCosineLRScheduler(
                     optimizer=optimizer,
@@ -201,13 +420,18 @@ class Blip2Stage3(pl.LightningModule):
             elif self.args.scheduler == "None":
                 self.scheduler = None
             elif self.args.scheduler == "warmup_stable_decay_lr":
+                # config에서 직접 비율 지정
+                min_lr_ratio = getattr(self.args, 'min_lr_ratio', 0.1)
+                decay_ratio = getattr(self.args, 'decay_ratio', 0.1)
+
                 self.scheduler = WarmupStableDecayLRScheduler(
                     optimizer=optimizer,
                     max_step=max_step,
-                    init_lr=self.args.init_lr,
-                    min_lr=self.args.min_lr,
-                    warmup_steps=self.args.warmup_steps,
-                    decay_ratio=0.1, # 논문과 동일하게 마지막 10% 구간에서 Decay
+                    init_lr=lr_lora,  # 기준값으로 lr_lora 사용
+                    min_lr=lr_lora * min_lr_ratio,
+                    warmup_steps=warmup_steps,
+                    decay_ratio=decay_ratio,
+                    min_lr_ratio=min_lr_ratio,
                 )
             else:
                 raise NotImplementedError()
@@ -220,7 +444,7 @@ class Blip2Stage3(pl.LightningModule):
         tasks,
         prompts,
         input_mol_strings,
-        token_ids, #! 추가해봄.
+        token_ids=None,  #! 추가해봄. (optional로 변경)
         probs=None,
         filename="predictions.json",
     ):
@@ -238,8 +462,9 @@ class Blip2Stage3(pl.LightningModule):
                 "target": targets[i],
                 "prompt": prompts[i],
                 "input_mol_strings": input_mol_strings[i],
-                "token_ids": token_ids[i], 
             }
+            if token_ids is not None:
+                instance["token_ids"] = token_ids[i]
             if tasks[i] in CLASSIFICATION_BENCHMARKS and probs is not None:
                 instance["prob"] = probs[i]
             instances.append(instance)
@@ -249,6 +474,9 @@ class Blip2Stage3(pl.LightningModule):
             json.dump(instances, f, ensure_ascii=False, indent=4)
 
     def on_test_epoch_start(self) -> None:
+        # test 시작 시 학습된 global_step 저장 (trainer.test()가 step을 리셋하기 전)
+        if self._trained_global_step is None:
+            self._trained_global_step = self.global_step
         self.on_evaluation_epoch_start()
 
     @torch.no_grad()
@@ -281,7 +509,8 @@ class Blip2Stage3(pl.LightningModule):
                 IsPrint=False,
             )
             self.on_second_stage = True
-            print("set lora weights trainable")
+            if self.debug:
+                print("set lora weights trainable")
 
     # a batch of 3 tuples
     # sft tuple (gw, sw, q, y)
@@ -454,8 +683,8 @@ class Blip2Stage3(pl.LightningModule):
         outputs = self.blip2model(batch)
         
         # [요청하신 값 추출 방식]
-        # 안전한 처리를 위해 dict 여부 확인 후 pop 수행
-        if isinstance(outputs, dict):
+        # ModelOutput은 dict를 상속하지 않으므로 hasattr로 체크
+        if hasattr(outputs, 'pop'):
             logits = outputs.pop("logits", None)
             loss = outputs.pop("loss", None)
             # instance_loss는 MolPO 계산에 필요하므로 보존하거나 get으로 접근
@@ -467,49 +696,66 @@ class Blip2Stage3(pl.LightningModule):
         # [DEBUG] NaN / Inf 발생 시 상세 디버깅 정보 및 샘플 출력
         # =================================================================
         if loss is not None and (torch.isnan(loss) or torch.isinf(loss)):
-            print(f"\n{'='*20} [CRITICAL ERROR] Loss is NaN/Inf {'='*20}")
-            print(f"Global Step: {self.global_step}, Batch Index: {batch_idx}")
-            print(f"Current Batch Tasks: {tasks}")
+            if self.debug:
+                print(f"\n{'='*20} [CRITICAL ERROR] Loss is NaN/Inf {'='*20}")
+            if self.debug:
+                print(f"Global Step: {self.global_step}, Batch Index: {batch_idx}")
+            if self.debug:
+                print(f"Current Batch Tasks: {tasks}")
             
-            print("\n[Possible Causes Candidates]")
-            print("1. Learning Rate Explosion: 초기 LR이 너무 높거나 Warmup이 부족할 수 있습니다.")
-            print("2. Gradient Explosion: gradient_clip_val 설정을 확인하세요.")
-            print("3. Invalid Data/Labels: Label이 전부 -100이거나 Input에 NaN이 있을 수 있습니다.")
-            print("4. Logit Instability: 모델 출력 Logit이 발산했는지 확인하세요.")
+            if self.debug:
+                print("\n[Possible Causes Candidates]")
+            if self.debug:
+                print("1. Learning Rate Explosion: 초기 LR이 너무 높거나 Warmup이 부족할 수 있습니다.")
+            if self.debug:
+                print("2. Gradient Explosion: gradient_clip_val 설정을 확인하세요.")
+            if self.debug:
+                print("3. Invalid Data/Labels: Label이 전부 -100이거나 Input에 NaN이 있을 수 있습니다.")
+            if self.debug:
+                print("4. Logit Instability: 모델 출력 Logit이 발산했는지 확인하세요.")
 
             # 1. Label 통계 확인
             if "labels" in batch:
                 labels = batch.labels
                 valid_labels = (labels != -100).sum()
-                print(f"\n[Label Statistics] Total: {labels.numel()}, Valid(!=-100): {valid_labels.item()}")
+                if self.debug:
+                    print(f"\n[Label Statistics] Total: {labels.numel()}, Valid(!=-100): {valid_labels.item()}")
                 if valid_labels == 0:
-                    print("!!! Warning: All labels are -100 (Ignore Index). Loss becomes 0 or NaN. !!!")
+                    if self.debug:
+                        print("!!! Warning: All labels are -100 (Ignore Index). Loss becomes 0 or NaN. !!!")
             
             # 2. Logits 통계 확인
             if logits is not None:
-                print(f"\n[Logits Statistics] Max: {logits.max().item()}, Min: {logits.min().item()}, Mean: {logits.mean().item()}")
+                if self.debug:
+                    print(f"\n[Logits Statistics] Max: {logits.max().item()}, Min: {logits.min().item()}, Mean: {logits.mean().item()}")
                 if torch.isnan(logits).any():
-                    print("!!! Logits contain NaN values !!!")
+                    if self.debug:
+                        print("!!! Logits contain NaN values !!!")
             
             # 3. 입력 샘플 디코딩하여 출력 (데이터 문제 확인용)
             try:
-                print("\n[Sample Input Decoding]")
+                if self.debug:
+                    print("\n[Sample Input Decoding]")
                 tokenizer = self.blip2model.llm_tokenizer
                 # batch 객체 구조에 따라 input_ids 가져오기
                 input_ids = batch.input_ids if hasattr(batch, 'input_ids') else batch.prompt_input_ids
                 if input_ids is not None:
                     decoded = tokenizer.decode(input_ids[0], skip_special_tokens=False)
-                    print(f"Decoded Input (truncated 500 chars): {decoded[:500]} ...")
+                    if self.debug:
+                        print(f"Decoded Input (truncated 500 chars): {decoded[:500]} ...")
             except Exception as e:
-                print(f"Failed to decode sample: {e}")
+                if self.debug:
+                    print(f"Failed to decode sample: {e}")
             
-            print("="*60 + "\n")
+            if self.debug:
+                print("="*60 + "\n")
             # 필요 시 에러를 발생시켜 학습 중단: raise ValueError("Training stopped due to NaN")
         for i, t in enumerate(tasks):
             if "bace" in t or "chebi" in t:
                 valid_len = (batch.labels[i] != -100).sum()
                 if valid_len == 0:
-                    print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
+                    if self.debug:
+                        print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
                 if hasattr(self.args, "train_molpo") and self.args.train_molpo:
                     compute_loss_context_manager = torch.amp.autocast
                     len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
@@ -548,31 +794,64 @@ class Blip2Stage3(pl.LightningModule):
                             outputs[f"{k}/chosen"] = chosen_avg_norm
                             outputs[f"{k}/reject"] = reject_avg_norm
 
-        self.log(
-            "lr",
-            self.trainer.optimizers[0].param_groups[0]["lr"],
-            batch_size=self.args.batch_size,
-            sync_dist=False,
-        )
+        # 5개 LR 그룹 모두 로깅
+        self._log_all_learning_rates()
 
+        # loss를 progress bar에 표시
+        loss_value = loss.clone().detach().item() if loss is not None else 0.0
         self.log(
-            f"train_total_loss",
-            loss.clone().detach().item() if loss is not None else 0.0,
+            "loss",
+            loss_value,
             batch_size=self.args.batch_size,
             sync_dist=False,
+            prog_bar=True,
         )
 
         for k, v in outputs.items():
-            # 이미 pop 했거나 처리한 키 제외
-            if k in ["logits", "loss", "instance_loss"]: continue
-            
+            # logits는 너무 큰 텐서이므로 제외
+            if k in ["logits"]:
+                continue
+
+            # None 체크 추가
+            if v is None:
+                continue
+
+            # new_token_debug는 별도 처리
+            if k == "new_token_debug":
+                continue
+
             val_to_log = v.mean() if isinstance(v, torch.Tensor) else v
+
+            # instance_loss는 progress bar에도 표시
+            show_in_prog_bar = (k == "instance_loss")
+
             self.log(
                 f"train/{k}",
                 float(val_to_log),
                 batch_size=self.args.batch_size,
                 sync_dist=False,
+                on_step=True,
+                on_epoch=False,
+                logger=True,
+                prog_bar=show_in_prog_bar,
             )
+
+        # ==============================================================================
+        # [NEW] 새 토큰 디버깅 정보 wandb 로깅
+        # ==============================================================================
+        if "new_token_debug" in outputs and outputs["new_token_debug"]:
+            debug_info = outputs["new_token_debug"]
+            for k, v in debug_info.items():
+                if v is not None and not isinstance(v, str):
+                    self.log(
+                        f"new_token_debug/{k}",
+                        float(v),
+                        batch_size=self.args.batch_size,
+                        sync_dist=False,
+                        on_step=True,
+                        on_epoch=False,
+                        logger=True,
+                    )
 
         if not hasattr(self, "task_specific_outputs"):
             self.task_specific_outputs = {}
@@ -597,61 +876,12 @@ class Blip2Stage3(pl.LightningModule):
         # [Fix 2.2] embed_tokens 및 lm_head gradient 로깅
         self._log_embedding_gradients()
 
+        # Weight Norm Logging (설정된 interval마다, batch_idx 기준)
+        self._log_weight_norms(batch_idx)
+
         # [Fix 2.3] Training sample token-level logging
         if self.global_step % self.trainer.log_every_n_steps == 0:
             self._log_sample_predictions(batch, outputs, tasks, batch_idx, mode="train")
-
-        # ==================================================================
-        # [DEBUG] GPU-specific monitoring around iteration 30-35
-        # ==================================================================
-        if 28 <= batch_idx <= 35:
-            import torch.distributed as dist
-            import torch.cuda as cuda
-            import sys
-
-            rank = dist.get_rank() if dist.is_initialized() else 0
-            world_size = dist.get_world_size() if dist.is_initialized() else 1
-
-            # Get GPU memory info
-            gpu_id = rank  # In DDP, rank usually corresponds to GPU ID
-            mem_allocated = cuda.memory_allocated(gpu_id) / 1024**3  # GB
-            mem_reserved = cuda.memory_reserved(gpu_id) / 1024**3    # GB
-            mem_free = (cuda.get_device_properties(gpu_id).total_memory - cuda.memory_reserved(gpu_id)) / 1024**3
-
-            print(f"\n{'='*70}")
-            print(f"[GPU{rank}] ✓ training_step COMPLETED for batch_idx={batch_idx}")
-            print(f"[GPU{rank}]   global_step={self.global_step}")
-            print(f"[GPU{rank}]   loss={loss.item() if loss is not None else 'None'}")
-            print(f"[GPU{rank}]   Memory: allocated={mem_allocated:.2f}GB, reserved={mem_reserved:.2f}GB, free={mem_free:.2f}GB")
-            print(f"[GPU{rank}]   Rank {rank}/{world_size}")
-            print(f"{'='*70}\n")
-            sys.stdout.flush()
-
-            # Critical barrier test at batch 31
-            if batch_idx == 31:
-                print(f"[GPU{rank}] >>> ENTERING BARRIER TEST at batch 31 <<<")
-                sys.stdout.flush()
-
-                if dist.is_initialized():
-                    try:
-                        import time
-                        start_time = time.time()
-                        print(f"[GPU{rank}] Waiting at barrier...")
-                        sys.stdout.flush()
-
-                        dist.barrier()
-
-                        elapsed = time.time() - start_time
-                        print(f"[GPU{rank}] >>> BARRIER PASSED! (took {elapsed:.3f}s) <<<")
-                        sys.stdout.flush()
-                    except Exception as e:
-                        print(f"[GPU{rank}] !!! BARRIER FAILED: {e} !!!")
-                        sys.stdout.flush()
-                        raise
-                else:
-                    print(f"[GPU{rank}] DDP not initialized, skipping barrier test")
-                    sys.stdout.flush()
-        # ==================================================================
 
         return loss
 
@@ -665,6 +895,41 @@ class Blip2Stage3(pl.LightningModule):
                 self._embed_tokens_param = param
             if 'lm_head' in name and self._lm_head_param is None:
                 self._lm_head_param = param
+
+    def _log_all_learning_rates(self):
+        """5개 LR 그룹 모두 wandb에 로깅
+
+        - lr/lora: LoRA 파라미터 LR
+        - lr/embed_orig: 기존 vocab embedding LR
+        - lr/embed_new: 새 vocab embedding LR (effective)
+        - lr/head_orig: 기존 vocab head LR
+        - lr/head_new: 새 vocab head LR (effective)
+        """
+        optimizer = self.trainer.optimizers[0]
+
+        # param_groups 순서: [lora, embed, head, other] (configure_optimizers에서 설정)
+        for group in optimizer.param_groups:
+            group_name = group.get('name', 'unknown')
+            base_lr = group['lr']
+
+            if group_name == 'lora':
+                self.log("lr/lora", base_lr, batch_size=self.args.batch_size, sync_dist=False)
+            elif group_name == 'embed':
+                # embed_orig는 base LR, embed_new는 lr_new 필드 사용
+                self.log("lr/embed_orig", base_lr, batch_size=self.args.batch_size, sync_dist=False)
+                lr_new = group.get('lr_new', base_lr)
+                self.log("lr/embed_new", lr_new, batch_size=self.args.batch_size, sync_dist=False)
+            elif group_name == 'head':
+                # head_orig는 base LR, head_new는 lr_new 필드 사용
+                self.log("lr/head_orig", base_lr, batch_size=self.args.batch_size, sync_dist=False)
+                lr_new = group.get('lr_new', base_lr)
+                self.log("lr/head_new", lr_new, batch_size=self.args.batch_size, sync_dist=False)
+            elif group_name == 'other':
+                self.log("lr/other", base_lr, batch_size=self.args.batch_size, sync_dist=False)
+
+        # 기존 'lr' 키도 유지 (backward compatibility, LoRA LR 사용)
+        lora_lr = optimizer.param_groups[0]["lr"] if optimizer.param_groups else 0.0
+        self.log("lr", lora_lr, batch_size=self.args.batch_size, sync_dist=False)
 
     def _log_embedding_gradients(self):
         """embed_tokens 및 lm_head의 gradient norm 로깅"""
@@ -689,6 +954,517 @@ class Blip2Stage3(pl.LightningModule):
                  batch_size=self.args.batch_size, sync_dist=False)
         self.log("train/lm_head_grad_norm", lm_head_grad_norm,
                  batch_size=self.args.batch_size, sync_dist=False)
+
+    def _cache_weight_norm_params(self):
+        """Weight norm 로깅을 위한 파라미터 캐싱 (첫 호출 시 한 번만)"""
+        if self._weight_norm_param_cache:
+            return  # 이미 캐싱됨
+
+        if not hasattr(self.blip2model, 'llm_model'):
+            return
+
+        import logging
+        log = logging.getLogger(__name__)
+
+        # 먼저 모든 파라미터 이름 출력 (디버깅용, 첫 호출 시만)
+        log.info("\n" + "=" * 70)
+        log.info("[Weight Norm] Scanning all trainable parameters...")
+        log.info("=" * 70)
+
+        all_param_names = []
+        for name, param in self.blip2model.llm_model.named_parameters():
+            if param.requires_grad:
+                all_param_names.append(name)
+        for name, param in self.blip2model.named_parameters():
+            if param.requires_grad and name not in all_param_names:
+                all_param_names.append(f"blip2model.{name}")
+
+        log.info(f"Total trainable params: {len(all_param_names)}")
+        log.info("Sample param names (first 20):")
+        for name in all_param_names[:20]:
+            log.info(f"  - {name}")
+        if len(all_param_names) > 20:
+            log.info(f"  ... and {len(all_param_names) - 20} more")
+        log.info("-" * 70)
+
+        # config에 적은 이름을 직접 패턴으로 사용
+        # 예: ["wte", "ff_out", "lora"] → wte, ff_out, lora_A/lora_B 파라미터 매칭
+        # "lora"는 특수 처리: lora_A, lora_B 둘 다 매칭
+        #
+        # [IMPORTANT] PEFT modules_to_save 처리:
+        # - PEFT가 modules_to_save로 지정된 모듈을 ModulesToSaveWrapper로 래핑
+        # - 실제 trainable weights는 "modules_to_save.default" 안에 있음
+        # - original_module은 frozen 상태로 유지됨
+        # - 예: wte.modules_to_save.default.weight (trainable)
+        #       wte.original_module.weight (frozen)
+
+        # 각 layer 패턴에 해당하는 파라미터 수집
+        # [확장된 패턴 매칭]
+        # - "lora": lora_A, lora_B 매칭
+        # - "layers.0": model.layers.0.* 전체 매칭
+        # - "layers.0.self_attn": model.layers.0.self_attn.* 매칭
+        # - "blocks.0.attn_out": LLaDA alias → layers.0.self_attn.o_proj 매칭
+        # - "o_proj": 모든 레이어의 o_proj 매칭
+        #
+        # Alias 매핑 (사용자 친화적 이름 → 실제 모델 경로)
+        LAYER_ALIASES = {
+            "blocks.0.attn_out": "layers.0.self_attn.o_proj",
+            "blocks.0.attn": "layers.0.self_attn",
+            "blocks.0.mlp": "layers.0.mlp",
+            "blocks.0": "layers.0",
+            "attn_out": "o_proj",  # LLaDA/Llama에서 attention output projection
+        }
+
+        for layer_name in self._log_weight_norm_layers:
+            # Alias 변환
+            resolved_pattern = LAYER_ALIASES.get(layer_name, layer_name)
+
+            # lora는 lora_A, lora_B 둘 다 매칭
+            if layer_name == "lora":
+                patterns = ["lora_A", "lora_B"]
+            else:
+                patterns = [resolved_pattern]
+
+            params = []
+            # LLM 모델 파라미터
+            for name, param in self.blip2model.llm_model.named_parameters():
+                if any(p in name for p in patterns):
+                    # [PEFT FIX] modules_to_save의 경우 original_module은 제외하고
+                    # modules_to_save.default만 포함 (실제 trainable weights)
+                    if "original_module" in name:
+                        continue  # frozen copy, skip
+                    params.append((name, param))
+
+            # blip2model 직접 파라미터도 검색 (graph_encoder, opt_proj, ln_graph 등)
+            for name, param in self.blip2model.named_parameters():
+                # llm_model 하위는 이미 위에서 처리했으므로 제외
+                if "llm_model" in name:
+                    continue
+                if any(p in name for p in patterns):
+                    if "original_module" in name:
+                        continue  # frozen copy, skip
+                    params.append((name, param))
+
+            if params:
+                self._weight_norm_param_cache[layer_name] = params
+                trainable_count = sum(1 for _, p in params if p.requires_grad)
+                # Alias 변환 정보 출력
+                alias_info = f" (resolved: '{resolved_pattern}')" if resolved_pattern != layer_name else ""
+                # 콘솔에 직접 출력 (log.info는 로그 레벨에 따라 안 보일 수 있음)
+                if self.debug:
+                    print(f"\n[Weight Norm Cache] [{layer_name}]{alias_info} Found {len(params)} params (trainable={trainable_count})")
+                log.info(f"[{layer_name}]{alias_info} Found {len(params)} params (trainable={trainable_count})")
+                for name, param in params[:5]:  # 처음 5개만 출력
+                    if self.debug:
+                        print(f"    - {name} (shape={list(param.shape)}, requires_grad={param.requires_grad})")
+                    log.info(f"    - {name} (shape={list(param.shape)}, requires_grad={param.requires_grad})")
+                if len(params) > 5:
+                    if self.debug:
+                        print(f"    ... and {len(params) - 5} more")
+                    log.info(f"    ... and {len(params) - 5} more")
+                # [DEBUG] trainable이 0이면 경고
+                if trainable_count == 0:
+                    if self.debug:
+                        print(f"    ⚠️ WARNING: No trainable params found! Check PEFT modules_to_save config.")
+                    log.warning(f"    ⚠️ WARNING: No trainable params found! Check PEFT modules_to_save config.")
+            else:
+                if self.debug:
+                    print(f"\n[Weight Norm Cache] [{layer_name}] No params found matching patterns: {patterns}")
+                log.warning(f"[{layer_name}] No params found matching patterns: {patterns}")
+
+        log.info("=" * 70 + "\n")
+
+    def _log_weight_norms(self, batch_idx):
+        """
+        설정된 layer들의 weight norm과 gradient norm 로깅 (batch_idx 기준)
+
+        wte/ff_out (embed/head)의 경우 5개 그룹으로 분리:
+        - lora: LoRA 파라미터
+        - embed_orig: 기존 vocab embedding (idx < original_vocab_size)
+        - embed_new: 새 vocab embedding (idx >= original_vocab_size)
+        - head_orig: 기존 vocab head (idx < original_vocab_size)
+        - head_new: 새 vocab head (idx >= original_vocab_size)
+        """
+        if not self._log_weight_norm_layers:
+            return
+
+        # batch_idx 기준으로 interval 체크 (mini-batch 단위)
+        if batch_idx % self._log_weight_norm_interval != 0:
+            return
+
+        # 첫 호출 시 파라미터 캐싱
+        if not self._weight_norm_param_cache:
+            self._cache_weight_norm_params()
+            if not self._weight_norm_param_cache:
+                return
+
+        import logging
+        log = logging.getLogger(__name__)
+
+        # original_vocab_size 가져오기
+        original_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
+
+        log.info("\n" + "=" * 70)
+        log.info(f"[Batch {batch_idx}] Weight Norm Logging (5-group split)")
+        log.info("=" * 70)
+
+        for layer_name, params in self._weight_norm_param_cache.items():
+            # wte 또는 ff_out인 경우 orig/new로 분리
+            is_embed = 'wte' in layer_name.lower() or 'embed_tokens' in layer_name.lower()
+            is_head = 'ff_out' in layer_name.lower() or 'lm_head' in layer_name.lower()
+
+            if is_embed or is_head:
+                # orig/new 분리 로깅
+                self._log_split_weight_norms(
+                    layer_name, params, original_vocab_size,
+                    is_embed, batch_idx, log
+                )
+            else:
+                # 기존 방식 (전체 합산)
+                self._log_single_weight_norm(layer_name, params, batch_idx, log)
+
+        # 상위 빈도 SELFIES 토큰 norm 로깅
+        self._log_top_selfies_token_norms(batch_idx, log)
+
+        log.info("=" * 70 + "\n")
+
+    def _log_split_weight_norms(self, layer_name, params, original_vocab_size, is_embed, batch_idx, log):
+        """wte/ff_out을 orig/new vocab으로 분리하여 로깅 (개별 토큰 norm의 평균 방식)"""
+        prefix = "embed" if is_embed else "head"
+
+        for name, param in params:
+            if not param.requires_grad:
+                continue
+
+            # 2D weight: [vocab_size, hidden_dim] 또는 [hidden_dim, vocab_size]
+            if param.dim() < 2:
+                continue
+
+            # vocab 차원 찾기 (보통 첫 번째 또는 마지막)
+            vocab_dim = 0 if param.shape[0] > param.shape[-1] else -1
+            vocab_size = param.shape[vocab_dim]
+
+            if vocab_size <= original_vocab_size:
+                # 분리 불가 (새 vocab 없음)
+                self._log_single_weight_norm(layer_name, [(name, param)], batch_idx, log)
+                continue
+
+            # orig/new 분리
+            if vocab_dim == 0:
+                orig_weight = param.data[:original_vocab_size]
+                new_weight = param.data[original_vocab_size:]
+                orig_grad = param.grad[:original_vocab_size] if param.grad is not None else None
+                new_grad = param.grad[original_vocab_size:] if param.grad is not None else None
+            else:
+                orig_weight = param.data[..., :original_vocab_size]
+                new_weight = param.data[..., original_vocab_size:]
+                orig_grad = param.grad[..., :original_vocab_size] if param.grad is not None else None
+                new_grad = param.grad[..., original_vocab_size:] if param.grad is not None else None
+
+            # orig 로깅 (개별 토큰 norm의 평균)
+            # orig_weight: [num_orig_tokens, hidden_dim] 또는 [hidden_dim, num_orig_tokens]
+            if vocab_dim == 0:
+                orig_token_norms = orig_weight.norm(2, dim=1)  # 각 토큰별 L2 norm
+                orig_grad_token_norms = orig_grad.norm(2, dim=1) if orig_grad is not None else None
+            else:
+                orig_token_norms = orig_weight.norm(2, dim=0)  # [hidden_dim, vocab] → dim=0
+                orig_grad_token_norms = orig_grad.norm(2, dim=0) if orig_grad is not None else None
+
+            orig_avg_norm = orig_token_norms.mean().item()
+            orig_avg_grad_norm = orig_grad_token_norms.mean().item() if orig_grad_token_norms is not None else 0.0
+            orig_key = f"{prefix}_orig"
+
+            if orig_key not in self._initial_weight_norms:
+                self._initial_weight_norms[orig_key] = orig_avg_norm
+            orig_init = self._initial_weight_norms[orig_key]
+            orig_change = orig_avg_norm - orig_init
+            orig_pct = (orig_change / orig_init * 100) if orig_init != 0 else 0
+
+            num_orig_tokens = orig_weight.shape[0] if vocab_dim == 0 else orig_weight.shape[-1]
+            log.info(f"  [{orig_key}] n_tokens={num_orig_tokens}, "
+                     f"avg_norm={orig_avg_norm:.4f} (init={orig_init:.4f}, {orig_pct:+.2f}%), "
+                     f"avg_grad_norm={orig_avg_grad_norm:.6f}")
+
+            self.log(f"weight_norm/{orig_key}/avg_norm", orig_avg_norm,
+                     batch_size=self.args.batch_size, sync_dist=False)
+            self.log(f"weight_norm/{orig_key}/avg_grad_norm", orig_avg_grad_norm,
+                     batch_size=self.args.batch_size, sync_dist=False)
+            self.log(f"weight_norm/{orig_key}/avg_norm_change_pct", orig_pct,
+                     batch_size=self.args.batch_size, sync_dist=False)
+
+            # new 로깅 (개별 토큰 norm의 평균)
+            if vocab_dim == 0:
+                new_token_norms = new_weight.norm(2, dim=1)
+                new_grad_token_norms = new_grad.norm(2, dim=1) if new_grad is not None else None
+            else:
+                new_token_norms = new_weight.norm(2, dim=0)
+                new_grad_token_norms = new_grad.norm(2, dim=0) if new_grad is not None else None
+
+            new_avg_norm = new_token_norms.mean().item()
+            new_avg_grad_norm = new_grad_token_norms.mean().item() if new_grad_token_norms is not None else 0.0
+            new_key = f"{prefix}_new"
+
+            if new_key not in self._initial_weight_norms:
+                self._initial_weight_norms[new_key] = new_avg_norm
+            new_init = self._initial_weight_norms[new_key]
+            new_change = new_avg_norm - new_init
+            new_pct = (new_change / new_init * 100) if new_init != 0 else 0
+
+            num_new_tokens = new_weight.shape[0] if vocab_dim == 0 else new_weight.shape[-1]
+            log.info(f"  [{new_key}] n_tokens={num_new_tokens}, "
+                     f"avg_norm={new_avg_norm:.4f} (init={new_init:.4f}, {new_pct:+.2f}%), "
+                     f"avg_grad_norm={new_avg_grad_norm:.6f}")
+
+            self.log(f"weight_norm/{new_key}/avg_norm", new_avg_norm,
+                     batch_size=self.args.batch_size, sync_dist=False)
+            self.log(f"weight_norm/{new_key}/avg_grad_norm", new_avg_grad_norm,
+                     batch_size=self.args.batch_size, sync_dist=False)
+            self.log(f"weight_norm/{new_key}/avg_norm_change_pct", new_pct,
+                     batch_size=self.args.batch_size, sync_dist=False)
+
+    def _log_single_weight_norm(self, layer_name, params, batch_idx, log):
+        """단일 layer의 weight norm 로깅 (기존 방식)"""
+        total_weight_norm = 0.0
+        total_grad_norm = 0.0
+        has_grad = False
+        param_count = 0
+
+        for name, param in params:
+            if param.requires_grad:
+                param_count += 1
+                weight_norm = param.data.norm(2).item()
+                total_weight_norm += weight_norm ** 2
+
+                if param.grad is not None:
+                    has_grad = True
+                    grad_norm = param.grad.norm(2).item()
+                    total_grad_norm += grad_norm ** 2
+
+        if param_count == 0:
+            return
+
+        # L2 norm 합산
+        total_weight_norm = total_weight_norm ** 0.5
+        total_grad_norm = total_grad_norm ** 0.5 if has_grad else 0.0
+
+        # 초기 weight norm 저장 (첫 로깅 시)
+        if layer_name not in self._initial_weight_norms:
+            self._initial_weight_norms[layer_name] = total_weight_norm
+
+        initial_norm = self._initial_weight_norms[layer_name]
+        norm_change = total_weight_norm - initial_norm
+        pct_change = (norm_change / initial_norm * 100) if initial_norm != 0 else 0
+
+        # 콘솔 로깅
+        trainable_count = sum(1 for _, p in params if p.requires_grad)
+        msg = (f"[{layer_name}] params={len(params)} (trainable={trainable_count}), "
+               f"weight_norm={total_weight_norm:.4f} (init={initial_norm:.4f}, "
+               f"delta={norm_change:+.4f}, {pct_change:+.2f}%), "
+               f"grad_norm={total_grad_norm:.6f}, has_grad={has_grad}")
+        if self.debug:
+            print(f"\n[Batch {batch_idx}] {msg}")
+        log.info(msg)
+
+        # TensorBoard/WandB 로깅
+        self.log(f"weight_norm/{layer_name}/weight_norm", total_weight_norm,
+                 batch_size=self.args.batch_size, sync_dist=False)
+        self.log(f"weight_norm/{layer_name}/grad_norm", total_grad_norm,
+                 batch_size=self.args.batch_size, sync_dist=False)
+        self.log(f"weight_norm/{layer_name}/weight_norm_change_pct", pct_change,
+                 batch_size=self.args.batch_size, sync_dist=False)
+
+    def _log_top_selfies_token_norms(self, batch_idx, log):
+        """
+        상위 빈도 SELFIES 토큰들의 Embedding/LM Head weight norm 추적
+
+        wandb에 Top5/Top10/Top15/Total 그룹별 평균 norm과 변화율 로깅
+        - top5/top10/top15: 상위 빈도 SELFIES 토큰
+        - total: 전체 새 토큰 (idx >= original_vocab_size)
+        """
+        if not self._top_selfies_tokens:
+            return
+
+        # 첫 호출 시 토큰 ID 캐싱
+        if self._top_selfies_token_ids is None:
+            self._initialize_top_selfies_token_ids()
+            if self._top_selfies_token_ids is None:
+                return
+
+        # Embedding, LM Head 파라미터 찾기
+        embed_param = None
+        head_param = None
+
+        for layer_name, params in self._weight_norm_param_cache.items():
+            if 'wte' in layer_name.lower() or 'embed_tokens' in layer_name.lower():
+                for name, param in params:
+                    if param.requires_grad and param.dim() >= 2:
+                        embed_param = param
+                        break
+            elif 'ff_out' in layer_name.lower() or 'lm_head' in layer_name.lower():
+                for name, param in params:
+                    if param.requires_grad and param.dim() >= 2:
+                        head_param = param
+                        break
+
+        if embed_param is None and head_param is None:
+            return
+
+        log.info("-" * 50)
+        log.info("[Top SELFIES Token Norm Tracking]")
+
+        # original_vocab_size 가져오기
+        original_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
+
+        # 전체 새 토큰 ID 리스트 생성 (idx >= original_vocab_size)
+        if embed_param is not None:
+            vocab_size = embed_param.shape[0]
+            total_new_token_ids = list(range(original_vocab_size, vocab_size))
+        elif head_param is not None:
+            is_vocab_first = head_param.shape[0] > head_param.shape[-1]
+            vocab_size = head_param.shape[0] if is_vocab_first else head_param.shape[-1]
+            total_new_token_ids = list(range(original_vocab_size, vocab_size))
+        else:
+            total_new_token_ids = []
+
+        # 그룹별 토큰 인덱스 (top5, top10, top15, total)
+        groups = {
+            'top5': self._top_selfies_token_ids[:5],
+            'top10': self._top_selfies_token_ids[:10],
+            'top15': self._top_selfies_token_ids[:15],
+            'total': total_new_token_ids  # 전체 새 토큰 (idx >= original_vocab_size)
+        }
+
+        for group_name, token_ids in groups.items():
+            valid_ids = [tid for tid in token_ids if tid is not None]
+            if not valid_ids:
+                continue
+
+            # Embedding norm 계산
+            if embed_param is not None:
+                embed_norms = self._compute_token_norms(embed_param, valid_ids, is_vocab_first=True)
+                if embed_norms:
+                    avg_embed_norm = sum(embed_norms) / len(embed_norms)
+                    key = f"embed_{group_name}"
+
+                    if key not in self._top_selfies_initial_norms:
+                        self._top_selfies_initial_norms[key] = avg_embed_norm
+                    init_norm = self._top_selfies_initial_norms[key]
+                    pct_change = ((avg_embed_norm - init_norm) / init_norm * 100) if init_norm != 0 else 0
+
+                    log.info(f"  Embed {group_name}: avg_norm={avg_embed_norm:.4f} "
+                             f"(init={init_norm:.4f}, {pct_change:+.2f}%)")
+
+                    self.log(f"top_selfies/{group_name}/embed_norm", avg_embed_norm,
+                             batch_size=self.args.batch_size, sync_dist=False)
+                    self.log(f"top_selfies/{group_name}/embed_change_pct", pct_change,
+                             batch_size=self.args.batch_size, sync_dist=False)
+
+            # LM Head norm 계산
+            if head_param is not None:
+                # LM Head는 [hidden_dim, vocab_size] 형태일 수 있음
+                is_vocab_first = head_param.shape[0] > head_param.shape[-1]
+                head_norms = self._compute_token_norms(head_param, valid_ids, is_vocab_first=is_vocab_first)
+                if head_norms:
+                    avg_head_norm = sum(head_norms) / len(head_norms)
+                    key = f"head_{group_name}"
+
+                    if key not in self._top_selfies_initial_norms:
+                        self._top_selfies_initial_norms[key] = avg_head_norm
+                    init_norm = self._top_selfies_initial_norms[key]
+                    pct_change = ((avg_head_norm - init_norm) / init_norm * 100) if init_norm != 0 else 0
+
+                    log.info(f"  Head  {group_name}: avg_norm={avg_head_norm:.4f} "
+                             f"(init={init_norm:.4f}, {pct_change:+.2f}%)")
+
+                    self.log(f"top_selfies/{group_name}/head_norm", avg_head_norm,
+                             batch_size=self.args.batch_size, sync_dist=False)
+                    self.log(f"top_selfies/{group_name}/head_change_pct", pct_change,
+                             batch_size=self.args.batch_size, sync_dist=False)
+
+            # Gradient norm (학습 진행 상태 확인용)
+            if embed_param is not None and embed_param.grad is not None:
+                embed_grad_norms = self._compute_token_norms(embed_param.grad, valid_ids, is_vocab_first=True)
+                if embed_grad_norms:
+                    avg_grad_norm = sum(embed_grad_norms) / len(embed_grad_norms)
+                    self.log(f"top_selfies/{group_name}/embed_grad_norm", avg_grad_norm,
+                             batch_size=self.args.batch_size, sync_dist=False)
+
+            if head_param is not None and head_param.grad is not None:
+                is_vocab_first = head_param.shape[0] > head_param.shape[-1]
+                head_grad_norms = self._compute_token_norms(head_param.grad, valid_ids, is_vocab_first=is_vocab_first)
+                if head_grad_norms:
+                    avg_head_grad_norm = sum(head_grad_norms) / len(head_grad_norms)
+                    self.log(f"top_selfies/{group_name}/head_grad_norm", avg_head_grad_norm,
+                             batch_size=self.args.batch_size, sync_dist=False)
+
+    def _initialize_top_selfies_token_ids(self):
+        """상위 SELFIES 토큰의 ID를 토크나이저에서 조회하여 캐싱"""
+        import logging
+        log = logging.getLogger(__name__)
+
+        # LLaDA의 경우 llm_tokenizer에 SELFIES 토큰이 추가됨
+        tokenizer = None
+        if hasattr(self, 'blip2model') and hasattr(self.blip2model, 'llm_tokenizer'):
+            tokenizer = self.blip2model.llm_tokenizer
+        elif hasattr(self, 'tokenizer') and self.tokenizer is not None:
+            tokenizer = self.tokenizer
+
+        if tokenizer is None:
+            log.warning("[Top SELFIES] Tokenizer not available")
+            if self.debug:
+                print("[Top SELFIES] WARNING: Tokenizer not available")
+            return
+
+        self._top_selfies_token_ids = []
+        log.info("[Top SELFIES Token ID Mapping]")
+        if self.debug:
+            print("\n[Top SELFIES Token ID Mapping]")
+
+        for token in self._top_selfies_tokens:
+            try:
+                token_id = tokenizer.convert_tokens_to_ids(token)
+                # UNK 토큰이면 None으로 설정
+                if token_id == tokenizer.unk_token_id:
+                    log.warning(f"  {token}: UNK (not found)")
+                    if self.debug:
+                        print(f"  {token}: UNK (not found)")
+                    self._top_selfies_token_ids.append(None)
+                else:
+                    log.info(f"  {token}: {token_id}")
+                    if self.debug:
+                        print(f"  {token}: {token_id}")
+                    self._top_selfies_token_ids.append(token_id)
+            except Exception as e:
+                log.warning(f"  {token}: Error - {e}")
+                if self.debug:
+                    print(f"  {token}: Error - {e}")
+                self._top_selfies_token_ids.append(None)
+
+        # 유효한 토큰 ID 개수 확인
+        valid_count = sum(1 for tid in self._top_selfies_token_ids if tid is not None)
+        log.info(f"[Top SELFIES] Initialized {valid_count}/{len(self._top_selfies_tokens)} token IDs")
+        if self.debug:
+            print(f"[Top SELFIES] Initialized {valid_count}/{len(self._top_selfies_tokens)} token IDs\n")
+
+    def _compute_token_norms(self, param, token_ids, is_vocab_first=True):
+        """특정 토큰들의 weight norm 계산"""
+        norms = []
+        vocab_size = param.shape[0] if is_vocab_first else param.shape[-1]
+
+        for tid in token_ids:
+            if tid is None or tid >= vocab_size:
+                continue
+
+            if is_vocab_first:
+                # [vocab_size, hidden_dim] 형태
+                token_weight = param.data[tid]
+            else:
+                # [hidden_dim, vocab_size] 형태
+                token_weight = param.data[..., tid]
+
+            norms.append(token_weight.norm(2).item())
+
+        return norms
 
     def _log_sample_predictions(self, batch, outputs, tasks, batch_idx, mode="train",
                                  num_samples=2, predictions=None, targets=None, prompts=None, generated_ids=None):
@@ -832,8 +1608,10 @@ class Blip2Stage3(pl.LightningModule):
                         generated_text = self.blip2model.llm_tokenizer.decode(generated_ids[i], skip_special_tokens=False)
                         logger.info(f"[Generated Output] Decoded Text: {generated_text}")
 
-                        # Token breakdown
-                        gen_tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(generated_ids[i])
+                        # Token breakdown (filter out-of-vocab)
+                        vocab_size = len(self.blip2model.llm_tokenizer)
+                        valid_gen_ids = [tid for tid in gen_id_list if 0 <= tid < vocab_size]
+                        gen_tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(valid_gen_ids)
                         logger.info(f"[Generated Output] Tokens: {' || '.join(gen_tokens[:50])}{'...' if len(gen_tokens) > 50 else ''}")
                     except Exception as e:
                         logger.warning(f"Could not process generated_ids: {e}")
@@ -843,8 +1621,10 @@ class Blip2Stage3(pl.LightningModule):
                     pred_ids = self.blip2model.llm_tokenizer.encode(predictions[i], add_special_tokens=False)
                     logger.info(f"\n[Re-encoded Prediction] Token IDs (len={len(pred_ids)}): {pred_ids}")
 
-                    # Token breakdown
-                    pred_tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(pred_ids)
+                    # Token breakdown (filter out-of-vocab)
+                    vocab_size = len(self.blip2model.llm_tokenizer)
+                    valid_pred_ids = [tid for tid in pred_ids if 0 <= tid < vocab_size]
+                    pred_tokens = self.blip2model.llm_tokenizer.convert_ids_to_tokens(valid_pred_ids)
                     logger.info(f"[Re-encoded Prediction] Tokens: {' || '.join(pred_tokens)}")
                 except Exception as e:
                     logger.warning(f"Token debug error: {e}")
@@ -867,20 +1647,24 @@ class Blip2Stage3(pl.LightningModule):
         if (mode == "train") or not epoch_end:
             # log dataset specific losses
             new_outputs = {
-                k: v for k, v in outputs.items() if v.shape != torch.Size([])
+                k: v for k, v in outputs.items()
+                if isinstance(v, torch.Tensor) and v.shape != torch.Size([])
             }
 
             for task in tasks:
-                task_specific_outputs.setdefault(
-                    task, {k: [] for k in new_outputs.keys()}
-                )
+                if task not in task_specific_outputs:
+                    task_specific_outputs[task] = {}
+                for k in new_outputs.keys():
+                    if k not in task_specific_outputs[task]:
+                        task_specific_outputs[task][k] = []
 
             for metric, v in new_outputs.items():
 
                 for i in range(v.shape[0]):
                     if torch.isnan(v[i]):
                         if i < 5:  # 로그 폭주 방지용
-                            print(f"[DEBUG] NaN detected for task: {tasks[i]} in metric: {metric}")
+                            if self.debug:
+                                print(f"[DEBUG] NaN detected for task: {tasks[i]} in metric: {metric}")
                         continue
 
                     task = tasks[i]
@@ -927,6 +1711,12 @@ class Blip2Stage3(pl.LightningModule):
             if '.blocks.' in name or 'transformer.blocks' in name:
                 continue
 
+            # [CRITICAL] PEFT modules_to_save가 적용된 경우:
+            # - modules_to_save.default: 실제 학습되는 weights (trainable로 설정)
+            # - original_module: frozen copy (forward에서 사용 안됨, trainable로 설정하면 안됨)
+            if 'original_module' in name:
+                continue  # PEFT original_module은 건드리지 않음
+
             # LLaDA: wte (input embedding), ff_out (output head at transformer level ONLY)
             # Standard: embed_tokens, lm_head
             name_lower = name.lower()
@@ -962,6 +1752,12 @@ class Blip2Stage3(pl.LightningModule):
         self.train_list_probs = []
         self.train_total_avg_loss = 0.0
         self.train_total_seen_data_size = 0
+
+        # ======================================================================
+        # Epoch 단위 validation metric 누적을 위한 초기화
+        # ======================================================================
+        self.epoch_val_metrics = {}  # {metric_key: [values]}
+        self.epoch_val_count = 0  # epoch 내 validation 횟수
 
         self.trainer.train_dataloader.collate_fn.current_epoch = (
             self.trainer.current_epoch
@@ -1186,15 +1982,48 @@ class Blip2Stage3(pl.LightningModule):
 
     def on_evaluation_epoch_start(self):
         # Print validation start indicator
-        print(f"\n{'='*70}")
-        print(f"🔍 [VALIDATION] Starting validation at step {self.global_step}")
-        print(f"🔍 [VALIDATION] Current epoch: {self.current_epoch}")
-        print(f"🔍 [VALIDATION] Trainer state: {self.trainer.state.stage if hasattr(self.trainer, 'state') else 'N/A'}")
-        print(f"{'='*70}\n")
+        if self.debug:
+            print(f"\n{'='*70}")
+        if self.debug:
+            print(f"🔍 [VALIDATION] Starting validation at step {self.global_step}")
+        if self.debug:
+            print(f"🔍 [VALIDATION] Current epoch: {self.current_epoch}")
+        if self.debug:
+            print(f"🔍 [VALIDATION] Trainer state: {self.trainer.state.stage if hasattr(self.trainer, 'state') else 'N/A'}")
+        if self.debug:
+            print(f"{'='*70}\n")
         import sys
         sys.stdout.flush()
 
-        self.list_logs = {
+        # ======================================================================
+        # Multi-Strategy Validation 설정
+        # ======================================================================
+        is_llada = "llada" in self.args.llm_model.lower()
+        val_strategies = getattr(self.args, "val_strategies", None)
+
+        if is_llada and val_strategies is not None and len(val_strategies) > 0:
+            # Multi-strategy 모드
+            self.active_val_strategies = val_strategies
+            if self.debug:
+                print(f"🔍 [Multi-Strategy Validation] Active strategies: {self.active_val_strategies}")
+        else:
+            # 단일 전략 모드 (기존 호환)
+            self.active_val_strategies = ["default"]
+
+        # 각 전략별 list_logs 초기화
+        self.strategy_list_logs = {}
+        for strategy in self.active_val_strategies:
+            self.strategy_list_logs[strategy] = {
+                "predictions": [],
+                "targets": [],
+                "tasks": [],
+                "probs": [],
+                "prompts": [],
+                "input_mol_strings": [],
+            }
+
+        # LLaDA Classification 최적화용 likelihood 전략 추가
+        self.strategy_list_logs["likelihood"] = {
             "predictions": [],
             "targets": [],
             "tasks": [],
@@ -1202,19 +2031,25 @@ class Blip2Stage3(pl.LightningModule):
             "prompts": [],
             "input_mol_strings": [],
         }
+
+        # 기존 호환성을 위한 기본 list_logs (첫 번째 전략 참조)
+        self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
+
         self.debug_task_counts = {}
-        self.total_avg_loss = 0.0
-        self.total_seen_data_size = 0
-        # self.task_subtask_name_pairs = self.trainer.datamodule.dataset_split[
-        #     "test"
-        # ].task_subtask_name_pairs
 
         self.task_subtask_name_pairs = self.trainer.datamodule.task_subtask_name_pairs
 
-        self.eval_dataset_losses = {
-            task_subtask_pair: {"avg_loss": 0.0, "num_instances": 0}
-            for task_subtask_pair in self.task_subtask_name_pairs
+        # 전략별 generation loss 저장용 (생성 결과 기반 loss)
+        self.strategy_total_gen_loss = {strategy: 0.0 for strategy in self.active_val_strategies}
+        self.strategy_total_gen_loss_count = {strategy: 0 for strategy in self.active_val_strategies}
+        self.strategy_dataset_gen_losses = {
+            strategy: {
+                task_subtask_pair: {"gen_loss": 0.0, "num_instances": 0}
+                for task_subtask_pair in self.task_subtask_name_pairs
+            }
+            for strategy in self.active_val_strategies
         }
+
         self.eval_task_specific_outputs = {}
 
         if not hasattr(self, "task_specific_chosen_reward"):
@@ -1267,7 +2102,8 @@ class Blip2Stage3(pl.LightningModule):
         # [Progress Indicator] Show validation progress every 100 batches
         # ----------------------------------------------------------------------
         if batch_idx % 100 == 0 and batch_idx > 0:
-            print(f"📊 Validation progress: batch {batch_idx}...")
+            if self.debug:
+                print(f"📊 Validation progress: batch {batch_idx}...")
 
         # ----------------------------------------------------------------------
         # [Step 1] 초기 데이터 및 변수 설정
@@ -1288,60 +2124,407 @@ class Blip2Stage3(pl.LightningModule):
         attentions = None
 
         is_llada = "llada" in self.args.llm_model.lower()
-        
-        # ----------------------------------------------------------------------
-        # [Step 3] Generation (추론) - 메모리 절약을 위해 no_grad 필수
-        # ----------------------------------------------------------------------
-        gen_kwargs = {
-            "graphs": (graphs, additional_graphs),
-            "input_ids": batch.prompt_input_ids,
-            "attention_mask": batch.prompt_attention_mask,
-            "is_mol_token": is_mol_token,
-            "max_length": self.gen_max_len,
-        }
-        
-        if is_llada:
-            # LLaDA 전용 옵션
-            gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64) 
-            gen_kwargs["gen_length"] = self.gen_max_len
-            gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "low_confidence")
-        else:
-            # AR 모델 전용 옵션
-            gen_kwargs["num_beams"] = self.num_beams
-            gen_kwargs["min_length"] = self.min_len
-            gen_kwargs["output_attentions"] = self.args.log_attn_score
-        
-        # Generation 실행
-        with torch.no_grad():
-            gen_outputs = self.blip2model.generate(**gen_kwargs)
 
-        # Logits 안전하게 추출
-        if hasattr(gen_outputs, "logits"):
-            gen_logits = gen_outputs.logits
-        else:
+        # Task 이름 추출 (multi-strategy에서 공통 사용)
+        task_names = [id2task(task_id.item()) for task_id in batch.tasks]
+
+        # ===========================================================================
+        # [LLaDA 혼합 배치 처리] Classification과 Generation 샘플 분리
+        #
+        # 혼합 배치 (Classification + Generation Task가 섞인 경우):
+        # - Classification 샘플: Likelihood 비교 방식으로 평가
+        # - Generation 샘플: 실제 Generation으로 평가
+        # - 각각의 결과를 적절한 strategy_list_logs에 누적
+        #
+        # LLaDA 논문 Appendix B.5 (MMLU 평가 방식):
+        # - Classification 태스크에서는 generation 없이 Likelihood 비교만 사용
+        # - 각 후보(True/False)의 log-likelihood를 계산하여 argmax로 예측
+        # ===========================================================================
+
+        # 샘플별 분류
+        cls_indices = [i for i, t in enumerate(task_names) if t in CLASSIFICATION_BENCHMARKS]
+        gen_indices = [i for i, t in enumerate(task_names) if t not in CLASSIFICATION_BENCHMARKS]
+
+        is_all_classification = len(gen_indices) == 0
+        is_all_generation = len(cls_indices) == 0
+        is_mixed_batch = not is_all_classification and not is_all_generation
+
+        # [혼합 배치 처리] Classification과 Generation을 각각 처리
+        if is_llada and is_mixed_batch:
+            # -----------------------------------------------------------------------
+            # [혼합 배치] Classification 샘플 처리 (Likelihood 방식)
+            # -----------------------------------------------------------------------
+            if len(cls_indices) > 0:
+                cls_task_names = [task_names[i] for i in cls_indices]
+
+                # Classification 샘플에 대해 Likelihood 계산
+                with torch.no_grad():
+                    # 배치에서 Classification 샘플만 추출하여 처리
+                    cls_prompt_input_ids = batch.prompt_input_ids[cls_indices]
+                    cls_prompt_attention_mask = batch.prompt_attention_mask[cls_indices]
+                    cls_is_mol_token = is_mol_token[cls_indices] if is_mol_token is not None else None
+
+                    cls_probs = self.blip2model.compute_binary_prob_likelihood(
+                        graphs=(graphs, additional_graphs),  # 그래프는 전체 전달 (내부에서 처리)
+                        input_ids=cls_prompt_input_ids,
+                        attention_mask=cls_prompt_attention_mask,
+                        is_mol_token=cls_is_mol_token,
+                    )
+                    cls_probs_list = cls_probs.cpu().tolist()
+
+                    # Likelihood에서 predictions 도출
+                    cls_predictions = []
+                    for p in cls_probs_list:
+                        if p[1] > p[0]:
+                            cls_predictions.append("<BOOLEAN> True </BOOLEAN>")
+                        else:
+                            cls_predictions.append("<BOOLEAN> False </BOOLEAN>")
+
+                # Classification 샘플의 targets 추출
+                cls_gen_labels = batch.gen_labels[cls_indices]
+                cls_target_ids = torch.where(
+                    cls_gen_labels == -100,
+                    self.blip2model.llm_tokenizer.pad_token_id,
+                    cls_gen_labels,
+                )
+                cls_targets = self.blip2model.llm_tokenizer.batch_decode(cls_target_ids)
+                cls_targets = [t.replace(self.blip2model.llm_tokenizer.pad_token, "") for t in cls_targets]
+
+                # Classification 샘플의 prompts/input_mol_strings 추출
+                cls_input_ids = batch.input_ids[cls_indices]
+                cls_prompts = self.blip2model.llm_tokenizer.batch_decode(cls_input_ids, skip_special_tokens=False)
+                cls_prompts = [p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in cls_prompts]
+
+                cls_input_mol_strings_raw = batch.input_mol_strings[cls_indices]
+                cls_input_mol_strings = self.blip2model.llm_tokenizer.batch_decode(cls_input_mol_strings_raw)
+                cls_input_mol_strings = [p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in cls_input_mol_strings]
+
+                # likelihood 전략에 Classification 결과 누적
+                self.strategy_list_logs["likelihood"]["predictions"].extend(cls_predictions)
+                self.strategy_list_logs["likelihood"]["targets"].extend(cls_targets)
+                self.strategy_list_logs["likelihood"]["tasks"].extend(cls_task_names)
+                self.strategy_list_logs["likelihood"]["probs"].extend(cls_probs_list)
+                self.strategy_list_logs["likelihood"]["prompts"].extend(cls_prompts)
+                self.strategy_list_logs["likelihood"]["input_mol_strings"].extend(cls_input_mol_strings)
+
+            # -----------------------------------------------------------------------
+            # [혼합 배치] Generation 샘플 처리 (실제 Generation 방식)
+            # -----------------------------------------------------------------------
+            if len(gen_indices) > 0:
+                gen_task_names = [task_names[i] for i in gen_indices]
+
+                # Generation 샘플 추출
+                gen_prompt_input_ids = batch.prompt_input_ids[gen_indices]
+                gen_prompt_attention_mask = batch.prompt_attention_mask[gen_indices]
+                gen_is_mol_token = is_mol_token[gen_indices] if is_mol_token is not None else None
+                gen_gen_labels = batch.gen_labels[gen_indices]
+
+                # Step-wise 로깅용 target_label, input_text 계산 (첫 번째 샘플만)
+                _log_target_ids = torch.where(
+                    gen_gen_labels[0:1] == -100,
+                    self.blip2model.llm_tokenizer.pad_token_id,
+                    gen_gen_labels[0:1],
+                )
+                _log_target_label = self.blip2model.llm_tokenizer.decode(_log_target_ids[0]).replace(self.blip2model.llm_tokenizer.pad_token, "").strip()
+                _log_input_text = self.blip2model.llm_tokenizer.decode(gen_prompt_input_ids[0], skip_special_tokens=False).replace(self.blip2model.llm_tokenizer.pad_token, "").strip()
+
+                # 각 전략별 Generation 수행
+                for strategy in self.active_val_strategies:
+                    gen_kwargs = {
+                        "graphs": (graphs, additional_graphs),
+                        "input_ids": gen_prompt_input_ids,
+                        "attention_mask": gen_prompt_attention_mask,
+                        "is_mol_token": gen_is_mol_token,
+                        "max_length": self.gen_max_len,
+                        "target_label": _log_target_label,
+                        "input_text": _log_input_text,
+                        "num_gpus": self.trainer.world_size,
+                        "total_dataset_size": len(self.trainer.val_dataloaders.dataset) if hasattr(self.trainer, 'val_dataloaders') and self.trainer.val_dataloaders else None,
+                        "global_rank": self.trainer.global_rank,  # GPU rank 0에서만 step-wise 로깅
+                        "mode": mode,  # val/test mode 전달 (step-wise 로깅 디렉토리 분리용)
+                        "strategy": strategy,  # step-wise 로깅 전략별 독립 카운터용
+                        "global_step": self.trainer.global_step,  # 학습 global step (로그 파일명용)
+                    }
+
+                    # LLaDA 전용 옵션
+                    gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
+                    gen_kwargs["gen_length"] = self.gen_max_len
+
+                    if strategy == "default":
+                        gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
+                        if getattr(self.args, "use_semi_ar", False):
+                            gen_kwargs["use_semi_ar"] = True
+                            gen_kwargs["task_name"] = gen_task_names
+                    elif strategy == "random":
+                        gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
+                        gen_kwargs["use_semi_ar"] = False
+                    elif strategy == "semi_ar":
+                        gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
+                        gen_kwargs["use_semi_ar"] = True
+                        gen_kwargs["task_name"] = gen_task_names
+                    elif strategy == "low_confidence":
+                        gen_kwargs["remasking_strategy"] = "low_confidence"
+                        gen_kwargs["use_semi_ar"] = False
+                    elif strategy == "semi_ar_low_confidence":
+                        gen_kwargs["remasking_strategy"] = "low_confidence"
+                        gen_kwargs["use_semi_ar"] = True
+                        gen_kwargs["task_name"] = gen_task_names
+                    else:
+                        gen_kwargs["remasking_strategy"] = "random"
+
+                    with torch.no_grad():
+                        gen_outputs = self.blip2model.generate(**gen_kwargs)
+
+                    gen_predictions = gen_outputs.predictions
+                    gen_predictions = [p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in gen_predictions]
+
+                    # Generation 샘플의 targets
+                    gen_target_ids = torch.where(
+                        gen_gen_labels == -100,
+                        self.blip2model.llm_tokenizer.pad_token_id,
+                        gen_gen_labels,
+                    )
+                    gen_targets = self.blip2model.llm_tokenizer.batch_decode(gen_target_ids)
+                    gen_targets = [t.replace(self.blip2model.llm_tokenizer.pad_token, "") for t in gen_targets]
+
+                    # Generation 샘플의 prompts/input_mol_strings
+                    gen_input_ids = batch.input_ids[gen_indices]
+                    gen_prompts = self.blip2model.llm_tokenizer.batch_decode(gen_input_ids, skip_special_tokens=False)
+                    gen_prompts = [p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in gen_prompts]
+
+                    gen_input_mol_strings_raw = batch.input_mol_strings[gen_indices]
+                    gen_input_mol_strings = self.blip2model.llm_tokenizer.batch_decode(gen_input_mol_strings_raw)
+                    gen_input_mol_strings = [p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in gen_input_mol_strings]
+
+                    # Probs 계산 (Generation의 경우 likelihood 기반)
+                    try:
+                        gen_probs = self.blip2model.compute_binary_prob_likelihood(
+                            graphs=(graphs, additional_graphs),
+                            input_ids=gen_prompt_input_ids,
+                            attention_mask=gen_prompt_attention_mask,
+                            is_mol_token=gen_is_mol_token,
+                        )
+                        gen_probs_list = gen_probs.cpu().tolist()
+                    except Exception:
+                        gen_probs_list = [[0.5, 0.5]] * len(gen_predictions)
+
+                    # 전략별 로그에 Generation 결과 누적
+                    self.strategy_list_logs[strategy]["predictions"].extend(gen_predictions)
+                    self.strategy_list_logs[strategy]["targets"].extend(gen_targets)
+                    self.strategy_list_logs[strategy]["tasks"].extend(gen_task_names)
+                    self.strategy_list_logs[strategy]["probs"].extend(gen_probs_list)
+                    self.strategy_list_logs[strategy]["prompts"].extend(gen_prompts)
+                    self.strategy_list_logs[strategy]["input_mol_strings"].extend(gen_input_mol_strings)
+
+            # 혼합 배치 처리 완료 - 나머지 로직 건너뛰기
+            return
+
+        # ===========================================================================
+        # [기존 로직] 배치 내 모든 샘플이 동일한 유형인 경우
+        # ===========================================================================
+        if is_llada and is_all_classification:
+            # LLaDA Classification: Generation 건너뛰고 Likelihood 비교만 수행
+            with torch.no_grad():
+                llada_probs = self.blip2model.compute_binary_prob_likelihood(
+                    graphs=(graphs, additional_graphs),
+                    input_ids=batch.prompt_input_ids,
+                    attention_mask=batch.prompt_attention_mask,
+                    is_mol_token=is_mol_token,
+                )
+                # probs: [batch, 2] = [P(False), P(True)]
+                probs = llada_probs.cpu().tolist()
+
+                # Likelihood에서 직접 predictions 도출 (argmax)
+                # Training target 형식과 일치: "<BOOLEAN> True </BOOLEAN>" (공백 포함)
+                predictions = []
+                for p in probs:
+                    if p[1] > p[0]:  # P(True) > P(False)
+                        predictions.append("<BOOLEAN> True </BOOLEAN>")
+                    else:
+                        predictions.append("<BOOLEAN> False </BOOLEAN>")
+
+            # 나머지 필요한 변수들 초기화 (generation을 건너뛰었으므로)
+            gen_outputs = None
             gen_logits = None
-
-        # [NEW] Generated Token IDs 저장 (디코딩 전 원본)
-        if hasattr(gen_outputs, "sequences"):
-            generated_ids = gen_outputs.sequences  # [batch_size, seq_len]
-        else:
             generated_ids = None
+            strategy_outputs = {}  # 빈 딕셔너리 (multi-strategy 미사용)
+
+            # Forward pass for loss calculation
+            with torch.no_grad():
+                forward_outputs = self.blip2model(batch)
+
+            if isinstance(forward_outputs, dict):
+                forward_loss = forward_outputs.get("loss")
+                forward_logits = forward_outputs.get("logits", None)
+
+                if "instance_loss" in forward_outputs:
+                    forward_instance_loss = forward_outputs["instance_loss"]
+                else:
+                    forward_instance_loss = torch.full(
+                        (batch.prompt_input_ids.shape[0],),
+                        forward_loss.item(),
+                        device=self.device
+                    )
+            else:
+                forward_loss = forward_outputs
+                forward_instance_loss = torch.full(
+                    (batch.prompt_input_ids.shape[0],),
+                    forward_loss.item(),
+                    device=self.device
+                )
+
+            gen_labels = batch.gen_labels
+            attentions = None
+
+            # Skip to Step 7 (Decoding)
+            # 아래 코드에서 goto 대신 플래그 사용
+            skip_generation_loop = True
+        else:
+            skip_generation_loop = False
+
+        # ----------------------------------------------------------------------
+        # [Step 3] Generation (추론) - Multi-Strategy Support
+        # ----------------------------------------------------------------------
+        # 각 전략별 결과를 저장할 딕셔너리
+        if not skip_generation_loop:
+            strategy_outputs = {}
+
+        # Step-wise 로깅용 target_label, input_text 계산 (첫 번째 샘플만)
+        if not skip_generation_loop and batch.gen_labels is not None and len(batch.gen_labels) > 0:
+            _log_target_ids_2 = torch.where(
+                batch.gen_labels[0:1] == -100,
+                self.blip2model.llm_tokenizer.pad_token_id,
+                batch.gen_labels[0:1],
+            )
+            _log_target_label_2 = self.blip2model.llm_tokenizer.decode(_log_target_ids_2[0]).replace(self.blip2model.llm_tokenizer.pad_token, "").strip()
+            _log_input_text_2 = self.blip2model.llm_tokenizer.decode(batch.prompt_input_ids[0], skip_special_tokens=False).replace(self.blip2model.llm_tokenizer.pad_token, "").strip()
+        else:
+            _log_target_label_2 = None
+            _log_input_text_2 = None
+
+        for strategy in self.active_val_strategies if not skip_generation_loop else []:
+            gen_kwargs = {
+                "graphs": (graphs, additional_graphs),
+                "input_ids": batch.prompt_input_ids,
+                "attention_mask": batch.prompt_attention_mask,
+                "is_mol_token": is_mol_token,
+                "max_length": self.gen_max_len,
+                "target_label": _log_target_label_2,
+                "input_text": _log_input_text_2,
+                "num_gpus": self.trainer.world_size,
+                "total_dataset_size": len(self.trainer.val_dataloaders.dataset) if hasattr(self.trainer, 'val_dataloaders') and self.trainer.val_dataloaders else None,
+                "global_rank": self.trainer.global_rank,  # GPU rank 0에서만 step-wise 로깅
+                "mode": mode,  # val/test mode 전달 (step-wise 로깅 디렉토리 분리용)
+                "strategy": strategy,  # step-wise 로깅 전략별 독립 카운터용
+                "global_step": self.trainer.global_step,  # 학습 global step (로그 파일명용)
+            }
+
+            if is_llada:
+                # LLaDA 전용 옵션
+                gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
+                gen_kwargs["gen_length"] = self.gen_max_len
+
+                # 전략에 따른 설정
+                # 전략 종류:
+                #   - "default": use_semi_ar config 설정 따름
+                #   - "random": 전체 diffusion + random remasking
+                #   - "semi_ar": Semi-AR + random remasking
+                #   - "low_confidence": 전체 diffusion + low_confidence remasking
+                #   - "semi_ar_low_confidence": Semi-AR + low_confidence remasking
+                if strategy == "default":
+                    # 기존 config 설정 사용
+                    gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
+                    use_semi_ar = getattr(self.args, "use_semi_ar", False)
+                    if use_semi_ar:
+                        gen_kwargs["use_semi_ar"] = True
+                        gen_kwargs["task_name"] = task_names
+                elif strategy == "random":
+                    gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
+                    gen_kwargs["use_semi_ar"] = False
+                elif strategy == "semi_ar":
+                    gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
+                    gen_kwargs["use_semi_ar"] = True
+                    gen_kwargs["task_name"] = task_names
+                elif strategy == "low_confidence":
+                    gen_kwargs["remasking_strategy"] = "low_confidence"
+                    gen_kwargs["use_semi_ar"] = False
+                elif strategy == "semi_ar_low_confidence":
+                    gen_kwargs["remasking_strategy"] = "low_confidence"
+                    gen_kwargs["use_semi_ar"] = True
+                    gen_kwargs["task_name"] = task_names
+                else:
+                    # 알 수 없는 전략은 기본값 사용
+                    logger.warning(f"Unknown validation strategy: {strategy}, using default")
+                    gen_kwargs["remasking_strategy"] = "random"
+            else:
+                # AR 모델 전용 옵션 (전략 무시)
+                gen_kwargs["num_beams"] = self.num_beams
+                gen_kwargs["min_length"] = self.min_len
+                gen_kwargs["output_attentions"] = self.args.log_attn_score
+
+            # Generation 실행
+            with torch.no_grad():
+                gen_outputs = self.blip2model.generate(**gen_kwargs)
+
+            # 결과 저장
+            strategy_outputs[strategy] = {
+                "gen_outputs": gen_outputs,
+                "gen_logits": gen_outputs.logits if hasattr(gen_outputs, "logits") else None,
+                "generated_ids": gen_outputs.sequences if hasattr(gen_outputs, "sequences") else None,
+            }
+
+            # 첫 번째 배치에서 전략별 결과 로깅 (GPU 0에서만)
+            if batch_idx == 0 and self.trainer.global_rank == 0:
+                if self.debug:
+                    print(f"\n📊 [Strategy: {strategy}] Sample predictions:")
+                for k in range(min(2, len(gen_outputs.predictions))):
+                    if self.debug:
+                        print(f"  [{k}] {gen_outputs.predictions[k][:100]}...")
+
+        # 기존 호환성: 첫 번째 전략의 결과를 기본으로 사용
+        # (LLaDA Classification 최적화 경로에서는 이미 변수들이 설정됨)
+        if not skip_generation_loop:
+            primary_strategy = self.active_val_strategies[0]
+            gen_outputs = strategy_outputs[primary_strategy]["gen_outputs"]
+            gen_logits = strategy_outputs[primary_strategy]["gen_logits"]
+            generated_ids = strategy_outputs[primary_strategy]["generated_ids"]
 
         gen_labels = batch.gen_labels
 
         # ----------------------------------------------------------------------
         # [Step 3.5] 디버깅 로그 출력 - Generated Sequence (첫 번째 배치만, GPU 0만)
         # ----------------------------------------------------------------------
-        if batch_idx == 0 and self.args.custom_log and self.trainer.global_rank == 0:
+        # LLaDA Classification 최적화 경로에서는 generation을 건너뛰었으므로 별도 로그 출력
+        if skip_generation_loop and batch_idx == 0 and self.trainer.global_rank == 0:
+            if self.debug:
+                print(f"\n{'='*80}")
+            if self.debug:
+                print(f"[LLaDA Classification] Generation skipped - using Likelihood comparison")
+            if self.debug:
+                print(f"  Tasks: {task_names[:3]}...")
+            if self.debug:
+                print(f"  Predictions (from probs): {predictions[:3]}")
+            if self.debug:
+                print(f"  Probs: {probs[:3]}")
+            if self.debug:
+                print(f"{'='*80}\n")
+
+        if batch_idx == 0 and self.args.custom_log and self.trainer.global_rank == 0 and not skip_generation_loop:
             tokenizer = self.blip2model.llm_tokenizer
-            print(f"\n{'='*80}")
-            print(f"{'='*25} [DEBUG: Generation Analysis] {'='*25}")
-            print(f"{'='*80}")
+            if self.debug:
+                print(f"\n{'='*80}")
+            if self.debug:
+                print(f"{'='*25} [DEBUG: Generation Analysis] {'='*25}")
+            if self.debug:
+                print(f"{'='*80}")
 
             for k in range(min(2, batch.prompt_input_ids.shape[0])):
-                print(f"\n{'─'*80}")
-                print(f"[Sample {k}]")
-                print(f"{'─'*80}")
+                if self.debug:
+                    print(f"\n{'─'*80}")
+                if self.debug:
+                    print(f"[Sample {k}]")
+                if self.debug:
+                    print(f"{'─'*80}")
 
                 if generated_ids is not None and k < len(generated_ids):
                     # Full sequence (Input + Output)
@@ -1352,88 +2535,114 @@ class Blip2Stage3(pl.LightningModule):
                     input_part_ids = full_ids[:input_len]
                     output_part_ids = full_ids[input_len:]
 
-                    # === Full Sequence ===
-                    print(f"\n🔍 [FULL SEQUENCE] Token IDs (Total Length: {len(full_ids)}):")
-                    print(f"{full_ids.tolist()}")
-
-                    full_tokens = tokenizer.convert_ids_to_tokens(full_ids)
-                    print(f"\n🔍 [FULL SEQUENCE] Token-wise List:")
-                    print(full_tokens)
-
-                    full_decoded = tokenizer.decode(full_ids, skip_special_tokens=False)
-                    print(f"\n🔍 [FULL SEQUENCE] Decoded String:")
-                    print(full_decoded)
-
-                    print(f"\n{'-'*80}")
-
                     # === Input Part ===
-                    print(f"\n📥 [INPUT PART] Token IDs (Length: {len(input_part_ids)}):")
-                    print(f"{input_part_ids.tolist()}")
+                    if self.debug:
+                        print(f"\n📥 [INPUT PART] Token IDs (Length: {len(input_part_ids)}):")
+                    if self.debug:
+                        print(f"{input_part_ids.tolist()}")
 
                     input_part_decoded = tokenizer.decode(input_part_ids, skip_special_tokens=False)
-                    print(f"\n📥 [INPUT PART] Decoded String:")
-                    print(input_part_decoded)
+                    if self.debug:
+                        print(f"\n📥 [INPUT PART] Decoded String:")
+                    if self.debug:
+                        print(input_part_decoded)
 
-                    print(f"\n{'-'*80}")
+                    if self.debug:
+                        print(f"\n{'-'*80}")
 
                     # === Output Part (Generated Only) ===
-                    print(f"\n📤 [OUTPUT PART - GENERATED ONLY] Token IDs (Length: {len(output_part_ids)}):")
-                    print(f"{output_part_ids.tolist()}")
+                    if self.debug:
+                        print(f"\n📤 [OUTPUT PART - GENERATED ONLY] Token IDs (Length: {len(output_part_ids)}):")
+                    if self.debug:
+                        print(f"{output_part_ids.tolist()}")
 
-                    output_tokens = tokenizer.convert_ids_to_tokens(output_part_ids)
-                    print(f"\n📤 [OUTPUT PART] Token-wise List:")
-                    print(output_tokens)
+                    # Filter out-of-vocab tokens to avoid OverflowError
+                    vocab_size = len(tokenizer)
+                    valid_output_ids = output_part_ids[(output_part_ids >= 0) & (output_part_ids < vocab_size)]
+                    output_tokens = tokenizer.convert_ids_to_tokens(valid_output_ids.tolist())
+                    if self.debug:
+                        print(f"\n📤 [OUTPUT PART] Token-wise List:")
+                    if self.debug:
+                        print(output_tokens)
 
                     output_part_decoded = tokenizer.decode(output_part_ids, skip_special_tokens=False)
-                    print(f"\n📤 [OUTPUT PART] Decoded String:")
-                    print(output_part_decoded)
+                    if self.debug:
+                        print(f"\n📤 [OUTPUT PART] Decoded String:")
+                    if self.debug:
+                        print(output_part_decoded)
+                    
+                    # === Label Part ===
+                    label_ids = gen_labels[k]
+                    if self.debug:
+                        print(f"\n📄 [LABEL PART] Token IDs (Length: {len(label_ids)}):")
+                    if self.debug:
+                        print(f"{label_ids.tolist()}")
 
-                print(f"\n{'─'*80}")
+                    # Filter out invalid token IDs (e.g., -100 ignore_index, or out-of-vocab)
+                    vocab_size = len(tokenizer)
+                    valid_label_ids = label_ids[(label_ids >= 0) & (label_ids < vocab_size)]
+                    label_tokens = tokenizer.convert_ids_to_tokens(valid_label_ids.tolist())
+                    if self.debug:
+                        print(f"\n📄 [LABEL PART] Token-wise List:")
+                    if self.debug:
+                        print(label_tokens)
+                    
+                    label_decoded = tokenizer.decode(valid_label_ids, skip_special_tokens=False)
+                    if self.debug:
+                        print(f"\n📄 [LABEL PART] Decoded String:")
+                    if self.debug:
+                        print(label_decoded)
 
-            print(f"\n{'='*80}\n")
+                if self.debug:
+                    print(f"\n{'─'*80}")
+
+            if self.debug:
+                print(f"\n{'='*80}\n")
 
         # ----------------------------------------------------------------------
         # [Step 4] Forward Pass (Loss 계산)
         # ----------------------------------------------------------------------
-        with torch.no_grad():
-            forward_outputs = self.blip2model(batch)
-        
-        # 모델 타입별 Output 처리
-        if is_llada:
-            if isinstance(forward_outputs, dict):
-                forward_loss = forward_outputs.get("loss")
-                forward_logits = forward_outputs.get("logits", None)
-                
-                if "instance_loss" in forward_outputs:
-                    forward_instance_loss = forward_outputs["instance_loss"]
+        # LLaDA Classification 최적화 경로에서는 이미 forward pass 완료 (Step 3에서)
+        if not skip_generation_loop:
+            with torch.no_grad():
+                forward_outputs = self.blip2model(batch)
+
+            # 모델 타입별 Output 처리
+            if is_llada:
+                if isinstance(forward_outputs, dict):
+                    forward_loss = forward_outputs.get("loss")
+                    forward_logits = forward_outputs.get("logits", None)
+
+                    if "instance_loss" in forward_outputs:
+                        forward_instance_loss = forward_outputs["instance_loss"]
+                    else:
+                        forward_instance_loss = torch.full(
+                            (batch.prompt_input_ids.shape[0],),
+                            forward_loss.item(),
+                            device=self.device
+                        )
                 else:
+                    # 딕셔너리가 아닌 경우 (Loss 스칼라만 반환된 경우)
+                    forward_loss = forward_outputs
                     forward_instance_loss = torch.full(
-                        (batch.prompt_input_ids.shape[0],), 
-                        forward_loss.item(), 
-                        device=self.device
-                    )
+                            (batch.prompt_input_ids.shape[0],),
+                            forward_loss.item(),
+                            device=self.device
+                        )
             else:
-                # 딕셔너리가 아닌 경우 (Loss 스칼라만 반환된 경우)
-                forward_loss = forward_outputs
-                forward_instance_loss = torch.full(
-                        (batch.prompt_input_ids.shape[0],), 
-                        forward_loss.item(), 
-                        device=self.device
-                    )
-        else:
-            # Autoregressive 모델 처리
-            if isinstance(forward_outputs, dict) and "logits" in forward_outputs:
-                 forward_logits = forward_outputs["logits"]
-            
-            # forward_logits가 없으면 outputs에서 get 시도
-            logits_to_use = forward_logits if forward_logits is not None else forward_outputs.get("logits")
-            
-            forward_loss_dict = get_instance_loss(
-                logits=logits_to_use, 
-                labels=batch.labels
-            )
-            forward_instance_loss = forward_loss_dict["instance_loss"]
-            forward_loss = forward_loss_dict["loss"]
+                # Autoregressive 모델 처리
+                if isinstance(forward_outputs, dict) and "logits" in forward_outputs:
+                     forward_logits = forward_outputs["logits"]
+
+                # forward_logits가 없으면 outputs에서 get 시도
+                logits_to_use = forward_logits if forward_logits is not None else forward_outputs.get("logits")
+
+                forward_loss_dict = get_instance_loss(
+                    logits=logits_to_use,
+                    labels=batch.labels
+                )
+                forward_instance_loss = forward_loss_dict["instance_loss"]
+                forward_loss = forward_loss_dict["loss"]
 
         # ----------------------------------------------------------------------
         # [Step 5] MolPO Metrics 계산 (메모리 누수 방지 로직 적용)
@@ -1444,7 +2653,7 @@ class Blip2Stage3(pl.LightningModule):
             tasks = [id2task(task_id.item()) for task_id in batch.tasks][:len_tuple]
 
             compute_loss_context_manager = torch.amp.autocast
-            
+
             # MolPO Loss 계산
             with torch.no_grad():
                 with compute_loss_context_manager(device_type="cuda"):
@@ -1458,7 +2667,7 @@ class Blip2Stage3(pl.LightningModule):
                         molpo_batch_division=self.args.molpo_batch_division,
                         config=self.args
                     )
-            
+
             # [핵심] Metrics 내부의 모든 텐서를 스칼라(Python float)로 변환
             # 이렇게 해야 GPU 그래프가 끊기고 메모리가 해제됩니다.
             for k, v in raw_metrics.items():
@@ -1470,16 +2679,22 @@ class Blip2Stage3(pl.LightningModule):
             # Visualization을 위한 Slicing (앞부분 데이터만 사용)
             if gen_logits is not None:
                 gen_logits = gen_logits[:len_tuple]
-            
+
             gen_labels = gen_labels[:len_tuple]
             forward_instance_loss = forward_instance_loss[:len_tuple]
 
-            if hasattr(gen_outputs, "attentions"):
-                attentions = gen_outputs.attentions
-            else:
+            # LLaDA Classification 최적화 경로에서는 gen_outputs가 None
+            if skip_generation_loop:
+                # predictions는 이미 설정됨 (Step 3에서 probs -> argmax)
+                predictions = predictions[:len_tuple]
                 attentions = None
+            else:
+                if hasattr(gen_outputs, "attentions"):
+                    attentions = gen_outputs.attentions
+                else:
+                    attentions = None
+                predictions = gen_outputs.predictions[:len_tuple]
 
-            predictions = gen_outputs.predictions[:len_tuple]
             prompt_input_ids = batch.prompt_input_ids[:len_tuple]
             input_ids = batch.input_ids[:len_tuple]
             if generated_ids is not None:
@@ -1487,12 +2702,17 @@ class Blip2Stage3(pl.LightningModule):
         else:
             tasks = [id2task(task_id.item()) for task_id in batch.tasks]
 
-            if hasattr(gen_outputs, "attentions"):
-                attentions = gen_outputs.attentions
-            else:
+            # LLaDA Classification 최적화 경로에서는 gen_outputs가 None
+            if skip_generation_loop:
+                # predictions는 이미 설정됨 (Step 3에서 probs -> argmax)
                 attentions = None
+            else:
+                if hasattr(gen_outputs, "attentions"):
+                    attentions = gen_outputs.attentions
+                else:
+                    attentions = None
+                predictions = gen_outputs.predictions
 
-            predictions = gen_outputs.predictions
             prompt_input_ids = batch.prompt_input_ids
             input_ids = batch.input_ids
 
@@ -1529,16 +2749,55 @@ class Blip2Stage3(pl.LightningModule):
         # ----------------------------------------------------------------------
         # [Step 8] Probs 계산 및 거대 텐서 즉시 삭제 (메모리 확보 핵심)
         # ----------------------------------------------------------------------
-        with torch.no_grad():
-            probs = convert_logit2binary_prob(
-                logits=gen_logits,
-                predictions=predictions,
-                tokenizer=self.blip2model.llm_tokenizer,
-            )
+        # LLaDA Classification: 이미 Step 3에서 probs 계산 완료 (skip_generation_loop=True)
+        # LLaDA Non-Classification: 논문 Eq.6 방식 (Likelihood 비교)으로 prob 계산
+        # AR 모델: 기존 방식 (logit에서 직접 추출)
+        # ----------------------------------------------------------------------
+        if skip_generation_loop and is_llada and is_all_classification:
+            # LLaDA Classification: probs는 이미 계산됨 (Step 3에서)
+            # predictions도 이미 도출됨 (argmax from probs)
+            pass  # probs 변수가 이미 설정되어 있음
+        else:
+            with torch.no_grad():
+                if is_llada:
+                    # ================================================================
+                    # [LLaDA] 논문 Eq.6: Likelihood 비교 방식
+                    #
+                    # - 전체 응답을 마스킹하고 forward pass로 log-likelihood 계산
+                    # - True/False 각각의 likelihood를 비교하여 확률 산출
+                    # - Appendix B.5: "단일 토큰만 예측하는 경우 Monte Carlo 1회면 충분"
+                    # ================================================================
+                    try:
+                        llada_probs = self.blip2model.compute_binary_prob_likelihood(
+                            graphs=(graphs, additional_graphs),
+                            input_ids=batch.prompt_input_ids,
+                            attention_mask=batch.prompt_attention_mask,
+                            is_mol_token=is_mol_token,
+                        )
+                        # [batch, 2] -> [[P(False), P(True)], ...] 형태의 리스트로 변환
+                        probs = llada_probs.cpu().tolist()
+                    except Exception as e:
+                        logger.warning(f"[LLaDA Prob] compute_binary_prob_likelihood failed: {e}")
+                        logger.warning("[LLaDA Prob] Falling back to AR-style prob calculation")
+                        # Fallback: AR 방식 (정확하지 않지만 동작은 함)
+                        probs = convert_logit2binary_prob(
+                            logits=gen_logits,
+                            predictions=predictions,
+                            tokenizer=self.blip2model.llm_tokenizer,
+                        )
+                else:
+                    # AR 모델: 기존 방식 (logit에서 직접 추출)
+                    probs = convert_logit2binary_prob(
+                        logits=gen_logits,
+                        predictions=predictions,
+                        tokenizer=self.blip2model.llm_tokenizer,
+                    )
         
         # [중요] 사용 끝난 거대 텐서 즉시 삭제
-        del gen_logits
-        del forward_outputs
+        if gen_logits is not None:
+            del gen_logits
+        if 'forward_outputs' in dir() and forward_outputs is not None:
+            del forward_outputs
         if forward_logits is not None:
             del forward_logits
         
@@ -1574,66 +2833,111 @@ class Blip2Stage3(pl.LightningModule):
             num_samples=len(tasks),  # 모든 샘플 시도 (함수 내부에서 task당 5개 제한)
             predictions=predictions,
             targets=targets,
-<<<<<<< HEAD
             prompts=prompts,
             generated_ids=generated_ids  # [NEW] 생성된 토큰 ID 전달
-=======
-            prompts=prompts
->>>>>>> origin/main
         )
             
 
         # ----------------------------------------------------------------------
-        # [Step 10] 로그 리스트 누적 (CPU 메모리만 사용)
+        # [Step 10] 로그 리스트 누적 (Multi-Strategy Support)
         # ----------------------------------------------------------------------
-        self.list_logs["predictions"].extend(predictions)
-        self.list_logs["targets"].extend(targets)
-        self.list_logs["tasks"].extend(tasks)
-        self.list_logs["probs"].extend(probs_list)
-        self.list_logs["prompts"].extend(prompts)
-        self.list_logs["input_mol_strings"].extend(input_mol_strings)
+        if skip_generation_loop:
+            # LLaDA Classification 최적화 경로: 직접 predictions 사용
+            # (generation 없이 probs에서 도출된 predictions)
+            # "likelihood" 전략으로 저장하여 _likelihood suffix가 붙도록 함
 
-        # ----------------------------------------------------------------------
-        # [Step 11] Loss 누적 (반드시 .item() 사용)
-        # ----------------------------------------------------------------------
-        batch_size = len(input_ids)
-        new_data_weight = batch_size / (self.total_seen_data_size + batch_size)
-        
-        # [중요] .item()을 사용하여 스칼라 값으로 변환 후 누적
-        loss_val = forward_loss.item() if isinstance(forward_loss, torch.Tensor) else forward_loss
-        self.total_avg_loss += (loss_val - self.total_avg_loss) * new_data_weight
-        self.total_seen_data_size += batch_size
+            # MolPO 처리 시 slicing
+            if self.args.eval_molpo:
+                len_tuple = gen_labels.shape[0] // self.args.molpo_batch_division
+                predictions_to_log = predictions[:len_tuple]
+            else:
+                predictions_to_log = predictions
 
-        # Instance Loss 처리
-        # 텐서를 CPU로 옮겨서 처리 (GPU 접근 최소화)
-        if isinstance(forward_instance_loss, torch.Tensor):
-            inst_loss_cpu = forward_instance_loss.detach().cpu()
+            # likelihood 전략에 누적 (Classification 최적화 전용)
+            self.strategy_list_logs["likelihood"]["predictions"].extend(predictions_to_log)
+            self.strategy_list_logs["likelihood"]["targets"].extend(targets)
+            self.strategy_list_logs["likelihood"]["tasks"].extend(tasks)
+            self.strategy_list_logs["likelihood"]["probs"].extend(probs_list)
+            self.strategy_list_logs["likelihood"]["prompts"].extend(prompts)
+            self.strategy_list_logs["likelihood"]["input_mol_strings"].extend(input_mol_strings)
+
+            # 기존 호환성을 위한 list_logs 업데이트
+            self.list_logs = self.strategy_list_logs["likelihood"]
         else:
-            inst_loss_cpu = forward_instance_loss
+            # 각 전략별로 predictions 수집
+            for strategy in self.active_val_strategies:
+                strategy_gen_outputs = strategy_outputs[strategy]["gen_outputs"]
+                strategy_predictions = strategy_gen_outputs.predictions
+                strategy_predictions = [
+                    p.replace(self.blip2model.llm_tokenizer.pad_token, "") for p in strategy_predictions
+                ]
 
-        for i in range(len(inst_loss_cpu)):
-            val = inst_loss_cpu[i]
-            if isinstance(val, torch.Tensor):
-                val = val.item() # 스칼라 변환
-            
-            if val != val: # NaN check
-                continue
+                # MolPO 처리 시 slicing
+                if self.args.eval_molpo:
+                    len_tuple = gen_labels.shape[0] // self.args.molpo_batch_division
+                    strategy_predictions = strategy_predictions[:len_tuple]
 
-            task_subtask_pair = tasks[i]
-            if task_subtask_pair not in self.eval_dataset_losses:
-                self.eval_dataset_losses[task_subtask_pair] = {
-                    "avg_loss": 0.0,
-                    "num_instances": 0,
-                }
-            
-            # 평균 업데이트
-            curr_dict = self.eval_dataset_losses[task_subtask_pair]
-            curr_dict["avg_loss"] *= curr_dict["num_instances"] / (curr_dict["num_instances"] + 1)
-            curr_dict["avg_loss"] += val / (curr_dict["num_instances"] + 1)
-            curr_dict["num_instances"] += 1
+                # 각 전략별 로그에 누적
+                self.strategy_list_logs[strategy]["predictions"].extend(strategy_predictions)
+                self.strategy_list_logs[strategy]["targets"].extend(targets)
+                self.strategy_list_logs[strategy]["tasks"].extend(tasks)
+                self.strategy_list_logs[strategy]["probs"].extend(probs_list)
+                self.strategy_list_logs[strategy]["prompts"].extend(prompts)
+                self.strategy_list_logs[strategy]["input_mol_strings"].extend(input_mol_strings)
+
+            # 기존 호환성을 위한 list_logs 업데이트 (첫 번째 전략 참조)
+            self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
 
         # ----------------------------------------------------------------------
-        # [Step 12] MolPO Logging
+        # [Step 10.5] Generation Loss 계산 (LLaDA 전용) - Step-wise Teacher Forcing
+        # ----------------------------------------------------------------------
+        # LLaDA의 iterative denoising 전체 과정을 시뮬레이션:
+        # - 각 step별로 해당 마스킹 비율에 맞는 입력 생성
+        # - 정답 토큰으로 Teacher Forcing (실제 생성 결과 대신)
+        # - 각 step의 loss에 importance weighting (1/p) 적용
+        # - val_total_loss와 유사하지만 전체 trajectory를 deterministic하게 시뮬레이션
+        # LLaDA Classification 최적화 경로에서는 generation이 없으므로 건너뜀
+        if is_llada and not skip_generation_loop:
+            with torch.no_grad():
+                # Step-wise Teacher Forcing: 32 step 전체 시뮬레이션
+                tf_outputs = self.blip2model.forward_stepwise_teacher_forcing(batch, steps=32)
+                instance_gen_losses = tf_outputs["instance_loss"]
+
+                # 전체 평균
+                batch_gen_loss = instance_gen_losses.mean().item()
+
+                # 모든 전략에 동일한 gen_loss 기록 (Teacher Forcing은 전략 무관)
+                for strategy in self.active_val_strategies:
+                    # 전략별 총 gen_loss 누적
+                    curr_count = self.strategy_total_gen_loss_count[strategy]
+                    new_count = curr_count + len(instance_gen_losses)
+                    self.strategy_total_gen_loss[strategy] = (
+                        self.strategy_total_gen_loss[strategy] * curr_count + batch_gen_loss * len(instance_gen_losses)
+                    ) / new_count
+                    self.strategy_total_gen_loss_count[strategy] = new_count
+
+                    # 태스크별 gen_loss 누적
+                    instance_gen_losses_cpu = instance_gen_losses.detach().cpu()
+                    for i in range(len(instance_gen_losses_cpu)):
+                        gen_loss_val = instance_gen_losses_cpu[i].item()
+
+                        if gen_loss_val != gen_loss_val:  # NaN check
+                            continue
+
+                        task_subtask_pair = tasks[i]
+                        if task_subtask_pair not in self.strategy_dataset_gen_losses[strategy]:
+                            self.strategy_dataset_gen_losses[strategy][task_subtask_pair] = {
+                                "gen_loss": 0.0,
+                                "num_instances": 0,
+                            }
+
+                        curr_dict = self.strategy_dataset_gen_losses[strategy][task_subtask_pair]
+                        n = curr_dict["num_instances"]
+                        curr_dict["gen_loss"] = (curr_dict["gen_loss"] * n + gen_loss_val) / (n + 1)
+                        curr_dict["num_instances"] = n + 1
+
+        # ----------------------------------------------------------------------
+        # [Step 11] MolPO Logging
         # ----------------------------------------------------------------------
         if self.args.eval_molpo:
             self.task_specific_logging(
@@ -1654,10 +2958,27 @@ class Blip2Stage3(pl.LightningModule):
                 )
         
         # ----------------------------------------------------------------------
-        # [Step 13] 최종 로깅 및 리턴
+        # [Step 12] 최종 로깅 및 리턴
         # ----------------------------------------------------------------------
-        # Loss 로깅
-        self.log("val_total_loss", loss_val, sync_dist=True, prog_bar=True, logger=True)
+        # val_total_loss 로깅 (ModelCheckpoint 모니터링용)
+        if is_llada:
+            if skip_generation_loop:
+                # LLaDA Classification 최적화 경로: forward_loss 사용
+                # Generation을 건너뛰었으므로 forward_loss를 val_total_loss로 로깅
+                if forward_loss is not None:
+                    self.log("val_total_loss", forward_loss.item(), sync_dist=True, prog_bar=True, logger=True)
+            elif hasattr(self, 'strategy_total_gen_loss'):
+                # 일반 LLaDA 경로: 전략별 gen_loss 단순 평균
+                valid_gen_losses = []
+                for strategy in self.active_val_strategies:
+                    count = self.strategy_total_gen_loss_count[strategy]
+                    if count > 0:
+                        # 각 전략별 평균 gen_loss를 리스트에 추가
+                        valid_gen_losses.append(self.strategy_total_gen_loss[strategy] / count)
+                if valid_gen_losses:
+                    # 전략별 평균 gen_loss의 단순 평균
+                    avg_gen_loss = sum(valid_gen_losses) / len(valid_gen_losses)
+                    self.log("val_total_loss", avg_gen_loss, sync_dist=True, prog_bar=True, logger=True)
         
         # [강제 메모리 정리]
         import gc
@@ -1678,8 +2999,10 @@ class Blip2Stage3(pl.LightningModule):
         # [num_steps, num_heads, max_generated_length, max_generated_length] -> [num_steps, batch_size, max_generated_length]
         full_attn_mean = torch.stack(all_layers_attn).mean(dim=(1, 3)).squeeze()
 
-        selfies_start_token_id = 35743
-        selfies_end_token_id = 35744
+        # 토크나이저에서 동적으로 SELFIES 토큰 ID 가져오기
+        tokenizer = self.blip2model.llm_tokenizer
+        selfies_start_token_id = tokenizer.convert_tokens_to_ids("<SELFIES>")
+        selfies_end_token_id = tokenizer.convert_tokens_to_ids("</SELFIES>")
 
         selfies_mask = torch.zeros_like(prompt_input_ids, dtype=torch.bool)
         st_batch_indices, start_indices = (
@@ -1795,7 +3118,14 @@ class Blip2Stage3(pl.LightningModule):
             )
 
     def on_evaluation_epoch_end(self, mode="val") -> None:
-        print(f"\nDevice {self.device} on_evaluation_epoch_end start")
+        if self.debug:
+            print(f"\nDevice {self.device} on_evaluation_epoch_end start")
+
+        # test 모드에서는 학습 완료 시점의 global_step 사용, 그 외에는 현재 global_step 사용
+        if mode == "test" and self._trained_global_step is not None:
+            step_for_filename = self._trained_global_step
+        else:
+            step_for_filename = self.global_step
 
         if self.args.eval_molpo:
             self.task_specific_logging(
@@ -1807,51 +3137,65 @@ class Blip2Stage3(pl.LightningModule):
                 num_moving_samples=None,
             )
 
-        evaluation_results, failed_cases = per_device_evaluate(
-            predictions=self.list_logs["predictions"],
-            targets=self.list_logs["targets"],
-            tasks=self.list_logs["tasks"],
-            prompts=self.list_logs["prompts"],
-            input_mol_strings=self.list_logs["input_mol_strings"],
-            tokenizer=self.blip2model.llm_tokenizer,
-            total_task_subtask_pairs=self.task_subtask_name_pairs,
-        )
+        # ======================================================================
+        # Multi-Strategy Evaluation
+        # ======================================================================
+        all_strategy_results = {}
 
-        self.save_predictions(
-            predictions=self.list_logs["predictions"],
-            targets=self.list_logs["targets"],
-            tasks=self.list_logs["tasks"],
-            prompts=self.list_logs["prompts"],
-            probs=self.list_logs["probs"],
-            input_mol_strings=self.list_logs["input_mol_strings"],
-            filename=(
-                f"{self.args.mode}-step{self.global_step}-{self.global_rank}-outputs.json"
-                if self.args.mode == "val"
-                else f"{self.args.mode}-{self.global_rank}-outputs.json"
-            ),
-        )
+        # [수정] 모든 전략 평가: Generation 전략 + likelihood 전략 (데이터가 있으면)
+        # 기존 버그: likelihood에 데이터가 있으면 다른 전략을 무시했음
+        strategies_to_evaluate = list(self.active_val_strategies)
+        if len(self.strategy_list_logs["likelihood"]["predictions"]) > 0:
+            # likelihood 전략도 추가 (덮어쓰기가 아닌 추가!)
+            strategies_to_evaluate.append("likelihood")
 
-        self.save_predictions(
-            predictions=failed_cases["predictions"],
-            targets=failed_cases["targets"],
-            tasks=failed_cases["tasks"],
-            prompts=failed_cases["prompts"],
-            input_mol_strings=failed_cases["input_mol_strings"],
-            filename=(
-                f"{self.args.mode}-step{self.global_step}-{self.global_rank}-failed_cases.json"
-                if self.args.mode == "val"
-                else f"{self.args.mode}-{self.global_rank}-failed_cases.json"
-            ),
-        )
+        for strategy in strategies_to_evaluate:
+            strategy_logs = self.strategy_list_logs[strategy]
+            strategy_suffix = f"_{strategy}" if strategy != "default" else ""
 
-        self.log(
-            f"{mode}/total_loss",
-            self.total_avg_loss,
-            sync_dist=True,
-            batch_size=self.total_seen_data_size,
-        )
+            if self.debug:
+                print(f"\n{'='*70}")
+            if self.debug:
+                print(f"📊 [Strategy: {strategy}] Evaluating predictions...")
+            if self.debug:
+                print(f"{'='*70}")
 
-        # evaluate classification tasks
+            evaluation_results, failed_cases = per_device_evaluate(
+                predictions=strategy_logs["predictions"],
+                targets=strategy_logs["targets"],
+                tasks=strategy_logs["tasks"],
+                prompts=strategy_logs["prompts"],
+                input_mol_strings=strategy_logs["input_mol_strings"],
+                tokenizer=self.blip2model.llm_tokenizer,
+                total_task_subtask_pairs=self.task_subtask_name_pairs,
+            )
+            
+            all_strategy_results[strategy] = {
+                "evaluation_results": evaluation_results,
+                "failed_cases": failed_cases,
+            }
+
+            # 전략별 prediction 파일 저장
+            self.save_predictions(
+                predictions=strategy_logs["predictions"],
+                targets=strategy_logs["targets"],
+                tasks=strategy_logs["tasks"],
+                prompts=strategy_logs["prompts"],
+                probs=strategy_logs["probs"],
+                input_mol_strings=strategy_logs["input_mol_strings"],
+                filename=f"{self.args.mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-outputs.json",
+            )
+
+            self.save_predictions(
+                predictions=failed_cases["predictions"],
+                targets=failed_cases["targets"],
+                tasks=failed_cases["tasks"],
+                prompts=failed_cases["prompts"],
+                input_mol_strings=failed_cases["input_mol_strings"],
+                filename=f"{self.args.mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-failed_cases.json",
+            )
+
+        # evaluate classification tasks - prepare common structures
         self.cls_task_subtask_name_pair = [
             task_subtask_pair
             for task_subtask_pair in self.task_subtask_name_pairs
@@ -1868,68 +3212,88 @@ class Blip2Stage3(pl.LightningModule):
             idx: task_subtask_pair
             for task_subtask_pair, idx in self.cls_task_subtask_name_pair_dict.items()
         }
-        self.num_per_device_cls = 10000
-        self.per_device_cls_tensor = torch.zeros(
-            size=(self.num_per_device_cls, 4), device=self.device, dtype=torch.float
-        )
-        non_zero_count = 0
-        cls_idx = 0
-        for i in range(len(self.list_logs["tasks"])):
-            task_subtask_pair = self.list_logs["tasks"][i]
-            if task_subtask_pair in self.cls_task_subtask_name_pair_dict.keys():
-                probs = self.list_logs["probs"][i]
-                label = int(
-                    "True" in self.list_logs["targets"][i]
-                    or "true" in self.list_logs["targets"][i]
-                )
-                pair_ids = self.cls_task_subtask_name_pair_dict[task_subtask_pair]
-                self.per_device_cls_tensor[cls_idx] = torch.tensor(
-                    [probs[0], probs[1], pair_ids, label],
-                    device=self.device,
-                    dtype=torch.float,
-                )
-                non_zero_count += 1
-                cls_idx += 1
 
-        # evaluate the other tasks
+        # evaluate the other tasks - now per strategy
         flattened_metric_keys = []
         flattened_metric_tensors = torch.empty(size=(0, 2), device=self.device)
 
-        # tied to order of self.task_subtask_name_pairs
-        for task_subtask_pair in evaluation_results:
-            for metric in evaluation_results[task_subtask_pair]:
-                flattened_metric_keys.append(f"{mode}/{task_subtask_pair}/{metric}")
-                metric_value = evaluation_results[task_subtask_pair][metric]
-                num_instance = evaluation_results[task_subtask_pair]["num_instances"]
-                metric_count_pair = [metric_value * num_instance, num_instance]
+        # Process each strategy's evaluation results with strategy suffix
+        for strategy in strategies_to_evaluate:
+            strategy_suffix = f"_{strategy}" if strategy != "default" else ""
+            evaluation_results = all_strategy_results[strategy]["evaluation_results"]
 
-                flattened_metric_tensors = torch.cat(
-                    [
-                        flattened_metric_tensors,
-                        torch.tensor(
-                            metric_count_pair,
-                            device=self.device,
-                        ).unsqueeze(0),
-                    ],
-                    dim=0,
-                )
+            # tied to order of self.task_subtask_name_pairs
+            for task_subtask_pair in evaluation_results:
+                for metric in evaluation_results[task_subtask_pair]:
+                    flattened_metric_keys.append(f"{mode}/{task_subtask_pair}/{metric}{strategy_suffix}")
+                    metric_value = evaluation_results[task_subtask_pair][metric]
+                    num_instance = evaluation_results[task_subtask_pair]["num_instances"]
+                    metric_count_pair = [metric_value * num_instance, num_instance]
 
-        # tied to order of self.task_subtask_name_pairs
-        for dataset in self.eval_dataset_losses.keys():
-            flattened_metric_keys.append(f"{mode}/{dataset}/avg_loss")
-            metric_value = self.eval_dataset_losses[dataset]["avg_loss"]
-            num_instance = self.eval_dataset_losses[dataset]["num_instances"]
-            metric_count_pair = [metric_value * num_instance, num_instance]
-            flattened_metric_tensors = torch.cat(
-                [
-                    flattened_metric_tensors,
-                    torch.tensor(
-                        metric_count_pair,
-                        device=self.device,
-                    ).unsqueeze(0),
-                ],
-                dim=0,
+                    flattened_metric_tensors = torch.cat(
+                        [
+                            flattened_metric_tensors,
+                            torch.tensor(
+                                metric_count_pair,
+                                device=self.device,
+                            ).unsqueeze(0),
+                        ],
+                        dim=0,
+                    )
+
+        # 전략별 Generation Loss 로깅 (LLaDA 전용)
+        # likelihood 전략은 generation을 건너뛰므로 gen_loss가 없음
+        if hasattr(self, 'strategy_dataset_gen_losses'):
+            for strategy in strategies_to_evaluate:
+                if strategy not in self.strategy_dataset_gen_losses:
+                    continue  # likelihood 등 generation 없는 전략은 스킵
+                strategy_suffix = f"_{strategy}" if strategy != "default" else ""
+                for dataset in self.strategy_dataset_gen_losses[strategy].keys():
+                    gen_loss_data = self.strategy_dataset_gen_losses[strategy][dataset]
+                    if gen_loss_data["num_instances"] > 0:
+                        flattened_metric_keys.append(f"{mode}/{dataset}/gen_loss{strategy_suffix}")
+                        metric_value = gen_loss_data["gen_loss"]
+                        num_instance = gen_loss_data["num_instances"]
+                        metric_count_pair = [metric_value * num_instance, num_instance]
+                        flattened_metric_tensors = torch.cat(
+                            [
+                                flattened_metric_tensors,
+                                torch.tensor(
+                                    metric_count_pair,
+                                    device=self.device,
+                                ).unsqueeze(0),
+                            ],
+                            dim=0,
+                        )
+
+        # Prepare per-strategy classification tensors
+        self.num_per_device_cls = 10000
+        self.strategy_per_device_cls_tensors = {}
+        for strategy in strategies_to_evaluate:
+            strategy_logs = self.strategy_list_logs[strategy]
+            per_device_cls_tensor = torch.zeros(
+                size=(self.num_per_device_cls, 4), device=self.device, dtype=torch.float
             )
+            cls_idx = 0
+            for i in range(len(strategy_logs["tasks"])):
+                task_subtask_pair = strategy_logs["tasks"][i]
+                if task_subtask_pair in self.cls_task_subtask_name_pair_dict.keys():
+                    probs = strategy_logs["probs"][i]
+                    label = int(
+                        "True" in strategy_logs["targets"][i]
+                        or "true" in strategy_logs["targets"][i]
+                    )
+                    pair_ids = self.cls_task_subtask_name_pair_dict[task_subtask_pair]
+                    per_device_cls_tensor[cls_idx] = torch.tensor(
+                        [probs[0], probs[1], pair_ids, label],
+                        device=self.device,
+                        dtype=torch.float,
+                    )
+                    cls_idx += 1
+            self.strategy_per_device_cls_tensors[strategy] = per_device_cls_tensor
+
+        # For backward compatibility, use first evaluated strategy's tensor
+        self.per_device_cls_tensor = self.strategy_per_device_cls_tensors[strategies_to_evaluate[0]]
 
         assert flattened_metric_tensors.shape[0] == len(
             flattened_metric_keys
@@ -1945,7 +3309,8 @@ class Blip2Stage3(pl.LightningModule):
         flattened_metric_tensors = flattened_metric_tensors[sorted_idx]
 
         if self.trainer.world_size > 1:
-            print("gather the metrics across devices")
+            if self.debug:
+                print("gather the metrics across devices")
             raw_gathered_flattened_metric_tensors = self.all_gather(
                 flattened_metric_tensors
             )  # [world_size, num_metrics, metric_value * per_device_instance_count, per_device_instance_count]
@@ -1970,15 +3335,21 @@ class Blip2Stage3(pl.LightningModule):
                 :, :, 1
             ].sum(dim=0)
 
-            gathered_cls_tensor = self.all_gather(self.per_device_cls_tensor)
-            uniform_cls_tensor = torch.cat(
-                [cls_tensor for cls_tensor in gathered_cls_tensor], dim=0
-            )
+            # Gather per-strategy classification tensors
+            strategy_uniform_cls_tensors = {}
+            for strategy in strategies_to_evaluate:
+                gathered_cls_tensor = self.all_gather(self.strategy_per_device_cls_tensors[strategy])
+                strategy_uniform_cls_tensors[strategy] = torch.cat(
+                    [cls_tensor for cls_tensor in gathered_cls_tensor], dim=0
+                )
+            # For backward compatibility
+            uniform_cls_tensor = strategy_uniform_cls_tensors[strategies_to_evaluate[0]]
         else:
             scaled_flattened_metric_tensors = flattened_metric_tensors[:, 0]
             total_instance_count = flattened_metric_tensors[:, 1]
             total_instance_count_include_nan = total_instance_count
 
+            strategy_uniform_cls_tensors = self.strategy_per_device_cls_tensors
             uniform_cls_tensor = self.per_device_cls_tensor
 
         # if total_instance_count is 0, set the metric to null value
@@ -1988,44 +3359,51 @@ class Blip2Stage3(pl.LightningModule):
             torch.tensor(float("nan"), device=self.device),
         )
 
-        # evaluate classification tasks
-        # get total_cls_tensor only where total_cls_tensor[:, :2].sum(-1) > 0
-        actual_cls_tensor = uniform_cls_tensor[uniform_cls_tensor[:, :2].sum(-1) > 0]
-
-        total_probs = actual_cls_tensor[:, :2].cpu()
-        total_labels = actual_cls_tensor[:, 3].cpu().to(torch.long)
-        tasks_subtask_idx = actual_cls_tensor[:, 2].to(torch.int32).tolist()
-        # get task names using self.cls_task_subtask_name_pair_dict_inv
-        total_tasks = [
-            self.cls_task_subtask_name_pair_dict_inv[idx] for idx in tasks_subtask_idx
-        ]
-        classification_evaluation_result = total_device_evaluate(
-            total_labels=total_labels,
-            total_probs=total_probs,
-            total_tasks=total_tasks,
-            classification_task_subtask_pairs=self.cls_task_subtask_name_pair,
-        )
-
-        # convert classification_evaluation_result to flattened_metric_keys and flattened_metric_tensors
+        # evaluate classification tasks - now per strategy
         cls_flattened_metric_keys = []
         cls_flattented_metric_tensors = torch.empty(size=(0, 1), device=self.device)
-        for task_subtask_pair in classification_evaluation_result:
-            for metric in classification_evaluation_result[task_subtask_pair]:
-                cls_flattened_metric_keys.append(f"{mode}/{task_subtask_pair}/{metric}")
-                metric_value = classification_evaluation_result[task_subtask_pair][
-                    metric
-                ]
 
-                cls_flattented_metric_tensors = torch.cat(
-                    [
-                        cls_flattented_metric_tensors,
-                        torch.tensor(
-                            [metric_value],
-                            device=self.device,
-                        ).unsqueeze(0),
-                    ],
-                    dim=0,
+        for strategy in strategies_to_evaluate:
+            strategy_suffix = f"_{strategy}" if strategy != "default" else ""
+            strategy_cls_tensor = strategy_uniform_cls_tensors[strategy]
+
+            # get total_cls_tensor only where total_cls_tensor[:, :2].sum(-1) > 0
+            actual_cls_tensor = strategy_cls_tensor[strategy_cls_tensor[:, :2].sum(-1) > 0]
+
+            if actual_cls_tensor.shape[0] > 0:
+                total_probs = actual_cls_tensor[:, :2].cpu()
+                total_labels = actual_cls_tensor[:, 3].cpu().to(torch.long)
+                tasks_subtask_idx = actual_cls_tensor[:, 2].to(torch.int32).tolist()
+                # get task names using self.cls_task_subtask_name_pair_dict_inv
+                total_tasks = [
+                    self.cls_task_subtask_name_pair_dict_inv[idx] for idx in tasks_subtask_idx
+                ]
+                classification_evaluation_result = total_device_evaluate(
+                    total_labels=total_labels,
+                    total_probs=total_probs,
+                    total_tasks=total_tasks,
+                    classification_task_subtask_pairs=self.cls_task_subtask_name_pair,
                 )
+
+                # convert classification_evaluation_result to flattened_metric_keys and flattened_metric_tensors
+                for task_subtask_pair in classification_evaluation_result:
+                    for metric in classification_evaluation_result[task_subtask_pair]:
+                        cls_flattened_metric_keys.append(f"{mode}/{task_subtask_pair}/{metric}{strategy_suffix}")
+                        metric_value = classification_evaluation_result[task_subtask_pair][
+                            metric
+                        ]
+
+                        cls_flattented_metric_tensors = torch.cat(
+                            [
+                                cls_flattented_metric_tensors,
+                                torch.tensor(
+                                    [metric_value],
+                                    device=self.device,
+                                ).unsqueeze(0),
+                            ],
+                            dim=0,
+                        )
+
         cls_flattented_metric_tensors = cls_flattented_metric_tensors.squeeze(-1)
         flattened_metric_keys += cls_flattened_metric_keys
         averaged_flattened_metric_tensors = torch.cat(
@@ -2043,7 +3421,8 @@ class Blip2Stage3(pl.LightningModule):
         averaged_flattened_metric_tensors = averaged_flattened_metric_tensors[
             sorted_idx
         ]
-        print(
+        if self.debug:
+            print(
             "============================== Evaluation Results =============================="
         )
         for i, key in enumerate(flattened_metric_keys):
@@ -2051,20 +3430,22 @@ class Blip2Stage3(pl.LightningModule):
                 "num_instances" in key
             ):  # num_instance here is actually mean of quadratic of num_instance
                 continue
-            print(f"{key}: {averaged_flattened_metric_tensors[i]} ")
+            if self.debug:
+                print(f"{key}: {averaged_flattened_metric_tensors[i]} ")
             self.log(
                 key,
                 averaged_flattened_metric_tensors[i],
                 sync_dist=False,
                 rank_zero_only=True,
             )
-        print(
+        if self.debug:
+            print(
             "================================================================================="
         )
 
         result_path = os.path.join(
             self.logger.log_dir,
-            f"{mode}-step{self.global_step}-{self.global_rank}-results.json",
+            f"{mode}-step{step_for_filename}-{self.global_rank}-results.json",
         )
         # zip the flattened metrics and averaged_flattened_metric_tensors
         result_dict = {}
@@ -2076,10 +3457,462 @@ class Blip2Stage3(pl.LightningModule):
         with open(result_path, "w") as f:
             json.dump(result_dict, f, ensure_ascii=False, indent=4)
 
-        print(f"\nDevice {self.device} on_evaluation_epoch_end end")
+        # ======================================================================
+        # Multi-Strategy Summary Metrics
+        # ======================================================================
+        if len(strategies_to_evaluate) >= 1:
+            if self.debug:
+                print(f"\n{'='*70}")
+            if self.debug:
+                print("📊 Multi-Strategy Comparison Summary")
+            if self.debug:
+                print(f"{'='*70}")
+
+            # Strategy에서 remasking_strategy 매핑 (config 기반)
+            config_remasking = getattr(self.args, "remasking_strategy", "random")
+            strategy_to_remasking = {
+                "default": config_remasking,
+                "random": config_remasking,  # config의 remasking_strategy 사용
+                "semi_ar": config_remasking,  # config의 remasking_strategy 사용
+                "low_confidence": "low_confidence",  # 명시적 override
+                "semi_ar_low_confidence": "low_confidence",  # 명시적 override
+                "likelihood": "none",  # likelihood는 generation 안 함
+            }
+
+            strategy_summaries = {}
+            for strategy in strategies_to_evaluate:
+                strategy_eval_results = all_strategy_results[strategy]["evaluation_results"]
+                strategy_failed = all_strategy_results[strategy]["failed_cases"]
+
+                # remasking_strategy 결정
+                remasking_strategy = strategy_to_remasking.get(strategy, "random")
+
+                # Task 유형별 metric 집계
+                mol2text_metrics = {"bleu2": [], "bleu4": [], "rouge1": [], "rouge2": [], "rougeL": [], "meteor": []}
+                text2mol_metrics = {"validity_ratio": [], "exact_match_ratio": [], "MACCS_FTS": [], "RDK_FTS": [], "morgan_FTS": [], "bleu_smiles": []}
+                regression_metrics = {"mae": [], "rmse": []}
+                classification_metrics = {"accuracy": [], "f1": [], "roc_auc": []}
+
+                total_samples = 0
+                total_failure_rate = 0
+                task_count = 0
+
+                for task_pair, metrics in strategy_eval_results.items():
+                    task_name = task_pair.split("/")[0]
+                    num_instances = metrics.get("num_instances", 0)
+
+                    if num_instances == 0:
+                        continue
+
+                    total_samples += num_instances
+
+                    if "failure_rate" in metrics:
+                        total_failure_rate += metrics["failure_rate"]
+                        task_count += 1
+
+                    # MOL2TEXT tasks (generation)
+                    if task_name in MOL2TEXT_BENCHMARKS:
+                        for key in mol2text_metrics.keys():
+                            if key in metrics and not math.isnan(metrics[key]):
+                                mol2text_metrics[key].append((metrics[key], num_instances))
+
+                    # TEXT2MOL / REACTION tasks (molecule generation)
+                    elif task_name in TEXT2MOL_BENCHMARKS + REACTION_BENCHMARKS:
+                        for key in text2mol_metrics.keys():
+                            if key in metrics and not math.isnan(metrics[key]):
+                                text2mol_metrics[key].append((metrics[key], num_instances))
+
+                    # Regression tasks
+                    elif task_name in REGRESSION_BENCHMARKS:
+                        for key in regression_metrics.keys():
+                            if key in metrics and not math.isnan(metrics[key]):
+                                regression_metrics[key].append((metrics[key], num_instances))
+
+                    # Classification tasks
+                    elif task_name in CLASSIFICATION_BENCHMARKS:
+                        for key in classification_metrics.keys():
+                            if key in metrics and not math.isnan(metrics[key]):
+                                classification_metrics[key].append((metrics[key], num_instances))
+
+                # Weighted average 계산 함수
+                def weighted_avg(metric_list):
+                    if not metric_list:
+                        return None
+                    total_weight = sum(w for _, w in metric_list)
+                    if total_weight == 0:
+                        return None
+                    return sum(v * w for v, w in metric_list) / total_weight
+
+                avg_failure_rate = total_failure_rate / task_count if task_count > 0 else 0
+
+                # 전략별 average_gen_loss 계산 (LLaDA 전용)
+                avg_gen_loss = None
+                if hasattr(self, 'strategy_total_gen_loss') and strategy in self.strategy_total_gen_loss:
+                    gen_loss_count = self.strategy_total_gen_loss_count.get(strategy, 0)
+                    if gen_loss_count > 0:
+                        avg_gen_loss = self.strategy_total_gen_loss[strategy]
+
+                # Strategy summary 구성
+                strategy_summary = {
+                    "strategy": strategy,
+                    "remasking_strategy": remasking_strategy,
+                    "total_samples": total_samples,
+                    "num_failed_cases": len(strategy_failed["predictions"]),
+                    "avg_failure_rate": avg_failure_rate,
+                }
+
+                # average_gen_loss 추가 (있는 경우에만)
+                if avg_gen_loss is not None:
+                    strategy_summary["average_gen_loss"] = avg_gen_loss
+
+                # MOL2TEXT metrics
+                mol2text_summary = {}
+                for key, values in mol2text_metrics.items():
+                    avg_val = weighted_avg(values)
+                    if avg_val is not None:
+                        mol2text_summary[f"avg_{key}"] = avg_val
+                if mol2text_summary:
+                    strategy_summary["mol2text"] = mol2text_summary
+
+                # TEXT2MOL metrics
+                text2mol_summary = {}
+                for key, values in text2mol_metrics.items():
+                    avg_val = weighted_avg(values)
+                    if avg_val is not None:
+                        text2mol_summary[f"avg_{key}"] = avg_val
+                if text2mol_summary:
+                    strategy_summary["text2mol"] = text2mol_summary
+
+                # Regression metrics
+                regression_summary = {}
+                for key, values in regression_metrics.items():
+                    avg_val = weighted_avg(values)
+                    if avg_val is not None:
+                        regression_summary[f"avg_{key}"] = avg_val
+                if regression_summary:
+                    strategy_summary["regression"] = regression_summary
+
+                # Classification metrics
+                classification_summary = {}
+                for key, values in classification_metrics.items():
+                    avg_val = weighted_avg(values)
+                    if avg_val is not None:
+                        classification_summary[f"avg_{key}"] = avg_val
+                if classification_summary:
+                    strategy_summary["classification"] = classification_summary
+
+                strategy_summaries[strategy] = strategy_summary
+
+                # Print summary
+                if self.debug:
+                    print(f"\n[{strategy}] (remasking: {remasking_strategy})")
+                if self.debug:
+                    print(f"  - Total Samples: {total_samples}")
+                if self.debug:
+                    print(f"  - Failed Cases: {len(strategy_failed['predictions'])}")
+                if self.debug:
+                    print(f"  - Average Failure Rate: {avg_failure_rate:.4f}")
+                if avg_gen_loss is not None:
+                    if self.debug:
+                        print(f"  - Average Gen Loss: {avg_gen_loss:.4f}")
+
+                if "mol2text" in strategy_summary:
+                    if self.debug:
+                        print(f"  [MOL2TEXT]")
+                    for k, v in strategy_summary["mol2text"].items():
+                        if self.debug:
+                            print(f"    - {k}: {v:.4f}")
+
+                if "text2mol" in strategy_summary:
+                    if self.debug:
+                        print(f"  [TEXT2MOL]")
+                    for k, v in strategy_summary["text2mol"].items():
+                        if self.debug:
+                            print(f"    - {k}: {v:.4f}")
+
+                if "regression" in strategy_summary:
+                    if self.debug:
+                        print(f"  [REGRESSION]")
+                    for k, v in strategy_summary["regression"].items():
+                        if self.debug:
+                            print(f"    - {k}: {v:.4f}")
+
+                if "classification" in strategy_summary:
+                    if self.debug:
+                        print(f"  [CLASSIFICATION]")
+                    for k, v in strategy_summary["classification"].items():
+                        if self.debug:
+                            print(f"    - {k}: {v:.4f}")
+
+                # Log strategy-specific summary metrics
+                strategy_suffix = f"_{strategy}" if strategy != "default" else ""
+                self.log(
+                    f"{mode}/strategy{strategy_suffix}/avg_failure_rate",
+                    avg_failure_rate,
+                    sync_dist=False,
+                    rank_zero_only=True,
+                )
+
+                # Log average_gen_loss with strategy and remasking_strategy
+                if avg_gen_loss is not None:
+                    self.log(
+                        f"{mode}/average_gen_loss_{strategy}_{remasking_strategy}",
+                        avg_gen_loss,
+                        sync_dist=False,
+                        rank_zero_only=True,
+                    )
+
+                # Log task-type specific metrics
+                for task_type in ["mol2text", "text2mol", "regression", "classification"]:
+                    if task_type in strategy_summary:
+                        for metric_name, metric_value in strategy_summary[task_type].items():
+                            self.log(
+                                f"{mode}/strategy{strategy_suffix}/{task_type}/{metric_name}",
+                                metric_value,
+                                sync_dist=False,
+                                rank_zero_only=True,
+                            )
+
+            # Save strategy comparison to file
+            strategy_comparison_path = os.path.join(
+                self.logger.log_dir,
+                f"{mode}-step{step_for_filename}-{self.global_rank}-strategy_comparison.json",
+            )
+            with open(strategy_comparison_path, "w") as f:
+                json.dump(strategy_summaries, f, ensure_ascii=False, indent=4)
+
+            if self.debug:
+                print(f"\n📁 Strategy comparison saved to: {strategy_comparison_path}")
+            if self.debug:
+                print(f"{'='*70}")
+
+        # ======================================================================
+        # Epoch 단위 metric 누적 (step별 validation 결과를 epoch 단위로 집계)
+        # ======================================================================
+        if hasattr(self, 'epoch_val_metrics'):
+            for i, key in enumerate(flattened_metric_keys):
+                if "num_instances" in key:
+                    continue
+                metric_value = averaged_flattened_metric_tensors[i].item()
+                if not math.isnan(metric_value):
+                    if key not in self.epoch_val_metrics:
+                        self.epoch_val_metrics[key] = []
+                    self.epoch_val_metrics[key].append(metric_value)
+            self.epoch_val_count = getattr(self, 'epoch_val_count', 0) + 1
+
+        if self.debug:
+            print(f"\nDevice {self.device} on_evaluation_epoch_end end")
+
+    def on_train_epoch_end(self) -> None:
+        """Epoch 종료 시 epoch 전체에 대한 validation metric summary 로깅"""
+        if not hasattr(self, 'epoch_val_metrics') or not self.epoch_val_metrics:
+            if self.debug:
+                print(f"[Epoch {self.current_epoch}] No validation metrics to summarize")
+            return
+
+        if self.debug:
+            print(f"\n{'='*70}")
+        if self.debug:
+            print(f"📊 [EPOCH {self.current_epoch} SUMMARY] Aggregating {self.epoch_val_count} validation runs")
+        if self.debug:
+            print(f"{'='*70}")
+
+        epoch_summary = {}
+        for key, values in self.epoch_val_metrics.items():
+            if len(values) > 0:
+                # NaN 제거 후 평균 계산
+                valid_values = [v for v in values if not math.isnan(v)]
+                if len(valid_values) > 0:
+                    avg_value = sum(valid_values) / len(valid_values)
+                    # epoch suffix 추가한 새 key 생성
+                    epoch_key = key.replace("/", "/epoch_") if key.count("/") >= 2 else key + "_epoch"
+                    epoch_summary[epoch_key] = avg_value
+
+                    # 로깅
+                    self.log(
+                        epoch_key,
+                        avg_value,
+                        sync_dist=False,
+                        rank_zero_only=True,
+                    )
+
+        # Epoch summary를 파일로 저장 (rank 0에서만)
+        if self.global_rank == 0 and hasattr(self, 'logger') and hasattr(self.logger, 'log_dir') and self.logger.log_dir:
+            epoch_summary_path = os.path.join(
+                self.logger.log_dir,
+                f"epoch{self.current_epoch}-summary.json",
+            )
+            with open(epoch_summary_path, "w") as f:
+                json.dump(epoch_summary, f, ensure_ascii=False, indent=4)
+            if self.debug:
+                print(f"📁 Epoch summary saved to: {epoch_summary_path}")
+
+        # 주요 metric 출력
+        if self.debug:
+            print(f"\n[Epoch {self.current_epoch}] Key metrics (averaged over {self.epoch_val_count} validations):")
+        for key, value in sorted(epoch_summary.items()):
+            if any(m in key for m in ['accuracy', 'roc_auc', 'f1', 'total_loss']):
+                if self.debug:
+                    print(f"  {key}: {value:.4f}")
+
+        if self.debug:
+            print(f"{'='*70}\n")
+
+    def on_before_optimizer_step(self, optimizer):
+        """
+        Optimizer step 직전에 gradient scaling 적용
+
+        Embedding과 LM Head의 경우:
+        - 기존 vocab (idx < original_vocab_size): base LR 사용
+        - 새로운 vocab (idx >= original_vocab_size): gradient를 스케일링하여 더 높은 effective LR 적용
+
+        이 방식은 같은 weight tensor에서 일부 row만 다른 LR을 적용하는 효과를 냄
+        """
+        # Gradient scaling 적용 (embed/head의 new vocab 부분)
+        if hasattr(self, '_embed_head_split_info'):
+            info = self._embed_head_split_info
+            original_vocab_size = info['original_vocab_size']
+            lr_ratio_embed = info['lr_ratio_embed']
+            lr_ratio_head = info['lr_ratio_head']
+
+            # Embedding 파라미터에 gradient scaling 적용
+            for param, name in info['embed_params']:
+                if param.grad is not None and param.shape[0] > original_vocab_size:
+                    # new vocab 부분의 gradient를 lr_ratio만큼 스케일링
+                    # effective_lr = base_lr * ratio 효과
+                    param.grad[original_vocab_size:] *= lr_ratio_embed
+
+                    if self.debug and self.global_step <= 5:
+                        if self.debug:
+                            print(f"  [Grad Scaling] {name}: scaled new vocab grads by {lr_ratio_embed:.2f}")
+
+            # Head 파라미터에 gradient scaling 적용
+            for param, name in info['head_params']:
+                if param.grad is not None and param.shape[0] > original_vocab_size:
+                    param.grad[original_vocab_size:] *= lr_ratio_head
+
+                    if self.debug and self.global_step <= 5:
+                        if self.debug:
+                            print(f"  [Grad Scaling] {name}: scaled new vocab grads by {lr_ratio_head:.2f}")
+
+        # 디버깅: 첫 몇 번의 optimizer step에서만
+        if not hasattr(self, '_debug_weights_before'):
+            self._debug_weights_before = {}
+
+        if self.global_step > 5:
+            return
+
+        for name, param in self.named_parameters():
+            if param.requires_grad:
+                if ('wte' in name.lower() and 'original_module' not in name) or \
+                   ('ff_out' in name.lower() and 'blocks' not in name and 'original_module' not in name):
+                    self._debug_weights_before[name] = {
+                        'weight_sum': param.data.sum().item(),
+                        'weight_norm': param.data.norm(2).item(),
+                        'grad_sum': param.grad.sum().item() if param.grad is not None else None,
+                        'grad_norm': param.grad.norm(2).item() if param.grad is not None else None,
+                    }
+
+        if self._debug_weights_before:
+            if self.debug:
+                print(f"\n[DEBUG on_before_optimizer_step] Global Step {self.global_step}")
+            for name, vals in self._debug_weights_before.items():
+                if self.debug:
+                    print(f"  {name}: weight_sum={vals['weight_sum']:.6f}, grad_sum={vals['grad_sum']}, grad_norm={vals['grad_norm']}")
+
+    def on_after_backward(self):
+        """Backward 직후 gradient norm을 5개 그룹으로 분리하여 로깅
+
+        이 시점에서 gradient가 계산된 상태이므로 정확한 grad_norm을 얻을 수 있음.
+        training_step에서는 backward() 전이므로 grad가 None이거나 이전 step 값임.
+        """
+        # 5개 그룹 gradient norm 로깅 (매 step)
+        self._log_5group_grad_norms()
+
+        # 첫 몇 번의 step에서만 디버깅 출력
+        if self.global_step > 5:
+            return
+
+        wte_grad_info = []
+        ff_out_grad_info = []
+
+        for name, param in self.named_parameters():
+            if param.requires_grad and param.grad is not None:
+                if 'wte' in name.lower() and 'original_module' not in name:
+                    wte_grad_info.append((name, param.grad.norm(2).item(), param.grad.sum().item()))
+                elif 'ff_out' in name.lower() and 'blocks' not in name and 'original_module' not in name:
+                    ff_out_grad_info.append((name, param.grad.norm(2).item(), param.grad.sum().item()))
+
+        if wte_grad_info or ff_out_grad_info:
+            if self.debug:
+                print(f"\n[DEBUG on_after_backward] Global Step {self.global_step}")
+            for name, norm, sumv in wte_grad_info:
+                if self.debug:
+                    print(f"  [wte] {name}: grad_norm={norm:.6f}, grad_sum={sumv:.6f}")
+            for name, norm, sumv in ff_out_grad_info:
+                if self.debug:
+                    print(f"  [ff_out] {name}: grad_norm={norm:.6f}, grad_sum={sumv:.6f}")
+
+    def _log_5group_grad_norms(self):
+        """5개 파라미터 그룹의 gradient norm을 wandb에 로깅
+
+        Groups:
+        - grad_norm/lora: LoRA 파라미터
+        - grad_norm/embed_orig: 기존 vocab embedding (idx < original_vocab_size)
+        - grad_norm/embed_new: 새 vocab embedding (idx >= original_vocab_size)
+        - grad_norm/head_orig: 기존 vocab head (idx < original_vocab_size)
+        - grad_norm/head_new: 새 vocab head (idx >= original_vocab_size)
+        """
+        original_vocab_size = getattr(self.args, 'original_vocab_size', 126349)
+
+        grad_norms = {
+            'lora': 0.0,
+            'embed_orig': 0.0,
+            'embed_new': 0.0,
+            'head_orig': 0.0,
+            'head_new': 0.0,
+        }
+
+        for name, param in self.named_parameters():
+            if not param.requires_grad or param.grad is None:
+                continue
+
+            name_lower = name.lower()
+
+            # LoRA 파라미터
+            if 'lora' in name_lower:
+                grad_norms['lora'] += param.grad.norm(2).item() ** 2
+
+            # Embedding (wte / embed_tokens)
+            elif ('wte' in name_lower or 'embed_tokens' in name_lower) and 'original_module' not in name_lower:
+                if param.dim() >= 2 and param.shape[0] > original_vocab_size:
+                    # vocab dimension이 첫 번째인 경우
+                    orig_grad = param.grad[:original_vocab_size]
+                    new_grad = param.grad[original_vocab_size:]
+                    grad_norms['embed_orig'] += orig_grad.norm(2).item() ** 2
+                    grad_norms['embed_new'] += new_grad.norm(2).item() ** 2
+                else:
+                    # 분리 불가 (새 vocab 없음)
+                    grad_norms['embed_orig'] += param.grad.norm(2).item() ** 2
+
+            # Head (ff_out / lm_head)
+            elif ('ff_out' in name_lower or 'lm_head' in name_lower) and 'blocks' not in name_lower and 'original_module' not in name_lower:
+                if param.dim() >= 2 and param.shape[0] > original_vocab_size:
+                    orig_grad = param.grad[:original_vocab_size]
+                    new_grad = param.grad[original_vocab_size:]
+                    grad_norms['head_orig'] += orig_grad.norm(2).item() ** 2
+                    grad_norms['head_new'] += new_grad.norm(2).item() ** 2
+                else:
+                    grad_norms['head_orig'] += param.grad.norm(2).item() ** 2
+
+        # L2 norm 계산 및 로깅
+        import math
+        for key, squared_sum in grad_norms.items():
+            norm = math.sqrt(squared_sum)
+            self.log(f"grad_norm/{key}", norm, batch_size=self.args.batch_size, sync_dist=False)
 
     """
-    def on_after_backward(self):
+    def _on_after_backward_old(self):
         # Log the gradient norm for all parameters
         for name, param in self.named_parameters():
             if param.grad is not None:
