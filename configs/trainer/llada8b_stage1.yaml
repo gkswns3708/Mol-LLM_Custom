@@ -49,7 +49,7 @@ load_in_8bit: false           # 8bit 양자화 로드 (메모리 절약, 성능 
 # LoRA alpha: 보통 r의 2배 권장 (alpha/r = scaling factor)
 peft_config: "Mol-LLM_Custom/lora_config_llada.json"  # LoRA config JSON 경로
 peft_dir: ""                  # 기존 LoRA 체크포인트 경로 (빈 문자열 = 처음부터 학습)
-lora_r: 16                    # LoRA rank: 8 | 16 | 32 | 64 | 128
+lora_r: 64                    # LoRA rank: 8 | 16 | 32 | 64 | 128
 lora_alpha: 32                # LoRA alpha: 보통 r*2 (16 | 32 | 64 | 128)
 lora_dropout: 0.05            # LoRA dropout: 0.0 | 0.05 | 0.1
 
@@ -135,9 +135,9 @@ min_lr_ratio: 0.1             # Decay 종료 시 초기 LR의 10%까지 감소
 # lr_head_new:   0.000025        # 2.5e-5 (새 vocab lm_head/ff_out)
 
 lr_lora:       0.00025        # 2.5e-4 (LoRA 파라미터)
-lr_embed_orig: 0.00025       # 2.5e-5 (기존 vocab embedding, idx < 126349)
+lr_embed_orig: 0.0025       # 2.5e-5 (기존 vocab embedding, idx < 126349)
 lr_embed_new:  0.025        # 2.5e-4 (새 vocab embedding, idx >= 126349)
-lr_head_orig:  0.00025       # 2.5e-5 (기존 vocab lm_head/ff_out)
+lr_head_orig:  0.0025       # 2.5e-5 (기존 vocab lm_head/ff_out)
 lr_head_new:   0.025        # 2.5e-4 (새 vocab lm_head/ff_out)
 
 # Original vocab size (LLaDA-8B len(tokenizer) before adding new tokens)
@@ -157,12 +157,13 @@ remasking_strategy: 'low_confidence'
 #   - 32: 기본값 (품질/속도 균형)
 #   - 64~128: 높은 품질 (느림)
 #   - seq_len: 최대 품질 (매우 느림)
-sampling_steps: 256
+sampling_steps: 64
 
 # Semi-Autoregressive 생성 모드
 # Format token을 먼저 생성한 후 content를 diffusion으로 채움
 use_semi_ar: false          # true: Semi-AR 활성화 | false: 전체 diffusion
-semi_ar_block_size: 2      # Semi-AR 블록 크기: 8 | 16 | 32
+semi_ar_block_size: 32      # Semi-AR 블록 크기: 8 | 16 | 32
+semi_ar_steps_per_block: 8  # 블록 내 diffusion step 수 (독립 설정)
 
 # Validation 시 사용할 generation 전략들 (비교 실험용)
 #   - "random": 전체 diffusion + random remasking
@@ -206,7 +207,7 @@ save_every_n_epochs: 1      # N epoch마다 저장: 0 (비활성화) | 1 | 5
 
 # Validation 설정
 val_check_interval: 1.0     # Epoch 내 validation 비율: 0.5 | 1.0 (epoch 끝), integer의 경우 step으로 지정됨
-check_val_every_n_epoch: 15    # N epoch마다 validation: 1 | 5 | 10
+check_val_every_n_epoch: 5   # N epoch마다 validation: 1 | 5 | 10
 test_on_trainset: false       # Train set에서도 테스트 수행
 limit_val_batches: 1.0     # Validation set 비율: 1.0 (전체) | 0.1 (10%) | 0.01 (1%), integer의 경우 batch 수로 지정됨
 
@@ -219,7 +220,7 @@ eval_modality_util: null    # "graph" | "text" | null (전체)
 # 로깅할 layer 이름 목록
 # LLaDA: wte (embedding), ff_out (lm_head), lora
 # 기타 모델: embed_tokens, lm_head, graph_encoder, opt_proj, ln_graph
-log_weight_norm_layers: ["wte", "ff_out", "lora", 'blocks.0.attn_out']
+log_weight_norm_layers: ["wte", "ff_out", "lora"]
 log_weight_norm_interval: 10   # N step마다 로깅: 50 | 100 | 500
 
 # 상위 빈도 SELFIES 토큰 norm 추적 (wandb: top_selfies/top5, top10, top15)
@@ -259,7 +260,7 @@ nan_log_dir: './nan_logs'      # NaN 로그 저장 디렉토리
 # 출력 형식: [Step N/총steps] t=X → s=Y | Unmasked: A/B (C%) | Masked: D (E%)
 # 각 토큰은 18자 고정 폭으로 정렬되어 저장됨
 log_stepwise_denoising: true       # true: 활성화 (디버깅용) | false: 비활성화 (기본)
-stepwise_log_dir: './stepwise_logs'  # Step-wise 로그 저장 디렉토리
+stepwise_log_dir: '/app/stepwise_logs'  # Step-wise 로그 저장 디렉토리
 # stepwise_max_samples: 로깅할 최대 샘플 수 (전체 GPU 합산)
 #   - "4": 전체 4개 샘플 (GPU 4개면 각 GPU당 1개씩, 총 4개)
 #   - "10%": 전체 데이터셋의 10% 샘플 (GPU 수에 맞게 조정됨)

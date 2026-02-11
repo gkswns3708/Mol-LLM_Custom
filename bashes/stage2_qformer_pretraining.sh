@@ -1,6 +1,6 @@
 export TOKENIZERS_PARALLELISM=false;
 gpus="'0,1,2,3,4,5,6,7'"
-gnn=$1
+gnn="'gine_tokengt'"
 file_name=stage2_qformer_pretraining
 
 python Mol-LLM/stage3.py \

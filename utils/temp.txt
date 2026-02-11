@@ -1,0 +1,420 @@
+================================================================================
+METEOR Score 비교: Model Tokenizer vs NLTK word_tokenize
+================================================================================
+✓ 데이터 로드: 2528개 샘플
+
+Task 분포:
+  chebi-20-mol2text: 327
+  chebi-20-text2mol: 327
+  forward_reaction_prediction: 100
+  qm9_homo: 68
+  qm9_homo_lumo_gap: 66
+  qm9_lumo: 64
+  reagent_prediction: 100
+  retrosynthesis: 100
+  smol-forward_synthesis: 406
+  smol-molecule_captioning: 251
+  smol-molecule_generation: 246
+  smol-property_prediction-esol: 16
+  smol-property_prediction-lipo: 42
+  smol-retrosynthesis: 415
+
+================================================================================
+LLaDA Tokenizer 로드 + SELFIES/Special Tokens 추가
+================================================================================
+✓ 기본 Tokenizer 로드: PreTrainedTokenizerFast
+  원본 Vocab size: 126349
+  추가된 토큰 수: 2957
+  새 Vocab size: 129306
+
+================================================================================
+Task별 METEOR Score 계산
+================================================================================
+  처리 중... 500/2528
+  처리 중... 1000/2528
+  처리 중... 1500/2528
+  처리 중... 2000/2528
+  처리 중... 2500/2528
+✓ 모든 샘플 처리 완료
+
+================================================================================
+Task별 METEOR Score 비교 요약
+================================================================================
+
+Task                                     |    샘플수 |  Model Tok |       NLTK |         차이
+------------------------------------------------------------------------------------------
+chebi-20-mol2text                        |    327 |     0.2576 |     0.3189 |    +0.0613
+chebi-20-text2mol                        |    327 |     0.5251 |     0.7150 |    +0.1899
+forward_reaction_prediction              |    100 |     0.9138 |     0.9541 |    +0.0402
+qm9_homo                                 |     68 |     0.9173 |     0.9105 |    -0.0069
+qm9_homo_lumo_gap                        |     66 |     0.9180 |     0.9110 |    -0.0069
+qm9_lumo                                 |     64 |     0.9202 |     0.9137 |    -0.0065
+reagent_prediction                       |    100 |     0.4677 |     0.5732 |    +0.1055
+retrosynthesis                           |    100 |     0.7294 |     0.8577 |    +0.1283
+smol-forward_synthesis                   |    406 |     0.7970 |     0.9048 |    +0.1078
+smol-molecule_captioning                 |    251 |     0.2509 |     0.3141 |    +0.0632
+smol-molecule_generation                 |    246 |     0.4946 |     0.7004 |    +0.2057
+smol-property_prediction-esol            |     16 |     0.9157 |     0.9091 |    -0.0067
+smol-property_prediction-lipo            |     42 |     0.9308 |     0.9253 |    -0.0055
+smol-retrosynthesis                      |    415 |     0.6469 |     0.8122 |    +0.1653
+------------------------------------------------------------------------------------------
+전체 평균                                    |   2528 |     0.5852 |     0.6986 |    +0.1134
+
+================================================================================
+Task별 샘플 예시 (토큰화 비교)
+================================================================================
+
+================================================================================
+[chebi-20-mol2text]
+================================================================================
+
+Prediction: <DESCRIPTION>The molecule is an  ester of class 3beta-ster that is as the product of the action of the methyl ester of t...
+Target:     <DESCRIPTION>The molecule is a steroid ester that is methyl (17E)-pregna-4,17-dien-21-oate substituted by oxo groups at ...
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 51
+    - Reference 토큰 수: 85
+    - Prediction 토큰: ['<DESCRIPTION>', 'The', 'Ġmolecule', 'Ġis', 'Ġan', 'Ġ', 'Ġester', 'Ġof', 'Ġclass', 'Ġ', '3', 'beta', '-', 'ster', 'Ġthat']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 45
+    - Reference 토큰 수: 57
+    - Prediction 토큰: ['<', 'description', '>', 'the', 'molecule', 'is', 'an', 'ester', 'of', 'class', '3beta-ster', 'that', 'is', 'as', 'the']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.3434 (34.34%)
+  NLTK word_tokenize: 0.4466 (44.66%)
+  차이:               +0.1032 (+10.32%p)
+
+================================================================================
+[chebi-20-text2mol]
+================================================================================
+
+Prediction: <SELFIES>[C][=C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C][C...
+Target:     <SELFIES>[O][=C][Branch1][C][O][C@H1][C][S][C][Branch1][P][C][=N][C][=C][C][=C][Branch1][C][O-1][C][=C][Ring1][#Branch1]...
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 256
+    - Reference 토큰 수: 32
+    - Prediction 토큰: ['<SELFIES>', '[C]', '[=C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 768
+    - Reference 토큰 수: 101
+    - Prediction 토큰: ['<', 'selfies', '>', '[', 'c', ']', '[', '=c', ']', '[', 'c', ']', '[', 'c', ']']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.0919 (9.19%)
+  NLTK word_tokenize: 0.3949 (39.49%)
+  차이:               +0.3030 (+30.30%p)
+
+================================================================================
+[forward_reaction_prediction]
+================================================================================
+
+Prediction: <SELFIES>[C][C][N][=C][=Branch1][C][=O][N][Branch2][Ring2][Ring2][C][C][C][N][Branch2][Ring1][Branch2][C][=N][C][Branch1...
+Target:     <SELFIES>[C][C][N][C][=Branch1][C][=O][N][Branch2][Ring2][=Branch1][C][C][C][N][Branch2][Ring1][#Branch2][C][=N][C][Bran...
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 71
+    - Reference 토큰 수: 72
+    - Prediction 토큰: ['<SELFIES>', '[C]', '[C]', '[N]', '[=C]', '[=Branch1]', '[C]', '[=O]', '[N]', '[Branch2]', '[Ring2]', '[Ring2]', '[C]', '[C]', '[C]']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 214
+    - Reference 토큰 수: 219
+    - Prediction 토큰: ['<', 'selfies', '>', '[', 'c', ']', '[', 'c', ']', '[', 'n', ']', '[', '=c', ']']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.8272 (82.72%)
+  NLTK word_tokenize: 0.9344 (93.44%)
+  차이:               +0.1072 (+10.72%p)
+
+================================================================================
+[qm9_homo]
+================================================================================
+
+Prediction: <FLOAT> <|-|><|0|><|.|><|2|><|1|><|1|><|1|> </FLOAT>
+Target:     <FLOAT> <|-|><|0|><|.|><|1|><|9|><|7|><|4|> </FLOAT>
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 29
+    - Reference 토큰 수: 29
+    - Prediction 토큰: ['<FLOAT>', 'Ġ<', '|-', '|', '><', '|', '0', '|', '><', '|', '.|', '><', '|', '2', '|']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 27
+    - Reference 토큰 수: 27
+    - Prediction 토큰: ['<', 'float', '>', '<', '|-|', '>', '<', '|0|', '>', '<', '|.|', '>', '<', '|2|', '>']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.8910 (89.10%)
+  NLTK word_tokenize: 0.8819 (88.19%)
+  차이:               -0.0091 (-0.91%p)
+
+================================================================================
+[qm9_homo_lumo_gap]
+================================================================================
+
+Prediction: <FLOAT> <|+|><|0|><|.|><|2|><|2|><|1|><|1|> </FLOAT>
+Target:     <FLOAT> <|+|><|0|><|.|><|2|><|2|><|5|><|9|> </FLOAT>
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 29
+    - Reference 토큰 수: 29
+    - Prediction 토큰: ['<FLOAT>', 'Ġ<', '|', '+|', '><', '|', '0', '|', '><', '|', '.|', '><', '|', '2', '|']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 27
+    - Reference 토큰 수: 27
+    - Prediction 토큰: ['<', 'float', '>', '<', '|+|', '>', '<', '|0|', '>', '<', '|.|', '>', '<', '|2|', '>']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.9304 (93.04%)
+  NLTK word_tokenize: 0.9251 (92.51%)
+  차이:               -0.0053 (-0.53%p)
+
+================================================================================
+[qm9_lumo]
+================================================================================
+
+Prediction: <FLOAT> <|-|><|0|><|.|><|0|><|3|><|1|><|1|> </FLOAT>
+Target:     <FLOAT> <|-|><|0|><|.|><|0|><|0|><|6|><|4|> </FLOAT>
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 29
+    - Reference 토큰 수: 29
+    - Prediction 토큰: ['<FLOAT>', 'Ġ<', '|-', '|', '><', '|', '0', '|', '><', '|', '.|', '><', '|', '0', '|']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 27
+    - Reference 토큰 수: 27
+    - Prediction 토큰: ['<', 'float', '>', '<', '|-|', '>', '<', '|0|', '>', '<', '|.|', '>', '<', '|0|', '>']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.8835 (88.35%)
+  NLTK word_tokenize: 0.8724 (87.24%)
+  차이:               -0.0111 (-1.11%p)
+
+================================================================================
+[reagent_prediction]
+================================================================================
+
+Prediction: <SELFIES>[C][C][N][Branch1][Ring1][C][C][C][C].[C][N][Branch1][C][C][C][C][C][N][C][C][C][Branch1][C][C][C].[C][C][C][C]...
+Target:     <SELFIES>[C][C][C][O][C][Ring1][Branch1].[C][C][N][Branch1][=Branch1][C][Branch1][C][C][C][C][Branch1][C][C][C].[C][C][O...
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 37
+    - Reference 토큰 수: 54
+    - Prediction 토큰: ['<SELFIES>', '[C]', '[C]', '[N]', '[Branch1]', '[Ring1]', '[C]', '[C]', '[C]', '[C]', '.', '[C]', '[N]', '[Branch1]', '[C]']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 107
+    - Reference 토큰 수: 159
+    - Prediction 토큰: ['<', 'selfies', '>', '[', 'c', ']', '[', 'c', ']', '[', 'n', ']', '[', 'branch1', ']']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.5431 (54.31%)
+  NLTK word_tokenize: 0.5812 (58.12%)
+  차이:               +0.0381 (+3.81%p)
+
+================================================================================
+[retrosynthesis]
+================================================================================
+
+Prediction: <SELFIES>[O][=N+1][Branch1][C][O-1][C][=C][C][=C][Branch1][=Branch2][C][Branch1][C][F][Branch1][C][F][F][C][Branch1][C][...
+Target:     <SELFIES>[C][O][C][=C][C][Branch1][=Branch1][N+1][=Branch1][C][=O][O-1][=C][C][=C][Ring1][=Branch2][C][Branch1][C][F][Br...
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 28
+    - Reference 토큰 수: 27
+    - Prediction 토큰: ['<SELFIES>', '[O]', '[=N+1]', '[Branch1]', '[C]', '[O-1]', '[C]', '[=C]', '[C]', '[=C]', '[Branch1]', '[=Branch2]', '[C]', '[Branch1]', '[C]']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 84
+    - Reference 토큰 수: 81
+    - Prediction 토큰: ['<', 'selfies', '>', '[', 'o', ']', '[', '=n+1', ']', '[', 'branch1', ']', '[', 'c', ']']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.6453 (64.53%)
+  NLTK word_tokenize: 0.8324 (83.24%)
+  차이:               +0.1871 (+18.71%p)
+
+================================================================================
+[smol-forward_synthesis]
+================================================================================
+
+Prediction: <SELFIES>[C][N][Branch1][C][C][C][=C][C][=Branch1][C][=O][C][=C][C][=C][Branch1][=Branch1][C][Branch1][C][C][#N][O][Ring...
+Target:     <SELFIES>[N][#C][C][=C][C][=C][Branch1][Branch2][C][=C][C][=C][O][Ring1][Branch1][N][C][Ring1][O][=O]</SELFIES>
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 27
+    - Reference 토큰 수: 22
+    - Prediction 토큰: ['<SELFIES>', '[C]', '[N]', '[Branch1]', '[C]', '[C]', '[C]', '[=C]', '[C]', '[=Branch1]', '[C]', '[=O]', '[C]', '[=C]', '[C]']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 82
+    - Reference 토큰 수: 67
+    - Prediction 토큰: ['<', 'selfies', '>', '[', 'c', ']', '[', 'n', ']', '[', 'branch1', ']', '[', 'c', ']']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.3778 (37.78%)
+  NLTK word_tokenize: 0.8203 (82.03%)
+  차이:               +0.4425 (+44.25%p)
+
+================================================================================
+[smol-molecule_captioning]
+================================================================================
+
+Prediction: <DESCRIPTION>The molecule is a 2 fatty fatty acid that is the acid of condensation of the carbox2 group of of (1ZZ,11ZZ,...
+Target:     <DESCRIPTION>The molecule is an ultra-long-chain fatty acid that is (14Z,17Z,20Z,23Z,26Z)-dotriacontapentaenoic acid sub...
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 91
+    - Reference 토큰 수: 153
+    - Prediction 토큰: ['<DESCRIPTION>', 'The', 'Ġmolecule', 'Ġis', 'Ġa', 'Ġ', '2', 'Ġfatty', 'Ġfatty', 'Ġacid', 'Ġthat', 'Ġis', 'Ġthe', 'Ġacid', 'Ġof']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 54
+    - Reference 토큰 수: 68
+    - Prediction 토큰: ['<', 'description', '>', 'the', 'molecule', 'is', 'a', '2', 'fatty', 'fatty', 'acid', 'that', 'is', 'the', 'acid']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.2598 (25.98%)
+  NLTK word_tokenize: 0.4315 (43.15%)
+  차이:               +0.1717 (+17.17%p)
+
+================================================================================
+[smol-molecule_generation]
+================================================================================
+
+Prediction: <SELFIES>[N][C][Branch1][=Branch2][C][=C][C][=C][C][=C][Ring1][=Branch1][C][=Branch1][C][=O][O]</SELFIES>
+Target:     <SELFIES>[N][C@H1][Branch1][Ring1][C][O][C][C][=C][C][=C][C][=C][Ring1][=Branch1]</SELFIES>
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 19
+    - Reference 토큰 수: 17
+    - Prediction 토큰: ['<SELFIES>', '[N]', '[C]', '[Branch1]', '[=Branch2]', '[C]', '[=C]', '[C]', '[=C]', '[C]', '[=C]', '[Ring1]', '[=Branch1]', '[C]', '[=Branch1]']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 57
+    - Reference 토큰 수: 53
+    - Prediction 토큰: ['<', 'selfies', '>', '[', 'n', ']', '[', 'c', ']', '[', 'branch1', ']', '[', '=branch2', ']']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.5882 (58.82%)
+  NLTK word_tokenize: 0.8248 (82.48%)
+  차이:               +0.2365 (+23.65%p)
+
+================================================================================
+[smol-property_prediction-esol]
+================================================================================
+
+Prediction: <FLOAT> <|-|><|3|><|.|><|1|><|0|><|0|><|0|> </FLOAT>
+Target:     <FLOAT> <|-|><|5|><|.|><|1|><|9|><|0|><|0|> </FLOAT>
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 29
+    - Reference 토큰 수: 29
+    - Prediction 토큰: ['<FLOAT>', 'Ġ<', '|-', '|', '><', '|', '3', '|', '><', '|', '.|', '><', '|', '1', '|']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 27
+    - Reference 토큰 수: 27
+    - Prediction 토큰: ['<', 'float', '>', '<', '|-|', '>', '<', '|3|', '>', '<', '|.|', '>', '<', '|1|', '>']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.9304 (93.04%)
+  NLTK word_tokenize: 0.9251 (92.51%)
+  차이:               -0.0053 (-0.53%p)
+
+================================================================================
+[smol-property_prediction-lipo]
+================================================================================
+
+Prediction: <FLOAT> <|+|><|0|><|.|><|2|><|0|><|0|><|0|> </FLOAT>
+Target:     <FLOAT> <|+|><|1|><|.|><|5|><|9|><|0|><|0|> </FLOAT>
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 29
+    - Reference 토큰 수: 29
+    - Prediction 토큰: ['<FLOAT>', 'Ġ<', '|', '+|', '><', '|', '0', '|', '><', '|', '.|', '><', '|', '2', '|']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 27
+    - Reference 토큰 수: 27
+    - Prediction 토큰: ['<', 'float', '>', '<', '|+|', '>', '<', '|0|', '>', '<', '|.|', '>', '<', '|2|', '>']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.8949 (89.49%)
+  NLTK word_tokenize: 0.8868 (88.68%)
+  차이:               -0.0081 (-0.81%p)
+
+================================================================================
+[smol-retrosynthesis]
+================================================================================
+
+Prediction: <SELFIES>[C][C][C][C][C][C][C][C][C][C][C][C][C][=C][C][=C][Branch1][#Branch1][C][=Branch1][C][=O][C][C][C][=C][Ring1][#...
+Target:     <SELFIES>[C][C][C][=Branch1][C][=O][Cl].[C][C][C][C][C][C][C][C][C][C][C][C][C][=C][C][=C][C][=C][Ring1][=Branch1]</SELF...
+
+[토큰화 비교]
+  Model Tokenizer:
+    - Prediction 토큰 수: 30
+    - Reference 토큰 수: 30
+    - Prediction 토큰: ['<SELFIES>', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[C]', '[=C]']...
+
+  NLTK word_tokenize:
+    - Prediction 토큰 수: 92
+    - Reference 토큰 수: 88
+    - Prediction 토큰: ['<', 'selfies', '>', '[', 'c', ']', '[', 'c', ']', '[', 'c', ']', '[', 'c', ']']...
+
+[METEOR Score 비교]
+  Model Tokenizer:    0.8373 (83.73%)
+  NLTK word_tokenize: 0.8803 (88.03%)
+  차이:               +0.0430 (+4.30%p)
+
+================================================================================
+결론
+================================================================================
+
+[전체 결과 요약]
+- 총 샘플 수: 2528개
+- Task 수: 14개
+
+[METEOR Score 비교]
+                      Model Tokenizer    NLTK word_tokenize    차이
+  전체 평균:          0.5852              0.6986              +0.1134
+
+[분석]
+1. Model Tokenizer (LLaDA):
+   - BPE 기반 subword 토큰화 ("comprising" → ["compris", "ing"])
+   - SELFIES 토큰은 단일 토큰으로 인식 ("[C]" → ["[C]"])
+   - WordNet에서 subword를 인식하지 못해 유의어 매칭 불가
+
+2. NLTK word_tokenize:
+   - 완전한 단어 단위 토큰화 ("comprising" → ["comprising"])
+   - WordNet 유의어 매칭 정상 작동
+   - SELFIES 토큰은 대괄호 기준 분리 ("[C]" → ["[", "C", "]"])
+
+[Task별 특성]
+- DESCRIPTION 생성 (mol2text, captioning): NLTK가 유의어 매칭에 유리
+- SELFIES 생성 (text2mol, reaction): 토큰화 방식에 따른 영향
+- FLOAT 예측 (qm9, property): 숫자 형식이므로 차이 미미
+
+[권장사항]
+- METEOR/BLEU 평가 시 NLTK word_tokenize 사용 (현재 help_funcs.py에 적용됨)
+- 이는 NLP 평가 메트릭의 표준 관행
+

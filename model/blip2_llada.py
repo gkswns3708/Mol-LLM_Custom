@@ -713,22 +713,142 @@ class Blip2LLaDA(Blip2OPT):
             "new_token_debug": new_token_debug_info,
         }
 
-    def forward_stepwise_teacher_forcing(self, samples, steps=32):
+
+    def _prepare_semi_ar_format_tokens(self, task_name, batch_size, seq_len, block_size=32):
         """
-        Step-wise Teacher Forcing 방식의 Generation Loss 계산
+        Semi-AR 전략을 위해 format tokens 위치를 사전 계산
 
-        LLaDA의 iterative denoising 과정 전체를 시뮬레이션:
-        - 각 step별로 해당 마스킹 비율에 맞는 입력을 생성
-        - 정답 토큰을 Teacher Forcing으로 제공 (실제 생성 대신)
-        - 각 step의 loss에 importance weighting (1/p) 적용
-        - 모든 step의 weighted loss를 평균
+        Args:
+            task_name: Task 이름 또는 Task 리스트 (batch별로 다를 수 있음)
+            batch_size: 배치 크기
+            seq_len: 시퀀스 길이
+            block_size: Semi-AR 블록 크기
 
-        이는 val_total_loss와 유사하지만, 전체 denoising trajectory를
-        deterministic하게 시뮬레이션한다는 점이 다름.
+        Returns:
+            list: 각 샘플별 format tokens 정보
+                [{
+                    'has_format': bool,
+                    'open_pos': int (format token 시작 위치),
+                    'close_pos': int (format token 종료 위치),
+                    'block_indices': set (영향을 받는 블록 인덱스)
+                }, ...]
+        """
+        # Task name을 batch 형태로 정규화
+        if task_name is None:
+            task_names = [None] * batch_size
+        elif isinstance(task_name, str):
+            task_names = [task_name] * batch_size
+        else:
+            task_names = list(task_name)
+            if len(task_names) < batch_size:
+                task_names.extend([task_names[-1]] * (batch_size - len(task_names)))
+
+        format_info = []
+        for i, tn in enumerate(task_names):
+            # 기존 generate_semi_ar 로직과 동일하게 format tokens 추출
+            open_tag, close_tag = self._get_format_tokens_for_task(tn)
+
+            if open_tag is not None:
+                open_id = self.llm_tokenizer.convert_tokens_to_ids(open_tag)
+                close_id = self.llm_tokenizer.convert_tokens_to_ids(close_tag)
+
+                if open_id == self.llm_tokenizer.unk_token_id or close_id == self.llm_tokenizer.unk_token_id:
+                    format_info.append({'has_format': False})
+                else:
+                    content_len = self._estimate_content_length(tn, seq_len)
+                    open_pos = 0
+                    close_pos = min(content_len + 1, seq_len - 1)
+
+                    # 어느 블록들이 영향받는지 계산
+                    block_indices = set()
+                    for pos in [open_pos, close_pos]:
+                        block_idx = pos // block_size
+                        block_indices.add(block_idx)
+
+                    format_info.append({
+                        'has_format': True,
+                        'open_pos': open_pos,
+                        'close_pos': close_pos,
+                        'block_indices': block_indices
+                    })
+            else:
+                format_info.append({'has_format': False})
+
+        return format_info
+
+    def _get_semi_ar_mask_indices(self, answer_positions, p_mask, format_info, block_size=32, prompt_len=None):
+        """
+        Semi-AR 전략의 block-wise masking을 수행하여 마스킹할 토큰 인덱스 반환
+
+        Args:
+            answer_positions: 답변 영역 토큰 위치들 [num_answer_tokens]
+            p_mask: 현재 step의 마스킹 비율 (0.0 ~ 1.0)
+            format_info: Format tokens 정보 (dict)
+            block_size: Semi-AR 블록 크기
+            prompt_len: Prompt 길이 (None이면 무시)
+
+        Returns:
+            torch.Tensor: 마스킹할 토큰의 absolute 위치들
+        """
+        if not format_info.get('has_format', False):
+            # Format tokens가 없으면 uniform random masking 사용
+            num_answer_tokens = len(answer_positions)
+            num_to_mask = max(1, int(num_answer_tokens * p_mask))
+            perm = torch.randperm(num_answer_tokens, device=self.device)
+            return answer_positions[perm[:num_to_mask]]
+
+        # Format tokens 범위 정의
+        open_pos = format_info['open_pos']
+        close_pos = format_info['close_pos']
+
+        # 마스킹할 토큰 수 계산
+        num_answer_tokens = len(answer_positions)
+        num_to_mask = max(1, int(num_answer_tokens * p_mask))
+
+        # Format tokens 위치 제외 (anchor로 고정)
+        excluded_positions = {open_pos, close_pos}
+
+        # 마스킹 대상이 될 토큰들
+        maskable_positions = []
+        for pos in answer_positions:
+            if pos not in excluded_positions:
+                maskable_positions.append(pos)
+
+        # 마스킹할 위치 선택 (format tokens 제외)
+        if len(maskable_positions) > 0:
+            num_to_mask = min(num_to_mask, len(maskable_positions))
+            perm = torch.randperm(len(maskable_positions), device=self.device)
+            mask_indices = torch.tensor(
+                [maskable_positions[i] for i in perm[:num_to_mask]],
+                device=self.device,
+                dtype=torch.long
+            )
+        else:
+            # 마스킹 가능한 위치가 없으면 전체 중에서 선택 (Format tokens도 제외는 안함)
+            perm = torch.randperm(num_answer_tokens, device=self.device)
+            mask_indices = answer_positions[perm[:num_to_mask]]
+
+        return mask_indices
+
+    def forward_stepwise_teacher_forcing(
+        self,
+        samples,
+        steps=32,
+        strategy="random",
+        remasking_strategy="random",
+        semi_ar_block_size=None,
+        task_name=None
+    ):
+        """
+        전략별 condition을 반영한 Step-wise Teacher Forcing Loss 계산
 
         Args:
             samples: 배치 데이터 (input_ids, attention_mask, labels, graphs 등)
-            steps: denoising step 수 (기본값: 32)
+            steps: Denoising step 수 (기본값: 32)
+            strategy: 생성 전략 ("random" | "semi_ar" | "low_confidence" | "semi_ar_low_confidence")
+            remasking_strategy: 재마스킹 전략 ("random" | "low_confidence")
+            semi_ar_block_size: Semi-AR 블록 크기 (기본값: 32)
+            task_name: Task 이름 (Semi-AR 전략에서 format tokens 결정용)
 
         Returns:
             dict: {
@@ -742,9 +862,9 @@ class Blip2LLaDA(Blip2OPT):
 
         batch_size, seq_len = input_ids.shape
 
-        # response 영역 (labels != -100인 위치)
+        # Response 영역 (labels != -100인 위치)
         is_answer = (labels != -100)
-        answer_lengths = is_answer.sum(dim=1).float()  # [batch_size]
+        answer_lengths = is_answer.sum(dim=1).float()
 
         # 원본 토큰 (정답) - Teacher Forcing에 사용
         original_tokens = input_ids.clone()
@@ -754,41 +874,52 @@ class Blip2LLaDA(Blip2OPT):
         # Step-wise loss 누적
         instance_weighted_loss_sum = torch.zeros(batch_size, device=self.device)
 
-        for step in range(steps):
-            # 현재 step의 마스킹 비율 계산 (1.0 → 0.0 선형 감소)
-            # t = 1.0 - step / steps
-            # 마스킹 비율 p = t (step 0에서 100%, step N-1에서 ~0%)
-            t = 1.0 - step / steps
-            p_mask = max(t, 1e-6)  # 0 방지
+        # ==================== Semi-AR: Format tokens 사전 계산 ====================
+        semi_ar_format_info = None
+        if "semi_ar" in strategy:
+            block_size = semi_ar_block_size or 32
+            semi_ar_format_info = self._prepare_semi_ar_format_tokens(
+                task_name=task_name,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                block_size=block_size
+            )
 
-            # 각 샘플의 response 영역에서 p_mask 비율만큼 마스킹
+        # ==================== Step-wise Loop ====================
+        for step in range(steps):
+            t = 1.0 - step / steps
+            p_mask = max(t, 1e-6)
+
             noisy_input_ids = input_ids.clone()
 
-            # 샘플별로 마스킹 적용
+            # ========== 전략별 마스킹 로직 ==========
             for b in range(batch_size):
-                # 해당 샘플의 response 위치들
                 answer_positions = torch.where(is_answer[b])[0]
                 num_answer_tokens = len(answer_positions)
 
                 if num_answer_tokens == 0:
                     continue
 
-                # p_mask 비율만큼 마스킹할 토큰 수
-                num_to_mask = int(num_answer_tokens * p_mask)
-                num_to_mask = max(1, num_to_mask)  # 최소 1개는 마스킹
+                if "semi_ar" in strategy:
+                    # Semi-AR: block-wise 마스킹 (format tokens 제외)
+                    mask_indices = self._get_semi_ar_mask_indices(
+                        answer_positions=answer_positions,
+                        p_mask=p_mask,
+                        format_info=semi_ar_format_info[b],
+                        block_size=semi_ar_block_size or 32
+                    )
+                else:
+                    # Random: uniform random masking (기존 방식)
+                    num_to_mask = max(1, int(num_answer_tokens * p_mask))
+                    perm = torch.randperm(num_answer_tokens, device=self.device)
+                    mask_indices = answer_positions[perm[:num_to_mask]]
 
-                # 랜덤하게 마스킹할 위치 선택
-                perm = torch.randperm(num_answer_tokens, device=self.device)
-                mask_indices = answer_positions[perm[:num_to_mask]]
-
-                # 마스킹 적용
                 noisy_input_ids[b, mask_indices] = self.mask_token_id
 
-            # Embedding 생성
+            # ==================== Forward Pass ====================
             noisy_text_embeds = self.llm_embed_tokens(noisy_input_ids)
             inputs_embeds = noisy_text_embeds.clone()
 
-            # Graph embedding 주입 (있는 경우)
             if "graphs" in samples:
                 inputs_embeds, _, _ = self.inject_graph_embeds2input_embeds(
                     input_embeds=inputs_embeds,
@@ -796,7 +927,6 @@ class Blip2LLaDA(Blip2OPT):
                     graphs=(samples['graphs'], samples['additional_graphs'])
                 )
 
-            # Forward pass
             outputs = self.llm_model(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
@@ -804,32 +934,35 @@ class Blip2LLaDA(Blip2OPT):
             )
             logits = outputs.logits
 
-            # 마스킹된 위치에서만 loss 계산
+            # ==================== Low-Confidence Remasking (사전 계산) ==========
+            if remasking_strategy == 'low_confidence':
+                # 다음 step에서 remasking할 때 사용할 confidence 계산
+                p = F.softmax(logits, dim=-1)
+                x0_pred = torch.argmax(logits, dim=-1)
+                x0_p = torch.squeeze(
+                    torch.gather(p, dim=-1, index=torch.unsqueeze(x0_pred, -1)), -1
+                )
+            else:
+                # Random remasking: confidence 미사용
+                x0_p = None
+
+            # ==================== Loss 계산 ====================
             masked_indices = (noisy_input_ids == self.mask_token_id) & is_answer
 
             if masked_indices.sum() == 0:
                 continue
 
-            # 마스킹된 위치의 logits와 targets
             masked_logits = logits[masked_indices]
             masked_targets = original_tokens[masked_indices]
-
-            # CE Loss
             token_loss = loss_fct(masked_logits, masked_targets)
-
-            # Importance weighting: 1/p_mask
             weighted_token_loss = token_loss / p_mask
 
-            # 샘플별로 weighted loss 누적
             batch_indices = torch.where(masked_indices)[0]
             for i, (b_idx, w_loss) in enumerate(zip(batch_indices, weighted_token_loss)):
                 instance_weighted_loss_sum[b_idx] += w_loss
 
-        # 각 샘플의 최종 loss: weighted_loss_sum / (answer_length * steps)
-        # steps로 나누는 이유: 각 토큰이 여러 step에서 마스킹될 수 있으므로
+        # ==================== 최종 Loss ====================
         instance_loss = instance_weighted_loss_sum / ((answer_lengths + 1e-8) * steps)
-
-        # 전체 평균 loss
         loss = instance_loss.mean()
 
         return {
@@ -1366,6 +1499,7 @@ class Blip2LLaDA(Blip2OPT):
         remasking_strategy='low_confidence',
         use_semi_ar=False,
         semi_ar_block_size=32,
+        semi_ar_steps_per_block=None,
         task_name=None,
         target_label=None,
         input_text=None,
@@ -1404,6 +1538,7 @@ class Blip2LLaDA(Blip2OPT):
             remasking_strategy: 'low_confidence' | 'random' | 'none'
             use_semi_ar: Semi-Autoregressive 모드 사용 여부
             semi_ar_block_size: Semi-AR 블록 크기
+            semi_ar_steps_per_block: 블록 내 diffusion step 수 (None이면 block_size 사용)
             task_name: Task 이름 (Semi-AR 모드에서 format token 결정용)
             num_gpus: GPU 수 (step-wise 로깅 샘플 분배용)
             total_dataset_size: 전체 데이터셋 크기 (step-wise 로깅 비율 계산용)
@@ -1427,6 +1562,7 @@ class Blip2LLaDA(Blip2OPT):
                 temperature=temperature,
                 remasking_strategy=remasking_strategy,
                 block_size=semi_ar_block_size,
+                steps_per_block=semi_ar_steps_per_block,
                 task_name=task_name,
                 target_label=target_label,
                 input_text=input_text,
@@ -1765,6 +1901,7 @@ class Blip2LLaDA(Blip2OPT):
         temperature,
         remasking_strategy,
         block_size,
+        steps_per_block=None,
         task_name=None,
         target_label=None,
         input_text=None,
@@ -1778,14 +1915,10 @@ class Blip2LLaDA(Blip2OPT):
         시퀀스를 여러 블록으로 나누어 왼쪽에서 오른쪽으로 순차 생성.
         각 블록 내에서는 지정된 remasking_strategy로 디퓨전 스텝 수행.
 
-        블록당 스텝 수 결정 방식:
-        - 블록 크기(block_size) 기반으로 결정
-        - steps_per_block = block_size (블록 크기만큼 꼼꼼하게 디퓨전)
-        - 또는 config의 steps가 더 작으면 steps 사용
-
         Args:
             block_size: 각 블록의 크기 (토큰 수)
-            steps: 블록당 최대 디퓨전 스텝 수
+            steps_per_block: 블록 내 diffusion step 수 (None이면 block_size 사용)
+            steps: fallback용 (steps_per_block이 None일 때 min(block_size, steps) 사용)
             remasking_strategy: 블록 내 remasking 전략
         """
         batch_size = input_ids.shape[0]
@@ -1808,9 +1941,12 @@ class Blip2LLaDA(Blip2OPT):
         # 블록 수 계산
         num_blocks = (gen_len + block_size - 1) // block_size
 
-        # 각 블록에 할당할 step 수: 블록 크기만큼 (또는 config steps가 더 작으면 그 값)
-        # 블록 하나를 "꼼꼼하게" 디퓨전하려면 블록 크기만큼 스텝 필요
-        steps_per_block = min(block_size, steps)
+        # 블록당 step 수 결정
+        # steps_per_block이 명시적으로 설정되면 그 값 사용, 아니면 기존 방식 (min(block_size, steps))
+        if steps_per_block is None:
+            steps_per_block = min(block_size, steps)
+        # steps_per_block은 block_size를 초과할 수 없음
+        steps_per_block = min(steps_per_block, block_size)
 
         for block_idx in range(num_blocks):
             block_start = prompt_len + block_idx * block_size

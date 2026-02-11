@@ -1,5 +1,6 @@
 from nltk.translate.bleu_score import corpus_bleu
 from nltk.translate.meteor_score import meteor_score
+from nltk.tokenize import word_tokenize
 from rouge_score import rouge_scorer
 from tqdm import tqdm
 import numpy as np
@@ -16,14 +17,47 @@ import re
 from Levenshtein import distance as lev
 
 
-def caption_evaluate(predictions, targets, tokenizer, prompts, input_mol_strings):
-    references = []
-    hypotheses = []
+def caption_evaluate(predictions, targets, tokenizer, prompts, input_mol_strings, meteor_tokenizers=None):
+    """
+    Caption 평가 함수 (mol2text, molecule_captioning 등)
+
+    METEOR Score를 선택한 방식으로 계산:
+    1. meteor_wordnet: NLTK word_tokenize 사용 (whole word 기반, WordNet 유의어 매칭 가능)
+    2. meteor_llada: LLaDA tokenizer 사용 (subword 기반, SELFIES 토큰 인식)
+
+    Args:
+        meteor_tokenizers: METEOR 계산에 사용할 토큰화 방식 리스트
+            - Config에서 다음과 같이 설정:
+              # 두 가지 방식 모두 사용 (기본값)
+              meteor_tokenizers: ["wordnet", "llada"]
+
+              # WordNet 방식만 사용 (표준 NLP 평가 방식, 유의어 매칭 가능)
+              meteor_tokenizers: ["wordnet"]
+
+              # LLaDA 방식만 사용 (모델의 subword tokenizer 사용)
+              meteor_tokenizers: ["llada"]
+    """
+    # 기본값: 두 가지 방식 모두 사용
+    if meteor_tokenizers is None:
+        meteor_tokenizers = ["wordnet", "llada"]
+
+    # 옵션에 따라 필요한 토큰화 방식 결정
+    use_wordnet = "wordnet" in meteor_tokenizers
+    use_llada = "llada" in meteor_tokenizers
+
+    # NLTK word_tokenize 기반 토큰화 (WordNet 유의어 매칭용)
+    references_wordnet = []
+    hypotheses_wordnet = []
+    # LLaDA tokenizer 기반 토큰화
+    references_llada = []
+    hypotheses_llada = []
+
     ref_sentences = []
     hyp_sentences = []
     failure_idxs = []
 
-    meteor_scores = []
+    meteor_scores_wordnet = []
+    meteor_scores_llada = []
     rouge_scores = []
     scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"])
 
@@ -61,7 +95,12 @@ def caption_evaluate(predictions, targets, tokenizer, prompts, input_mol_strings
         else:
             ref = pattern["left_side"].search(target).group()
         ref_sentences.append(ref)
-        ref_tokens = tokenizer.tokenize(ref)
+
+        # 선택된 옵션에 따라 토큰화 수행
+        if use_wordnet:
+            ref_tokens_wordnet = word_tokenize(ref.lower())
+        if use_llada:
+            ref_tokens_llada = tokenizer.tokenize(ref)
 
         try:
             if pattern["dual_side"].search(prediction):
@@ -69,30 +108,52 @@ def caption_evaluate(predictions, targets, tokenizer, prompts, input_mol_strings
             else:
                 pred = pattern["left_side"].search(prediction).group()
             hyp_sentences.append(pred)
-            pred_tokens = tokenizer.tokenize(pred)
 
-            references.append([ref_tokens])
-            hypotheses.append(pred_tokens)
+            # 선택된 옵션에 따라 토큰화 수행
+            if use_wordnet:
+                pred_tokens_wordnet = word_tokenize(pred.lower())
+                references_wordnet.append([ref_tokens_wordnet])
+                hypotheses_wordnet.append(pred_tokens_wordnet)
+            if use_llada:
+                pred_tokens_llada = tokenizer.tokenize(pred)
+                references_llada.append([ref_tokens_llada])
+                hypotheses_llada.append(pred_tokens_llada)
 
         except:
             failure_idxs.append(i)
-            pred = None
-            pred_tokens = None
 
-    if hypotheses:
-        bleu2 = corpus_bleu(references, hypotheses, weights=(0.5, 0.5))
-        bleu4 = corpus_bleu(references, hypotheses, weights=(0.25, 0.25, 0.25, 0.25))
+    # 결과 계산
+    has_valid_samples = len(hyp_sentences) > 0
+
+    if has_valid_samples:
+        # BLEU는 NLTK word_tokenize 기반으로 계산 (표준 방식)
+        # WordNet 옵션이 없으면 LLaDA 토큰으로 계산
+        if use_wordnet:
+            bleu2 = corpus_bleu(references_wordnet, hypotheses_wordnet, weights=(0.5, 0.5))
+            bleu4 = corpus_bleu(references_wordnet, hypotheses_wordnet, weights=(0.25, 0.25, 0.25, 0.25))
+        else:
+            bleu2 = corpus_bleu(references_llada, hypotheses_llada, weights=(0.5, 0.5))
+            bleu4 = corpus_bleu(references_llada, hypotheses_llada, weights=(0.25, 0.25, 0.25, 0.25))
         bleu2 *= 100
         bleu4 *= 100
 
-        for ref, hyp in tqdm(zip(references, hypotheses)):
-            mscore = meteor_score(ref, hyp)
-            meteor_scores.append(mscore)
+        # METEOR - WordNet 방식 (NLTK word_tokenize)
+        _meteor_score_wordnet = 0
+        if use_wordnet:
+            for ref, hyp in tqdm(zip(references_wordnet, hypotheses_wordnet), desc="METEOR (WordNet)"):
+                mscore = meteor_score(ref, hyp)
+                meteor_scores_wordnet.append(mscore)
+            _meteor_score_wordnet = np.mean(meteor_scores_wordnet) * 100
 
-        _meteor_score = np.mean(meteor_scores)
-        _meteor_score *= 100
+        # METEOR - LLaDA 방식 (LLaDA tokenizer)
+        _meteor_score_llada = 0
+        if use_llada:
+            for ref, hyp in tqdm(zip(references_llada, hypotheses_llada), desc="METEOR (LLaDA)"):
+                mscore = meteor_score(ref, hyp)
+                meteor_scores_llada.append(mscore)
+            _meteor_score_llada = np.mean(meteor_scores_llada) * 100
 
-        for ref_sen, hyp_sen in tqdm(zip(ref_sentences, hyp_sentences)):
+        for ref_sen, hyp_sen in tqdm(zip(ref_sentences, hyp_sentences), desc="ROUGE"):
             lscore = scorer.score(hyp_sen, ref_sen)
             rouge_scores.append(lscore)
 
@@ -103,22 +164,38 @@ def caption_evaluate(predictions, targets, tokenizer, prompts, input_mol_strings
     else:
         bleu2 = 0
         bleu4 = 0
-        _meteor_score = 0
+        _meteor_score_wordnet = 0
+        _meteor_score_llada = 0
         rouge_1 = 0
         rouge_2 = 0
         rouge_l = 0
 
     failure_rate = len(failure_idxs) / len(predictions) if len(predictions) > 0 else 0
 
+    # 결과 딕셔너리 구성 (선택된 옵션에 따라)
     evaluation_results = {
         "bleu2": bleu2,
         "bleu4": bleu4,
         "rouge1": rouge_1,
         "rouge2": rouge_2,
         "rougeL": rouge_l,
-        "meteor": _meteor_score,
         "failure_rate": failure_rate,
     }
+
+    # 선택된 METEOR 옵션만 결과에 추가
+    if use_wordnet:
+        evaluation_results["meteor_wordnet"] = _meteor_score_wordnet
+    if use_llada:
+        evaluation_results["meteor_llada"] = _meteor_score_llada
+
+    # 기존 호환성을 위해 meteor 키 추가 (WordNet 우선, 없으면 LLaDA)
+    if use_wordnet:
+        evaluation_results["meteor"] = _meteor_score_wordnet
+    elif use_llada:
+        evaluation_results["meteor"] = _meteor_score_llada
+    else:
+        evaluation_results["meteor"] = 0
+
     failed_cases = {
         "predictions": [predictions[i] for i in failure_idxs],
         "targets": [targets[i] for i in failure_idxs],
@@ -342,7 +419,24 @@ def per_device_evaluate(
     input_mol_strings,
     tokenizer,
     total_task_subtask_pairs,
+    meteor_tokenizers=None,
 ):
+    """
+    Args:
+        meteor_tokenizers: METEOR 계산에 사용할 토큰화 방식 리스트
+            - Config에서 다음과 같이 설정:
+              # 두 가지 방식 모두 사용 (기본값)
+              meteor_tokenizers: ["wordnet", "llada"]
+
+              # WordNet 방식만 사용 (표준 NLP 평가 방식, 유의어 매칭 가능)
+              meteor_tokenizers: ["wordnet"]
+
+              # LLaDA 방식만 사용 (모델의 subword tokenizer 사용)
+              meteor_tokenizers: ["llada"]
+    """
+    # 기본값 설정
+    if meteor_tokenizers is None:
+        meteor_tokenizers = ["wordnet", "llada"]
     # get unique items from all_tasks
     unique_tasks = list(set(tasks))
     # remove tasks_to_be_removed
@@ -412,6 +506,11 @@ def per_device_evaluate(
                 "meteor": null_value,
                 "failure_rate": null_value,
             }
+            # 선택된 METEOR 옵션에 따라 초기화
+            if "wordnet" in meteor_tokenizers:
+                results["meteor_wordnet"] = null_value
+            if "llada" in meteor_tokenizers:
+                results["meteor_llada"] = null_value
         else:
             raise NotImplementedError("Task not implemented")
         # update number of instances
@@ -452,6 +551,7 @@ def per_device_evaluate(
                 tokenizer=tokenizer,
                 prompts=task_prompts,
                 input_mol_strings=task_input_mol_strings,
+                meteor_tokenizers=meteor_tokenizers,
             )
         else:
             raise NotImplementedError("Task not implemented")

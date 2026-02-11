@@ -123,6 +123,8 @@ remasking_strategy: 'random' # low_confidence도 존재.
 use_semi_ar: true              # Semi-AR 생성 모드 활성화 (단일 전략 사용 시)
                                # true: format tokens를 먼저 고정한 후 content만 diffusion
                                # false: 기존 방식 (전체 시퀀스 diffusion)
+semi_ar_block_size: 8          # Semi-AR 블록 크기: 8 | 16 | 32
+semi_ar_steps_per_block: 4     # 블록 내 diffusion step 수 (독립 설정)
 
 # ==================== Multi-Strategy Validation Configuration ====================
 # Validation 시 여러 generation 전략을 동시에 평가
