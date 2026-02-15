@@ -1736,6 +1736,13 @@ class Blip2Stage3(pl.LightningModule):
             logger.info("  All embed/lm_head parameters already have requires_grad=True")
 
     def on_train_epoch_start(self) -> None:
+        # ======================================================================
+        # GPU 메모리 정리 (이전 validation에서 남은 캐시 해제)
+        # ======================================================================
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
         self.task_specific_outputs = {}
         # if not hasattr(self, "task_specific_chosen_reward"):
         self.task_specific_chosen_reward = {}
@@ -1996,6 +2003,14 @@ class Blip2Stage3(pl.LightningModule):
         sys.stdout.flush()
 
         # ======================================================================
+        # Step-wise 로깅 카운터 리셋 (매 epoch마다 새로운 샘플 로깅)
+        # ======================================================================
+        if hasattr(self.blip2model, '_stepwise_sample_counter'):
+            self.blip2model._stepwise_sample_counter = {'val': {}, 'test': {}}
+            if self.debug:
+                print(f"🔍 [Stepwise Log] Reset counters for epoch {self.current_epoch}")
+
+        # ======================================================================
         # Multi-Strategy Validation 설정
         # ======================================================================
         is_llada = "llada" in self.args.llm_model.lower()
@@ -2249,6 +2264,8 @@ class Blip2Stage3(pl.LightningModule):
                     # LLaDA 전용 옵션
                     gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
                     gen_kwargs["gen_length"] = self.gen_max_len
+                    gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 32)
+                    gen_kwargs["semi_ar_steps_per_block"] = getattr(self.args, "semi_ar_steps_per_block", None)
 
                     if strategy == "default":
                         gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
@@ -2258,6 +2275,7 @@ class Blip2Stage3(pl.LightningModule):
                     elif strategy == "random":
                         gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
                         gen_kwargs["use_semi_ar"] = False
+                        gen_kwargs["task_name"] = gen_task_names
                     elif strategy == "semi_ar":
                         gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
                         gen_kwargs["use_semi_ar"] = True
@@ -2265,12 +2283,14 @@ class Blip2Stage3(pl.LightningModule):
                     elif strategy == "low_confidence":
                         gen_kwargs["remasking_strategy"] = "low_confidence"
                         gen_kwargs["use_semi_ar"] = False
+                        gen_kwargs["task_name"] = gen_task_names
                     elif strategy == "semi_ar_low_confidence":
                         gen_kwargs["remasking_strategy"] = "low_confidence"
                         gen_kwargs["use_semi_ar"] = True
                         gen_kwargs["task_name"] = gen_task_names
                     else:
                         gen_kwargs["remasking_strategy"] = "random"
+                        gen_kwargs["task_name"] = gen_task_names
 
                     with torch.no_grad():
                         gen_outputs = self.blip2model.generate(**gen_kwargs)
@@ -2423,6 +2443,8 @@ class Blip2Stage3(pl.LightningModule):
                 # LLaDA 전용 옵션
                 gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
                 gen_kwargs["gen_length"] = self.gen_max_len
+                gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 32)
+                gen_kwargs["semi_ar_steps_per_block"] = getattr(self.args, "semi_ar_steps_per_block", None)
 
                 # 전략에 따른 설정
                 # 전략 종류:
@@ -2441,6 +2463,7 @@ class Blip2Stage3(pl.LightningModule):
                 elif strategy == "random":
                     gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
                     gen_kwargs["use_semi_ar"] = False
+                    gen_kwargs["task_name"] = task_names
                 elif strategy == "semi_ar":
                     gen_kwargs["remasking_strategy"] = getattr(self.args, "remasking_strategy", "random")
                     gen_kwargs["use_semi_ar"] = True
@@ -2448,6 +2471,7 @@ class Blip2Stage3(pl.LightningModule):
                 elif strategy == "low_confidence":
                     gen_kwargs["remasking_strategy"] = "low_confidence"
                     gen_kwargs["use_semi_ar"] = False
+                    gen_kwargs["task_name"] = task_names
                 elif strategy == "semi_ar_low_confidence":
                     gen_kwargs["remasking_strategy"] = "low_confidence"
                     gen_kwargs["use_semi_ar"] = True
@@ -3702,6 +3726,15 @@ class Blip2Stage3(pl.LightningModule):
 
         if self.debug:
             print(f"\nDevice {self.device} on_evaluation_epoch_end end")
+
+        # ======================================================================
+        # GPU 메모리 정리 (Validation 후 Training 재개 전 OOM 방지)
+        # ======================================================================
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        if self.debug:
+            print(f"🧹 [Memory Cleanup] GPU cache cleared after validation")
 
     def on_train_epoch_end(self) -> None:
         """Epoch 종료 시 epoch 전체에 대한 validation metric summary 로깅"""

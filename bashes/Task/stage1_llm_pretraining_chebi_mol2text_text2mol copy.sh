@@ -1,10 +1,10 @@
 export TOKENIZERS_PARALLELISM=false;
-file_name='stage1_HPC_total_240steps'
+file_name='stage1_HPC_chebi_mol2text_HighLR_merged'
 gpus="'0,1,2,3,4,5,6,7'"
 
 python Mol-LLM_Custom/stage3.py \
 trainer.devices=${gpus} \
-trainer=llada8b_stage1 \
 filename=${file_name} \
+trainer=llada8b_stage1 \
 trainer.mol_representation=string_only \
 trainer.skip_sanity_check=false \

@@ -112,4 +112,5 @@ remasking_strategy: 'random'
 # Semi-Autoregressive 생성 모드
 use_semi_ar: false
 semi_ar_block_size: 32
+semi_ar_steps_per_block: 4  # 블록당 diffusion step 수 (총 step = num_blocks × steps_per_block)
 val_strategies: null
