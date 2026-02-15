@@ -1,5 +1,5 @@
 export TOKENIZERS_PARALLELISM=false;
-file_name='stage1_Tpod_chebi_mol2text_HighLR'
+file_name='stage1_Tpod_chebi_mol2text_10xHighLR'
 gpus="'0,1,2,3'"
 
 python Mol-LLM_Custom/stage3.py \

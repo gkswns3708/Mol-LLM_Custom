@@ -445,6 +445,28 @@ def main(cfg):
                 outputs=outputs,
             )
         assert "Testing done"
+    elif cfg.mode == "validate":
+        # validate 모드: validation set에서만 inference하여 metric 확인
+        val_ckpt_path = cfg.pretrained_ckpt_path if cfg.pretrained_ckpt_path is not None else cfg.ckpt_path
+        if val_ckpt_path is None:
+            raise ValueError("validate 모드에서는 pretrained_ckpt_path 또는 ckpt_path를 지정해야 합니다.")
+
+        # pretrained_ckpt_path가 있으면 이미 위에서 로드됨, 아니면 여기서 로드
+        if cfg.pretrained_ckpt_path is None:
+            ckpt = torch.load(val_ckpt_path, map_location="cpu", weights_only=False)
+            model.load_state_dict(ckpt["state_dict"], strict=False)
+            print(f"loaded model from {val_ckpt_path}")
+
+        print("\n" + "="*70)
+        print("[VALIDATE] Running validation only...")
+        print(f"  - Checkpoint: {val_ckpt_path}")
+        print("="*70 + "\n")
+
+        outputs = trainer.validate(model, datamodule=dm)
+        print("\n[VALIDATE] Validation completed. Results:")
+        for output in outputs:
+            for key, value in output.items():
+                print(f"  {key}: {value}")
     else:
         raise NotImplementedError()
 

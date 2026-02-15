@@ -2264,7 +2264,11 @@ class Blip2Stage3(pl.LightningModule):
                     # LLaDA 전용 옵션
                     gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
                     gen_kwargs["gen_length"] = self.gen_max_len
+<<<<<<< HEAD
                     gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 32)
+=======
+                    gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 8)
+>>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
                     gen_kwargs["semi_ar_steps_per_block"] = getattr(self.args, "semi_ar_steps_per_block", None)
 
                     if strategy == "default":
@@ -2443,7 +2447,11 @@ class Blip2Stage3(pl.LightningModule):
                 # LLaDA 전용 옵션
                 gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
                 gen_kwargs["gen_length"] = self.gen_max_len
+<<<<<<< HEAD
                 gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 32)
+=======
+                gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 8)
+>>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
                 gen_kwargs["semi_ar_steps_per_block"] = getattr(self.args, "semi_ar_steps_per_block", None)
 
                 # 전략에 따른 설정
@@ -2923,15 +2931,31 @@ class Blip2Stage3(pl.LightningModule):
         # LLaDA Classification 최적화 경로에서는 generation이 없으므로 건너뜀
         if is_llada and not skip_generation_loop:
             with torch.no_grad():
-                # Step-wise Teacher Forcing: 32 step 전체 시뮬레이션
-                tf_outputs = self.blip2model.forward_stepwise_teacher_forcing(batch, steps=32)
-                instance_gen_losses = tf_outputs["instance_loss"]
+                # 각 전략별로 조건을 반영한 Teacher Forcing Loss 계산
+                # Config 설정: val_strategies: ["random", "semi_ar"], remasking_strategy: "low_confidence"
+                # → val_strategies에서 semi_ar 유무만 결정, remasking_strategy는 공통 설정
+                remasking_strategy = getattr(self.args, "remasking_strategy", "random")
+                semi_ar_block_size = getattr(self.args, "semi_ar_block_size", 8)
 
-                # 전체 평균
-                batch_gen_loss = instance_gen_losses.mean().item()
-
-                # 모든 전략에 동일한 gen_loss 기록 (Teacher Forcing은 전략 무관)
                 for strategy in self.active_val_strategies:
+                    # Strategy에서 semi_ar 유무 결정
+                    use_semi_ar = ("semi_ar" in strategy)
+                    tf_strategy = "semi_ar" if use_semi_ar else "random"
+
+                    # 전략별 Teacher Forcing Loss 계산
+                    tf_outputs = self.blip2model.forward_stepwise_teacher_forcing(
+                        samples=batch,
+                        steps=getattr(self.args, "sampling_steps", 64),
+                        strategy=tf_strategy,
+                        remasking_strategy=remasking_strategy,
+                        semi_ar_block_size=semi_ar_block_size,
+                        task_name=task_names
+                    )
+                    instance_gen_losses = tf_outputs["instance_loss"]
+
+                    # 전체 평균
+                    batch_gen_loss = instance_gen_losses.mean().item()
+
                     # 전략별 총 gen_loss 누적
                     curr_count = self.strategy_total_gen_loss_count[strategy]
                     new_count = curr_count + len(instance_gen_losses)
