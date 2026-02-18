@@ -451,7 +451,7 @@ class Blip2LLaDA(Blip2OPT):
         # ==============================================================================
 
         # 6. <mol> 토큰 ID 저장
-        self.mol_token_id = self.llm_tokenizer.convert_tokens_to_ids(added_tokens.MOL_EMBEDDING)[0]
+        self.llm_tokenizer.mol_token_id = self.llm_tokenizer.convert_tokens_to_ids(added_tokens.MOL_EMBEDDING)[0]
 
         # 7. SELFIES Token ID 저장
         if getattr(self.args, "add_selfies_tokens", False) and hasattr(self.llm_tokenizer, "added_selfies_tokens"):
@@ -2290,19 +2290,10 @@ class Blip2LLaDA(Blip2OPT):
         # 블록 수 계산
         num_blocks = (gen_len + block_size - 1) // block_size
 
-<<<<<<< HEAD
         # 블록당 step 수 결정:
         # - steps_per_block이 config에서 지정되면 그 값 사용 (빠른 추론)
         # - 지정되지 않으면 기존 로직: min(block_size, steps)
         effective_steps_per_block = steps_per_block if steps_per_block is not None else min(block_size, steps)
-=======
-        # 블록당 step 수 결정
-        # steps_per_block이 명시적으로 설정되면 그 값 사용, 아니면 기존 방식 (min(block_size, steps))
-        if steps_per_block is None:
-            steps_per_block = min(block_size, steps)
-        # steps_per_block은 block_size를 초과할 수 없음
-        steps_per_block = min(steps_per_block, block_size)
->>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
 
         for block_idx in range(num_blocks):
             block_start = prompt_len + block_idx * block_size

@@ -135,15 +135,9 @@ min_lr_ratio: 0.1             # Decay 종료 시 초기 LR의 10%까지 감소
 # lr_head_new:   0.000025        # 2.5e-5 (새 vocab lm_head/ff_out)
 
 lr_lora:       0.00025        # 2.5e-4 (LoRA 파라미터)
-<<<<<<< HEAD
 lr_embed_orig: 0.000025       # 2.5e-5 (기존 vocab embedding, idx < 126349)
 lr_embed_new:  0.025        # 2.5e-4 (새 vocab embedding, idx >= 126349)
 lr_head_orig:  0.000025       # 2.5e-5 (기존 vocab lm_head/ff_out)
-=======
-lr_embed_orig: 0.0025       # 2.5e-5 (기존 vocab embedding, idx < 126349)
-lr_embed_new:  0.025        # 2.5e-4 (새 vocab embedding, idx >= 126349)
-lr_head_orig:  0.0025       # 2.5e-5 (기존 vocab lm_head/ff_out)
->>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
 lr_head_new:   0.025        # 2.5e-4 (새 vocab lm_head/ff_out)
 
 # Original vocab size (LLaDA-8B len(tokenizer) before adding new tokens)
@@ -163,23 +157,14 @@ remasking_strategy: 'low_confidence'
 #   - 32: 기본값 (품질/속도 균형)
 #   - 64~128: 높은 품질 (느림)
 #   - seq_len: 최대 품질 (매우 느림)
-<<<<<<< HEAD
 sampling_steps: 32
-=======
-sampling_steps: 64
->>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
 
 # Semi-Autoregressive 생성 모드
 # Format token을 먼저 생성한 후 content를 diffusion으로 채움
 use_semi_ar: false          # true: Semi-AR 활성화 | false: 전체 diffusion
-<<<<<<< HEAD
 semi_ar_block_size: 32      # Semi-AR 블록 크기: 8 | 16 | 32 | 64
 semi_ar_steps_per_block: 4  # 블록당 diffusion step 수 (총 step = num_blocks × steps_per_block)
                             # 예: gen_len=256, block_size=32 → 8 blocks × 4 steps = 32 총 steps
-=======
-semi_ar_block_size: 32      # Semi-AR 블록 크기: 8 | 16 | 32
-semi_ar_steps_per_block: 8  # 블록 내 diffusion step 수 (독립 설정)
->>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
 
 # Validation 시 사용할 generation 전략들 (비교 실험용)
 #   - "random": 전체 diffusion + random remasking
@@ -223,11 +208,7 @@ save_every_n_epochs: 1      # N epoch마다 저장: 0 (비활성화) | 1 | 5
 
 # Validation 설정
 val_check_interval: 1.0     # Epoch 내 validation 비율: 0.5 | 1.0 (epoch 끝), integer의 경우 step으로 지정됨
-<<<<<<< HEAD
 check_val_every_n_epoch: 1    # N epoch마다 validation: 1 | 5 | 10
-=======
-check_val_every_n_epoch: 5   # N epoch마다 validation: 1 | 5 | 10
->>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
 test_on_trainset: false       # Train set에서도 테스트 수행
 limit_val_batches: 1.0     # Validation set 비율: 1.0 (전체) | 0.1 (10%) | 0.01 (1%)
 

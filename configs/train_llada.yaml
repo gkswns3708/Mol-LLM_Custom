@@ -1,12 +1,12 @@
 defaults:
-  - data: multi_task_stage1
+  - data: multi_task_stage2
   - gnn: gine_tokengt
   - trainer: llada8b
 
 # General settings
 filename: mol_llada_lora_run
 seed: 42
-mode: validate # finetuning mode: 'ft' or 'pretrain' or 'validate'
+mode: ft # finetuning mode: 'ft' or 'pretrain' or 'validate'
 
 wandb_entity: hj_ai
 wandb_project: mol-llm_llada
@@ -21,12 +21,8 @@ debug: false
 # 사용 예시:
 #   ckpt_path: "/path/to/checkpoint/epoch=03-step=001500-train.ckpt"
 #   ckpt_path: "/path/to/checkpoint/last.ckpt"  # 가장 최근 checkpoint
-<<<<<<< HEAD
 # ckpt_path: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/LLaDA_Stage1/stage1_Tpod_chebi_mol2text_HighLR_merged/epoch=04-step=006500-train.ckpt
 ckpt_path: null
-=======
-ckpt_path: /app/Mol-LLM_Custom/checkpoint/LLaDA_Stage1/stage1_Tpod_chebi_mol2text_10xHighLR/epoch=156-step=016000-train.ckpt
->>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
 
 # pretrained_ckpt_path: 사전 학습된 모델 가중치만 로드 (학습은 처음부터)
 # 사용 예시:

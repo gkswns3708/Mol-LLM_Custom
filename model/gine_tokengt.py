@@ -36,9 +36,12 @@ class GINE_TokenGT(nn.Module):
             args.gine.graph_encoder_ckpt, map_location=torch.device("cpu"), weights_only=False
         )
         renamed_state_dict = {}
-        for param, value in ckpt['state_dict'].items():
-            if param.startswith('blip2model.graph_encoder.graph_encoder_gine'):
+        state_dict = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
+        for param, value in state_dict.items():
+            if param.startswith('blip2model.graph_encoder.graph_encoder_gine.'):
                 renamed_state_dict[param.replace("blip2model.graph_encoder.graph_encoder_gine.", "")] = value
+            elif param.startswith('gnn.'):
+                renamed_state_dict[param.replace("gnn.", "")] = value
         self.graph_encoder_gine.load_state_dict(renamed_state_dict, strict=True)
         if getattr(args, 'debug', False):
             print(f"load graph encoder from {args.gine.graph_encoder_ckpt}")
@@ -48,9 +51,12 @@ class GINE_TokenGT(nn.Module):
             args.tokengt.graph_encoder_ckpt, map_location=torch.device("cpu"), weights_only=False
         )
         renamed_state_dict = {}
-        for param, value in ckpt['state_dict'].items():
-            if param.startswith('blip2model.graph_encoder.graph_encoder_tokengt'):
+        state_dict = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
+        for param, value in state_dict.items():
+            if param.startswith('blip2model.graph_encoder.graph_encoder_tokengt.'):
                 renamed_state_dict[param.replace("blip2model.graph_encoder.graph_encoder_tokengt.", "")] = value
+            elif param.startswith('gnn.'):
+                renamed_state_dict[param.replace("gnn.", "")] = value
         self.graph_encoder_tokengt.load_state_dict(renamed_state_dict, strict=True)
         if getattr(args, 'debug', False):
             print(f"load graph encoder from {args.tokengt.graph_encoder_ckpt}")

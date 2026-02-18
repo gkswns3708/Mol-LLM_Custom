@@ -2264,11 +2264,7 @@ class Blip2Stage3(pl.LightningModule):
                     # LLaDA 전용 옵션
                     gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
                     gen_kwargs["gen_length"] = self.gen_max_len
-<<<<<<< HEAD
                     gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 32)
-=======
-                    gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 8)
->>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
                     gen_kwargs["semi_ar_steps_per_block"] = getattr(self.args, "semi_ar_steps_per_block", None)
 
                     if strategy == "default":
@@ -2447,11 +2443,7 @@ class Blip2Stage3(pl.LightningModule):
                 # LLaDA 전용 옵션
                 gen_kwargs["steps"] = getattr(self.args, "sampling_steps", 64)
                 gen_kwargs["gen_length"] = self.gen_max_len
-<<<<<<< HEAD
                 gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 32)
-=======
-                gen_kwargs["semi_ar_block_size"] = getattr(self.args, "semi_ar_block_size", 8)
->>>>>>> 29298b13e3619acf10af00cb9050942b35785f74
                 gen_kwargs["semi_ar_steps_per_block"] = getattr(self.args, "semi_ar_steps_per_block", None)
 
                 # 전략에 따른 설정
