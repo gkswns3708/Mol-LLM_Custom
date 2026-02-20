@@ -6,7 +6,7 @@ defaults:
 # General settings
 filename: mol_llada_lora_run
 seed: 42
-mode: ft # finetuning mode: 'ft' or 'pretrain' or 'validate'
+mode: validate # finetuning mode: 'ft' or 'pretrain' or 'validate'
 
 wandb_entity: hj_ai
 wandb_project: mol-llm_llada
@@ -27,7 +27,7 @@ ckpt_path: null
 # pretrained_ckpt_path: 사전 학습된 모델 가중치만 로드 (학습은 처음부터)
 # 사용 예시:
 #   pretrained_ckpt_path: "/path/to/checkpoint/Custom_LLaDA/stage1/epoch=07-step=051600-train.ckpt"
-pretrained_ckpt_path: null
+pretrained_ckpt_path: /home/jovyan/CHJ/Mol-LLM_Custom/checkpoint/LLaDA_Stage2/stage1_HPC_total_240steps_stage2/last.ckpt
 
 # 주의: ckpt_path와 pretrained_ckpt_path는 동시에 사용할 수 없습니다!
 # ==============================================================================
