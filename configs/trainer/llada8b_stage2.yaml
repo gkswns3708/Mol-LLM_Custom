@@ -1,115 +1,201 @@
-# Global Option
-debug: true
-print_line: 100
-# Q-Former Configuration
-bert_hidden_dim: 768
-bert_name: scibert
-cross_attention_freq: 2
-num_query_token: 32
-bert_num_hidden_layers: 5
+# ============================================
+# LLaDA 8B Stage 2 Configuration
+# Q-Former Pre-training (Graph + Text)
+# ============================================
 
-projector_type: qformer
+# ============================================
+# [필수] Global Options
+# ============================================
+debug: true                 # true: 디버그 출력 활성화 | false: 비활성화
 
-# LLM Configuration
-llm_model: "GSAI-ML/LLaDA-8B-Instruct"
-tune_llm: lora
+# ============================================
+# [필수] Stage 식별자
+# ============================================
+# Stage 1: Text-only LLM 학습 (Q-Former 없이)
+# Stage 2: Q-Former만 학습 (GNN, LLM frozen)
+# Stage 3: Full multi-modal 학습
+llava_pretraining: 1          # ⬅️ Stage 2: 1로 설정 (LoRA/Embed/Head freeze)
+train_molpo: false            # MolPO 학습 (DPO 스타일) | true/false
+eval_molpo: false             # MolPO 평가 모드 | true/false
+second_stage_start_epoch: 9999  # ⬅️ Stage 2: 9999로 설정 (LoRA frozen 유지)
+
+# ============================================
+# [필수] Hardware 설정
+# ============================================
+strategy_name: null           # null: auto | "ddp" | "fsdp" | "deepspeed_stage_2"
+accelerator: gpu              # "gpu" | "cpu" | "tpu"
+devices: "0,1,2,3"            # 사용할 GPU 인덱스
+precision: bf16-mixed         # "bf16-mixed" (권장) | "16-mixed" | "32"
+num_workers: 0                # DataLoader workers (0: main process에서 로드)
+find_unused_parameters: false  # ⬅️ Stage 2: false (Stage 1과 다름)
+
+# ============================================
+# [필수] 모델 아키텍처
+# ============================================
+llm_model: "GSAI-ML/LLaDA-8B-Instruct"  # LLaDA-8B-Base | LLaDA-8B-Instruct
+tune_llm: lora                # "lora": LoRA 학습 | "full": Full FT | "freeze": 동결
+tune_gnn: false               # ⬅️ Stage 2: GNN은 frozen
+mol_representation: string+graph  # ⬅️ Stage 2: "string+graph" (Q-Former 사용 필수!)
+load_in_8bit: false           # 8bit 양자화 로드
+
+# ============================================
+# [필수] LoRA 설정
+# ============================================
 peft_config: "Mol-LLM_Custom/lora_config_llada.json"
-peft_dir: ""
-load_in_8bit: false
+peft_dir: "" 
 lora_r: 64
 lora_alpha: 32
 lora_dropout: 0.1
-selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt
+
+# ============================================
+# [필수] Q-Former Projector 설정 (Stage 2 핵심!)
+# ============================================
+projector_type: qformer       # ⬅️ "qformer" 필수
+num_query_token: 32           # Q-Former query 토큰 수: 32 (논문 권장)
+bert_name: scibert            # "scibert" | "bert-base-uncased"
+bert_hidden_dim: 768          # BERT hidden dimension
+cross_attention_freq: 2       # Cross-attention 빈도: 1 | 2 | 4
+bert_num_hidden_layers: 5     # Q-Former layer 수: 3 | 5 | 8
+
+# ============================================
+# [필수] 토크나이저
+# ============================================
 add_selfies_tokens: true
-prompt: "[START_I_SMILES]{}[END_I_SMILES]" #! 이거 안 쓰기는 하는데, 일단 사용 중
+selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt
+prompt: "[START_I_SMILES]{}[END_I_SMILES]"
 
-num_beams: 1
-
-strategy_name: null
-accelerator: gpu
-devices: "0,1,2,3,4,5,6,7"
-precision: bf16-mixed
+# ============================================
+# [필수] 학습 설정
+# ============================================
 max_steps: -1
-max_epochs: 12
+max_epochs: 1                 # ⬅️ Stage 2: 1 epoch (논문 권장)
 every_n_epochs: 1
 task: null
-logging_dir: Mol-LLM_Custom/checkpoint/Custom_LLaDA
-llava_pretraining: 0
-second_stage_start_epoch: 0
-num_workers: 0
-skip_sanity_check: true 
+num_beams: 1
+skip_sanity_check: true       # ⬅️ true 권장
 num_sanity_val_steps: 0
 
-# total_batch_size: 1024
-# batch_size: 8
-# inference_batch_size: 11
-accumulate_grad_batches: 11
-total_batch_size: 512
-batch_size: 4
-save_on_n_steps: 1000 # 100일 때 막 1epoch에 50개씩 저장됨.
-# Inference Conficuation
-inference_batch_size: 11
-sampling_steps: 16 #! 추후 최종적인 Metric 계산시에는 sequence 길이로 수정 예정
+# Batch Size 설정
+# effective_batch_size = batch_size * num_devices * accumulate_grad_batches
+batch_size: 3                 # ⬅️ Graph 추가로 메모리 증가, 필요시 조정
+total_batch_size: 240
+accumulate_grad_batches: 10   # 240 x (3 * 8) = 10
 
+# ============================================
+# Optimizer 및 Learning Rate 설정
+# ============================================
+# Stage 2에서 학습되는 파라미터:
+#   1. Q-Former (Qformer.*)
+#   2. query_tokens
+#   3. opt_proj (Linear projection)
+#   4. ln_graph (LayerNorm)
+#
+# Frozen 파라미터:
+#   - LLM base model
+#   - LoRA adapters (Stage 1에서 학습됨)
+#   - Embedding (wte)
+#   - LM Head (ff_out)
+#   - Graph Encoder (GINE + TokenGT)
+# ============================================
+optimizer: adamw
+weight_decay: 0.1
+gradient_clip_val: 1.0
+log_every_n_steps: 10
+
+# WSD Scheduler 설정
+scheduler: warmup_stable_decay_lr
+warmup_steps: 50              # ⬅️ Stage 2: 50 steps warmup
+warmup_lr: 0.0
+decay_ratio: 0.1
+min_lr_ratio: 0.1
+
+# Q-Former Learning Rate (별도 설정 필요 시 추가)
+# 기본값은 opt_proj와 동일하게 적용됨
+init_lr: 0.000025             # 2.5e-5
+min_lr: 0.0000025             # 2.5e-6
+
+# ⬅️ Stage 2: LoRA/Embed/Head는 frozen이므로 아래 설정은 무시됨
+# lr_lora: 0.0 (frozen)
+# lr_embed_orig: 0.0 (frozen)
+# lr_embed_new: 0.0 (frozen)
+# lr_head_orig: 0.0 (frozen)
+# lr_head_new: 0.0 (frozen)
+
+original_vocab_size: 126349
+
+# ============================================
+# [필수] LLaDA 전용 설정
+# ============================================
+remasking_strategy: 'low_confidence'  # 'low_confidence' | 'random' | 'none'
+sampling_steps: 32            # ⬅️ Inference 시 사용
+
+use_semi_ar: false
+semi_ar_block_size: 32
+semi_ar_steps_per_block: 4
+
+val_strategies: ["random", "semi_ar"]     # ⬅️ Stage 2: null (기본 전략만 사용)
+
+# ============================================
+# [필수] 데이터
+# ============================================
 truncation: 1
 padding: max_length
 max_length: 512
 inference_max_length: 512
-
 gen_max_len: 256
 min_len: 8
+inference_batch_size: 11      # 추론 batch size
 
 apply_sequence_packing: false
 max_packing_size: -1
-
-weight_decay: 0.1               
-min_lr: 0.0000025               
-init_lr: 0.000025               
-warmup_lr: 0.0                  
-warmup_steps: 50                
-# warmup_epochs: 0.5            
-scheduler: warmup_stable_decay_lr 
-optimizer: adamw
-log_every_n_steps: 10
-gradient_clip_val: 1.0          
-
-# Real validation Configuration
-val_check_interval: 1.0 # 무조건 소수로 해야함.
-check_val_every_n_epoch: 1
-test_on_trainset: false
-
-# Test Inference Configuration
-# val_check_interval: 0.0001
-# check_val_every_n_epoch: 1
-# test_on_trainset: false
-# limit_val_batches: 0.01
-
-# multimodal training
-mol_representation: string_only
-log_attn_score: true
-eval_modality_util: null
-tune_gnn: false
-
-# molpo
-train_molpo: false
-eval_molpo: false
-
-find_unused_parameters: false
 
 selfies_enumeration: false
 isomericSmiles: false
 canonical: false
 allHsExplicit: false
+cal_average_generation_loss: false
 
+# ============================================
+# [필수] 로깅 및 체크포인트
+# ============================================
+logging_dir: Mol-LLM_Custom/checkpoint/LLaDA_Stage2  # ⬅️ Stage 2 디렉토리
+filename: llada_stage2_qformer                        # ⬅️ Stage 2 파일명
 
-# Special LLaDA Configuration
-# remasking_strategy 옵션:
-#   - 'low_confidence': Algorithm 5 - 낮은 confidence 토큰을 다시 mask (LLaDA 논문 권장)
-#   - 'random': Algorithm 4 - 랜덤하게 다시 mask
-#   - 'none': Remasking 없이 매 step마다 top-k 토큰만 unmask (기존 방식)
-remasking_strategy: 'random'
+save_on_n_steps: 1000
+save_top_k_checkpoints: -1
+save_top_k_best: 3
+save_every_n_epochs: 1
 
-# Semi-Autoregressive 생성 모드
-use_semi_ar: false
-semi_ar_block_size: 32
-val_strategies: null
+val_check_interval: 1.0
+check_val_every_n_epoch: 1
+test_on_trainset: false
+limit_val_batches: 1.0
+
+eval_modality_util: null
+
+# ============================================
+# Weight Norm Logging
+# ============================================
+# Stage 2: Q-Former 관련 layer 추적
+log_weight_norm_layers: ["Qformer", "query_tokens", "opt_proj", "ln_graph"]
+log_weight_norm_interval: 10
+
+top_selfies_tokens: []        # Stage 2에서는 Embedding 학습 안 함
+
+# ============================================
+# Debug Logging
+# ============================================
+log_embedding_status: false   # ⬅️ Stage 2: Embedding frozen이므로 비활성화
+embedding_log_interval: 100
+log_model_init_details: true
+log_nan_details: true
+nan_log_dir: './nan_logs'
+
+log_stepwise_denoising: false
+stepwise_log_dir: '/app/stepwise_logs'
+stepwise_max_samples: '8'
+
+# ============================================
+# [주의] 반드시 False로 설정
+# ============================================
+log_attn_score: false         # ⚠️ LLaDA는 Attention logging 미지원

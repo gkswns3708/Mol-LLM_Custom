@@ -2901,7 +2901,7 @@ class Blip2Stage3(pl.LightningModule):
         # - 각 step의 loss에 importance weighting (1/p) 적용
         # - val_total_loss와 유사하지만 전체 trajectory를 deterministic하게 시뮬레이션
         # LLaDA Classification 최적화 경로에서는 generation이 없으므로 건너뜀
-        if is_llada and not skip_generation_loop:
+        if is_llada and not skip_generation_loop and self.args.cal_average_generation_loss:
             with torch.no_grad():
                 # 각 전략별로 조건을 반영한 Teacher Forcing Loss 계산
                 # Config 설정: val_strategies: ["random", "semi_ar"], remasking_strategy: "low_confidence"

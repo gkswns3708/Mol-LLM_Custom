@@ -157,13 +157,13 @@ remasking_strategy: 'low_confidence'
 #   - 32: 기본값 (품질/속도 균형)
 #   - 64~128: 높은 품질 (느림)
 #   - seq_len: 최대 품질 (매우 느림)
-sampling_steps: 64
+sampling_steps: 8
 
 # Semi-Autoregressive 생성 모드
 # Format token을 먼저 생성한 후 content를 diffusion으로 채움
 use_semi_ar: false          # true: Semi-AR 활성화 | false: 전체 diffusion
 semi_ar_block_size: 32      # Semi-AR 블록 크기: 8 | 16 | 32
-semi_ar_steps_per_block: 8  # 블록 내 diffusion step 수 (독립 설정)
+semi_ar_steps_per_block: 1  # 블록 내 diffusion step 수 (독립 설정)
 
 # Validation 시 사용할 generation 전략들 (비교 실험용)
 #   - "random": 전체 diffusion + random remasking
@@ -192,7 +192,7 @@ selfies_enumeration: false  # SELFIES 랜덤 순서 변환
 isomericSmiles: false       # 입체화학 정보 포함
 canonical: false            # Canonical SMILES 사용
 allHsExplicit: false        # 모든 수소 명시적 표현
-
+cal_average_generation_loss: false
 # ============================================
 # [필수] 로깅 및 체크포인트
 # ============================================

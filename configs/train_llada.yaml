@@ -1,12 +1,12 @@
 defaults:
   - data: multi_task_stage1
   - gnn: gine_tokengt
-  - trainer: llada8b
+  - trainer: llada8b_stage1
 
 # General settings
 filename: mol_llada_lora_run
 seed: 42
-mode: validate # finetuning mode: 'ft' or 'pretrain' or 'validate'
+mode: test # finetuning mode: 'ft' or 'pretrain' or 'validate'
 
 wandb_entity: hj_ai
 wandb_project: mol-llm_llada
