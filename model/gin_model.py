@@ -598,6 +598,9 @@ class BondEncoder(torch.nn.Module):
             self.bond_embedding_list.append(emb)
 
     def forward(self, edge_attr):
+        if edge_attr.numel() == 0:  # 빈 텐서면 바로 0 반환
+            return 0
+
         bond_embedding = 0
         for i in range(edge_attr.shape[1]):
             bond_embedding += self.bond_embedding_list[i](edge_attr[:, i])

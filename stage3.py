@@ -74,6 +74,8 @@ def print_training_config_report(cfg, model):
         'embedding': 0,
         'lm_head': 0,
         'qformer': 0,
+        'query_tokens': 0,
+        'projection': 0,
         'graph': 0,
         'other': 0
     }
@@ -83,6 +85,8 @@ def print_training_config_report(cfg, model):
         'embedding_layers': [],
         'lm_head_layers': [],
         'qformer_layers': [],
+        'query_tokens_layers': [],
+        'projection_layers': [],
         'graph_layers': [],
         'other_layers': []
     }
@@ -108,6 +112,12 @@ def print_training_config_report(cfg, model):
             elif 'qformer' in name.lower():
                 component_params['qformer'] += param.numel()
                 trainable_layers['qformer_layers'].append('.'.join(name.split('.')[-3:]))
+            elif 'query_tokens' in name.lower():
+                component_params['query_tokens'] += param.numel()
+                trainable_layers['query_tokens_layers'].append('.'.join(name.split('.')[-3:]))
+            elif 'opt_proj' in name.lower():
+                component_params['projection'] += param.numel()
+                trainable_layers['projection_layers'].append('.'.join(name.split('.')[-3:]))
             elif 'graph' in name.lower():
                 component_params['graph'] += param.numel()
                 trainable_layers['graph_layers'].append('.'.join(name.split('.')[-3:]))
@@ -186,6 +196,10 @@ def print_training_config_report(cfg, model):
         print(f"  ✅ LM Head:            {component_params['lm_head']:>12,} params  ({len(trainable_layers['lm_head_layers'])} layers)")
     if component_params['qformer'] > 0:
         print(f"  ✅ Q-Former:           {component_params['qformer']:>12,} params  ({len(set(trainable_layers['qformer_layers']))} layers)")
+    if component_params['query_tokens'] > 0:
+        print(f"  ✅ Query Tokens:       {component_params['query_tokens']:>12,} params  ({len(trainable_layers['query_tokens_layers'])} layers)")
+    if component_params['projection'] > 0:
+        print(f"  ✅ Projection (opt):   {component_params['projection']:>12,} params  ({len(trainable_layers['projection_layers'])} layers)")
     if component_params['graph'] > 0:
         print(f"  ✅ Graph Encoder:      {component_params['graph']:>12,} params  ({len(set(trainable_layers['graph_layers']))} layers)")
     if component_params['other'] > 0:

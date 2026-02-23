@@ -459,7 +459,23 @@ class Blip2LLaDA(Blip2OPT):
                 self.llm_tokenizer.convert_tokens_to_ids(token)
                 for token in self.llm_tokenizer.added_selfies_tokens
             ]
-    
+
+        # 8. MolPO mask tokens and IDs 설정 (data_utils.py collate 함수에서 사용)
+        molpo_mask_tokens = (
+            added_tokens.BOOL
+            + added_tokens.FLOAT
+            + added_tokens.DESCRIPTION
+            + added_tokens.SELFIES
+            + added_tokens.IUPAC
+            + added_tokens.MOLFORMULA
+        )
+        molpo_mask_tokens += [self.llm_tokenizer.eos_token]
+        self.llm_tokenizer.molpo_mask_tokens = molpo_mask_tokens
+        self.llm_tokenizer.molpo_mask_ids = [
+            self.llm_tokenizer.convert_tokens_to_ids(token)
+            for token in molpo_mask_tokens
+        ]
+
     # [Stage 1 에러 수정] 그래프가 None일 경우 예외 처리 추가된 버전
     def inject_graph_embeds2input_embeds(self, input_embeds, is_mol_token, graphs):
         # graphs 튜플 언패킹 (Main Graph, Additional Graph)
@@ -551,11 +567,33 @@ class Blip2LLaDA(Blip2OPT):
         return input_embeds, graph_avg_norm, moltoken_avg_norm
 
     def forward(self, samples):
-        input_ids = samples['input_ids']
-        attention_mask = samples['attention_mask']
-        labels = samples['labels']
+        # [FIX] attribute access 사용 (dict access와 다를 수 있음)
+        # training_step에서 batch.input_ids로 확인하므로, 동일하게 attribute access 사용
+        input_ids = samples.input_ids
+        attention_mask = samples.attention_mask
+        labels = samples.labels
 
         batch_size, seq_len = input_ids.shape
+
+        # [ALWAYS] 무조건 shape 출력 - MolPO 문제 디버깅용
+        if self.training:
+            has_molpo = hasattr(samples, 'molpo_labels')
+            molpo_bs = samples.molpo_labels.shape[0] if has_molpo else -1
+
+            # 첫 N step만 출력
+            if not hasattr(self, '_debug_count'):
+                self._debug_count = 0
+            self._debug_count += 1
+            if self._debug_count <= 30:
+                print(f"[LLaDA Forward #{self._debug_count}] input_ids.shape={input_ids.shape}, "
+                      f"has_molpo={has_molpo}, molpo_bs={molpo_bs}")
+
+            # MolPO 학습 시 shape 불일치 → 에러
+            if has_molpo and batch_size != molpo_bs:
+                raise ValueError(
+                    f"[LLaDA Forward Shape Mismatch] input_ids.shape[0]={batch_size} != "
+                    f"molpo_labels.shape[0]={molpo_bs}."
+                )
 
         # ========================================================================
         # LLaDA Forward Process (SMDM 원본 구현 참조)

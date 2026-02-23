@@ -372,8 +372,17 @@ class Blip2OPT(Blip2Base):
 
         #! Stage 2에서 Q-Former를 학습할 때, LoRA의 Gradient가 없어야 하는데, 아래는 이를 위한 코드
         if self.args.llava_pretraining:
+            # Freeze LoRA adapters
             self.set_params_requires_grads(
                 model=self.llm_model, keyword="lora", grad=False, IsPrint=False
+            )
+            # Freeze Embedding (wte) - Stage 2에서 embedding은 학습하지 않음 (논문 권장)
+            self.set_params_requires_grads(
+                model=self.llm_model, keyword="wte", grad=False, IsPrint=False
+            )
+            # Freeze LM Head (ff_out) - Stage 2에서 head는 학습하지 않음 (논문 권장)
+            self.set_params_requires_grads(
+                model=self.llm_model, keyword="ff_out", grad=False, IsPrint=False
             )
 
         if "graph" in self.args.mol_representation:

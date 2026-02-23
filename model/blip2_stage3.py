@@ -527,6 +527,21 @@ class Blip2Stage3(pl.LightningModule):
         molpo_batch_division=2,
         config=None
     ):
+        # =================================================================
+        # [Shape Validation] instance_loss와 molpo_labels의 batch 크기 검증
+        # =================================================================
+        if instance_loss is not None:
+            inst_batch = instance_loss.shape[0]
+            label_batch = molpo_labels.shape[0]
+            if inst_batch != label_batch:
+                raise ValueError(
+                    f"[MolPO Shape Mismatch] instance_loss.shape[0]={inst_batch} != "
+                    f"molpo_labels.shape[0]={label_batch}. "
+                    f"This usually means input_ids batch size doesn't match molpo_labels batch size. "
+                    f"Check your DataLoader collate function for MolPO training. "
+                    f"Expected: Both should have batch_size * molpo_batch_division = {label_batch}."
+                )
+
         out = concatenated_forward(
             all_logits=logits,
             all_labels=molpo_labels,
@@ -553,14 +568,14 @@ class Blip2Stage3(pl.LightningModule):
             assert (
                 labels.shape[0] % molpo_batch_division == 0
             ), "batch_size(labels.shape[0]) should be divisible by molpo_batch_division"
-            sft_loss_mask = labels[: labels.shape[0] // 2, :] != -100
+            sft_loss_mask = (labels[: labels.shape[0] // 2, :] != -100).to(sft_instance_loss.device)
             sft_loss = (sft_instance_loss * sft_loss_mask.sum(-1))[
                 sft_loss_mask.sum(-1) > 0
             ].sum() / sft_loss_mask.sum()
 
         elif molpo_batch_division == 3:
             policy_sft_logps = out["sft_logps"]
-            sft_loss_mask = out["sft_loss_mask"]
+            sft_loss_mask = out["sft_loss_mask"].to(sft_instance_loss.device)
             sft_rewards = self.args.beta * policy_sft_logps
 
             sft_loss = (sft_instance_loss * sft_loss_mask.sum(-1))[
@@ -680,6 +695,35 @@ class Blip2Stage3(pl.LightningModule):
         # [중요] 전역 id2task 함수 사용 (함수 내 import 제거)
         tasks = [id2task(task_id.item()) for task_id in batch.tasks]
 
+        # [Critical] MolPO batch shape 검증 (model forward 전)
+        if hasattr(self.args, "train_molpo") and self.args.train_molpo:
+            # attribute access vs dict access 모두 확인 (모델은 dict access 사용)
+            input_ids_attr = batch.input_ids.shape[0] if hasattr(batch, 'input_ids') else -1
+            input_ids_dict = batch['input_ids'].shape[0] if 'input_ids' in batch else -1
+            molpo_labels_bs = batch.molpo_labels.shape[0] if hasattr(batch, 'molpo_labels') else -1
+
+            # [중요] dict access와 attribute access가 다른 값을 반환하는지 확인
+            if input_ids_attr != input_ids_dict:
+                raise ValueError(
+                    f"[CRITICAL] batch.input_ids.shape[0]={input_ids_attr} != "
+                    f"batch['input_ids'].shape[0]={input_ids_dict}! "
+                    f"BatchEncoding has inconsistent data. Model uses dict access."
+                )
+
+            if self.debug:
+                print(f"[MolPO Batch Debug] step={batch_idx}, "
+                      f"input_ids(attr)={batch.input_ids.shape}, "
+                      f"input_ids(dict)={batch['input_ids'].shape}, "
+                      f"molpo_labels={batch.molpo_labels.shape}")
+
+            # input_ids와 molpo_labels의 batch size가 다르면 에러 발생 전에 경고
+            if input_ids_dict != molpo_labels_bs:
+                raise ValueError(
+                    f"[MolPO Batch Shape Mismatch BEFORE model forward] step={batch_idx}: "
+                    f"batch['input_ids'].shape[0]={input_ids_dict} != molpo_labels.shape[0]={molpo_labels_bs}. "
+                    f"This is a DataLoader/collate issue. Check data_utils.py collate function."
+                )
+
         outputs = self.blip2model(batch)
         
         # [요청하신 값 추출 방식]
@@ -756,43 +800,53 @@ class Blip2Stage3(pl.LightningModule):
                 if valid_len == 0:
                     if self.debug:
                         print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
-                if hasattr(self.args, "train_molpo") and self.args.train_molpo:
-                    compute_loss_context_manager = torch.amp.autocast
-                    len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
-                    tasks = tasks[:len_tuple]
 
-                    with compute_loss_context_manager(device_type="cuda"):
-                        # outputs가 dict인 경우 instance_loss 가져오기
-                        inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
-                        
-                        loss, metrics = self.get_total_molpo_loss(
-                            logits=logits,
-                            labels=batch.labels,
-                            molpo_labels=batch.molpo_labels,
-                            instance_loss=inst_loss,
-                            tasks=tasks,
-                            is_train=True,
-                            molpo_batch_division=self.args.molpo_batch_division,
-                            config=self.args
-                        )
-                    outputs.update(metrics)
+        # [FIX] MolPO 처리는 for 루프 바깥에서 수행 (모든 task에 적용)
+        if hasattr(self.args, "train_molpo") and self.args.train_molpo:
+            compute_loss_context_manager = torch.amp.autocast
+            len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
+            # [FIX] 원본 tasks를 수정하지 않고 별도 변수 사용
+            molpo_tasks = tasks[:len_tuple]
 
-                    if "graph_avg_norm" in outputs:
-                        graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
-                        for k in graph_keys:
-                            avg_norm = outputs.pop(k)
-                            if self.args.molpo_batch_division == 2:
-                                chosen_avg_norm = avg_norm[:len_tuple]
-                                reject_avg_norm = avg_norm[len_tuple:]
-                            elif self.args.molpo_batch_division == 3:
-                                sft_avg_norm = avg_norm[:len_tuple]
-                                chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
-                                reject_avg_norm = avg_norm[2 * len_tuple :]
+            with compute_loss_context_manager(device_type="cuda"):
+                # outputs가 dict인 경우 instance_loss 가져오기
+                inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
 
-                                outputs[f"{k}/sft"] = sft_avg_norm
+                # [Debug] Shape 확인
+                if self.debug and inst_loss is not None:
+                    print(f"[MolPO Debug] inst_loss.shape={inst_loss.shape}, "
+                          f"batch.molpo_labels.shape={batch.molpo_labels.shape}, "
+                          f"batch.labels.shape={batch.labels.shape}, "
+                          f"batch.input_ids.shape={batch.input_ids.shape if hasattr(batch, 'input_ids') else 'N/A'}")
 
-                            outputs[f"{k}/chosen"] = chosen_avg_norm
-                            outputs[f"{k}/reject"] = reject_avg_norm
+                loss, metrics = self.get_total_molpo_loss(
+                    logits=logits,
+                    labels=batch.labels,
+                    molpo_labels=batch.molpo_labels,
+                    instance_loss=inst_loss,
+                    tasks=molpo_tasks,  # [FIX] molpo_tasks 사용
+                    is_train=True,
+                    molpo_batch_division=self.args.molpo_batch_division,
+                    config=self.args
+                )
+            outputs.update(metrics)
+
+            if "graph_avg_norm" in outputs:
+                graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
+                for k in graph_keys:
+                    avg_norm = outputs.pop(k)
+                    if self.args.molpo_batch_division == 2:
+                        chosen_avg_norm = avg_norm[:len_tuple]
+                        reject_avg_norm = avg_norm[len_tuple:]
+                    elif self.args.molpo_batch_division == 3:
+                        sft_avg_norm = avg_norm[:len_tuple]
+                        chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
+                        reject_avg_norm = avg_norm[2 * len_tuple :]
+
+                        outputs[f"{k}/sft"] = sft_avg_norm
+
+                    outputs[f"{k}/chosen"] = chosen_avg_norm
+                    outputs[f"{k}/reject"] = reject_avg_norm
 
         # 5개 LR 그룹 모두 로깅
         self._log_all_learning_rates()
@@ -2921,7 +2975,7 @@ class Blip2Stage3(pl.LightningModule):
         # - 각 step의 loss에 importance weighting (1/p) 적용
         # - val_total_loss와 유사하지만 전체 trajectory를 deterministic하게 시뮬레이션
         # LLaDA Classification 최적화 경로에서는 generation이 없으므로 건너뜀
-        if is_llada and not skip_generation_loop:
+        if is_llada and not skip_generation_loop and self.args.cal_average_generation_loss:
             with torch.no_grad():
                 # 각 전략별로 조건을 반영한 Teacher Forcing Loss 계산
                 # Config 설정: val_strategies: ["random", "semi_ar"], remasking_strategy: "low_confidence"
@@ -4045,10 +4099,27 @@ def molpo_loss(
         The losses tensor contains the molpo loss for each example in the batch.
         The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
     """
+    # Ensure all tensors are on the same device
+    device = chosen_rewards.device
+    chosen_loss_mask = chosen_loss_mask.to(device)
+    rejected_loss_mask = rejected_loss_mask.to(device)
+    if avg_chosen_rewards is not None:
+        avg_chosen_rewards = avg_chosen_rewards.to(device)
+
+    # Validate shapes match
+    batch_size = chosen_rewards.shape[0]
+    mask_batch_size = chosen_loss_mask.shape[0]
+    if batch_size != mask_batch_size:
+        raise ValueError(
+            f"Shape mismatch in molpo_loss: chosen_rewards has batch_size={batch_size}, "
+            f"but chosen_loss_mask has batch_size={mask_batch_size}. "
+            f"Check molpo_batch_division and data preprocessing."
+        )
+
     # calculate molpo loss
     margin = chosen_rewards - rejected_rewards
     if margin_clip_scale > 0:
-        max_clip = margin_clip_scale * torch.abs(avg_chosen_rewards)
+        max_clip = (margin_clip_scale * torch.abs(avg_chosen_rewards)).to(margin.device)
         min_clip = -torch.abs(margin)
         margin = torch.clamp(margin, min=min_clip, max=max_clip)
 
@@ -4070,7 +4141,12 @@ def molpo_loss(
         True,
         False,
     )
-    loss = losses[loss_mask].mean()
+
+    # Handle empty batch or shape mismatch
+    if losses.numel() == 0 or loss_mask.sum() == 0:
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+    else:
+        loss = losses[loss_mask].mean()
 
     return loss, losses
 
@@ -4081,6 +4157,10 @@ def anchor_loss(
     rejected_lambda: float,
     loss_type: str = "sigmoid",
 ):
+    # Ensure tensors are on the same device
+    device = rejected_rewards.device
+    avg_chosen_rewards = avg_chosen_rewards.to(device)
+
     assert (
         rejected_lambda >= 0.0
     ), f"rejected_lambda: {rejected_lambda} should be >= 0.0."

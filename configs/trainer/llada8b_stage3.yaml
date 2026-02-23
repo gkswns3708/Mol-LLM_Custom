@@ -1,137 +1,221 @@
-# Global Option
-debug: true
-print_line: 100
-# Q-Former Configuration
-bert_hidden_dim: 768
-bert_name: scibert
-cross_attention_freq: 2
-num_query_token: 32
-bert_num_hidden_layers: 5
+# ============================================
+# LLaDA 8B Stage 3 Configuration
+# MolPO Fine-tuning (LoRA + Q-Former + Graph Encoder)
+# ============================================
 
-projector_type: qformer
+# ============================================
+# [필수] Global Options
+# ============================================
+debug: true                 # true: 디버그 출력 활성화 | false: 비활성화
 
-# LLM Configuration
-llm_model: "GSAI-ML/LLaDA-8B-Instruct"
-tune_llm: lora
+# ============================================
+# [필수] Stage 식별자
+# ============================================
+# Stage 1: Text-only LLM 학습 (Q-Former 없이)
+# Stage 2: Q-Former만 학습 (GNN, LLM frozen)
+# Stage 3: Full multi-modal 학습 (LoRA + Q-Former + Graph Encoder trainable)
+llava_pretraining: 0          # ⬅️ Stage 3: 0 (LoRA trainable)
+train_molpo: true             # ⬅️ Stage 3: MolPO 활성화
+eval_molpo: true             # MolPO 평가 모드 | true/false
+second_stage_start_epoch: 0   # ⬅️ Stage 3: 0 (처음부터 모두 trainable)
+
+# ============================================
+# [필수] Hardware 설정
+# ============================================
+strategy_name: null           # null: auto | "ddp" | "fsdp" | "deepspeed_stage_2"
+accelerator: gpu              # "gpu" | "cpu" | "tpu"
+devices: "0,1,2,3,4,5,6,7"    # 사용할 GPU 인덱스
+precision: bf16-mixed         # "bf16-mixed" (권장) | "16-mixed" | "32"
+num_workers: 0                # DataLoader workers (0: main process에서 로드)
+find_unused_parameters: true  # ⬅️ Stage 3: true (MolPO용 DDP)
+
+# ============================================
+# [필수] 모델 아키텍처
+# ============================================
+llm_model: "GSAI-ML/LLaDA-8B-Instruct"  # LLaDA-8B-Base | LLaDA-8B-Instruct
+tune_llm: lora                # "lora": LoRA 학습 | "full": Full FT | "freeze": 동결
+tune_gnn: true                # ⬅️ Stage 3: true (Graph Encoder trainable)
+mol_representation: string+graph  # ⬅️ Stage 3: "string+graph" (Graph 사용)
+load_in_8bit: false           # 8bit 양자화 로드
+
+# ============================================
+# [필수] LoRA 설정
+# ============================================
 peft_config: "Mol-LLM_Custom/lora_config_llada.json"
-peft_dir: ""
-load_in_8bit: false
+peft_dir: ""                  # Stage 2 체크포인트에 포함됨
 lora_r: 64
 lora_alpha: 32
 lora_dropout: 0.1
-selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt
+
+# ============================================
+# [필수] Q-Former Projector 설정
+# ============================================
+projector_type: qformer       # ⬅️ "qformer" 필수
+num_query_token: 32           # Q-Former query 토큰 수: 32 (논문 권장)
+bert_name: scibert            # "scibert" | "bert-base-uncased"
+bert_hidden_dim: 768          # BERT hidden dimension
+cross_attention_freq: 2       # Cross-attention 빈도: 1 | 2 | 4
+bert_num_hidden_layers: 5     # Q-Former layer 수: 3 | 5 | 8
+
+# ============================================
+# [필수] 토크나이저
+# ============================================
 add_selfies_tokens: true
-prompt: "[START_I_SMILES]{}[END_I_SMILES]" #! 이거 안 쓰기는 하는데, 일단 사용 중
+selfies_token_path: Mol-LLM_Custom/model/selfies_dict.txt
+prompt: "[START_I_SMILES]{}[END_I_SMILES]"
 
-num_beams: 1
-
-strategy_name: null
-accelerator: gpu
-devices: "0,1,2,3,4,5,6,7"
-precision: bf16-mixed
+# ============================================
+# [필수] 학습 설정
+# ============================================
 max_steps: -1
-max_epochs: 12
+max_epochs: 6                 # ⬅️ Stage 3: 6 epochs (논문 권장)
 every_n_epochs: 1
 task: null
-logging_dir: Mol-LLM_Custom/checkpoint/Custom_LLaDA
-llava_pretraining: 0
-second_stage_start_epoch: 0
-num_workers: 0
-skip_sanity_check: true 
+num_beams: 1
+skip_sanity_check: true       # ⬅️ true 권장
 num_sanity_val_steps: 0
 
-# total_batch_size: 1024
-# batch_size: 8
-# inference_batch_size: 11
-accumulate_grad_batches: 11
-total_batch_size: 512
-batch_size: 4
-save_on_n_steps: 1000 # 100일 때 막 1epoch에 50개씩 저장됨.
-# Inference Conficuation
-inference_batch_size: 11
-sampling_steps: 16 #! 추후 최종적인 Metric 계산시에는 sequence 길이로 수정 예정
+# Batch Size 설정
+# effective_batch_size = batch_size * num_devices * accumulate_grad_batches
+batch_size: 1                 # ⬅️ Stage 3: 2 (메모리 고려)
+total_batch_size: 10        # ⬅️ Stage 3: 1024 (논문 권장)
+accumulate_grad_batches: 5   # ⬅️ Stage 3: 64 (1024 / (2 * 8) = 64)
 
+# ============================================
+# Optimizer 및 Learning Rate 설정
+# ============================================
+# Stage 3에서 학습되는 파라미터:
+#   1. LoRA adapters
+#   2. Q-Former (Qformer.*)
+#   3. Graph Encoder (GINE + TokenGT)
+#   4. query_tokens
+#   5. opt_proj (Linear projection)
+#   6. ln_graph (LayerNorm)
+#
+# Frozen 파라미터:
+#   - LLM base model (non-LoRA weights)
+# ============================================
+optimizer: adamw
+weight_decay: 0.1
+gradient_clip_val: 1.0
+log_every_n_steps: 10
+
+# WSD Scheduler 설정
+scheduler: warmup_stable_decay_lr
+warmup_steps: 100             # ⬅️ Stage 3: 100 steps warmup
+warmup_lr: 0.0
+decay_ratio: 0.1
+min_lr_ratio: 0.1
+
+# Learning Rate (논문 권장)
+init_lr: 0.00004              # ⬅️ Stage 3: 4e-5 (논문 권장)
+min_lr: 0.00002               # ⬅️ Stage 3: 2e-5
+
+original_vocab_size: 126349
+
+# ============================================
+# [필수] LLaDA 전용 설정
+# ============================================
+remasking_strategy: 'low_confidence'  # 'low_confidence' | 'random' | 'none'
+sampling_steps: 32            # ⬅️ Inference 시 사용
+
+use_semi_ar: false
+semi_ar_block_size: 32
+semi_ar_steps_per_block: 4
+
+val_strategies: ["random", "semi_ar"]          # ⬅️ Stage 3: null (기본 전략만 사용)
+
+# ============================================
+# [필수] 데이터
+# ============================================
 truncation: 1
 padding: max_length
 max_length: 512
 inference_max_length: 512
-
 gen_max_len: 256
 min_len: 8
+inference_batch_size: 11      # 추론 batch size
 
 apply_sequence_packing: false
 max_packing_size: -1
-
-weight_decay: 0.1
-min_lr: 0.0000025
-init_lr: 0.000025
-warmup_lr: 0.0
-warmup_steps: 50
-# warmup_epochs: 0.5
-scheduler: warmup_stable_decay_lr
-optimizer: adamw
-
-# 파라미터 그룹별 Learning Rate 설정
-# 1. LoRA 파라미터
-lr_lora: 0.0002                 # 2e-4
-# 2. Embedding Layer (WTE / embed_tokens)
-lr_embed_orig: 0.00001          # 1e-5 (기존 vocab)
-lr_embed_new: 0.0001            # 1e-4 (새로 추가된 vocab)
-# 3. Classifier (LM Head / ff_out)
-lr_head_orig: 0.00001           # 1e-5 (기존 vocab)
-lr_head_new: 0.0001             # 1e-4 (새로 추가된 vocab)
-# Original vocab size (LLaDA Llama-3 8B 기준)
-original_vocab_size: 128256
-log_every_n_steps: 10
-gradient_clip_val: 1.0          
-
-# Real validation Configuration
-val_check_interval: 1.0 # 무조건 소수로 해야함.
-check_val_every_n_epoch: 1
-test_on_trainset: false
-
-# Test Inference Configuration
-# val_check_interval: 0.0001
-# check_val_every_n_epoch: 1
-# test_on_trainset: false
-# limit_val_batches: 0.01
-
-# multimodal training
-mol_representation: string_only
-log_attn_score: true
-eval_modality_util: null
-tune_gnn: false
-
-# molpo
-train_molpo: false
-eval_molpo: false
-
-find_unused_parameters: false
 
 selfies_enumeration: false
 isomericSmiles: false
 canonical: false
 allHsExplicit: false
+cal_average_generation_loss: false
+# ============================================
+# [필수] 로깅 및 체크포인트
+# ============================================
+logging_dir: Mol-LLM_Custom/checkpoint/LLaDA_Stage3  # ⬅️ Stage 3 디렉토리
+filename: llada_stage3_molpo                          # ⬅️ Stage 3 파일명
 
+save_on_n_steps: 1000
+save_top_k_checkpoints: -1
+save_top_k_best: 3
+save_every_n_epochs: 1
 
-# Special LLaDA Configuration
-# remasking_strategy 옵션:
-#   - 'low_confidence': Algorithm 5 - 낮은 confidence 토큰을 다시 mask (LLaDA 논문 권장)
-#   - 'random': Algorithm 4 - 랜덤하게 다시 mask
-#   - 'none': Remasking 없이 매 step마다 top-k 토큰만 unmask (기존 방식)
-remasking_strategy: 'random'
+val_check_interval: 1.0
+check_val_every_n_epoch: 1
+test_on_trainset: false
+limit_val_batches: 1.0
 
-# Semi-Autoregressive 생성 모드
-# True: 블록 단위로 순차 생성 (left-to-right)
-# False: 전체 영역 동시 생성
-use_semi_ar: false
-# block_size 권장값: 생성 길이에 따라 조정
-# - 짧은 텍스트 (mol2text 등): 8~16
-# - 긴 텍스트 (code, math): 32~64
-# LLaDA 논문 Table 8 참고: GSM8K=8, HumanEval=32, GPQA=64
-semi_ar_block_size: 16
+eval_modality_util: null
 
-# Validation 전략 설정 (복수 전략 동시 평가 지원)
-# null이면 remasking_strategy와 use_semi_ar 설정에 따라 단일 전략 사용
-# 예시: ["random", "low_confidence", "semi_ar"]
-val_strategies: null
+# ============================================
+# Weight Norm Logging
+# ============================================
+# Stage 3: LoRA, Graph Encoder, Q-Former 추적
+log_weight_norm_layers: ["wte", "ff_out", "gnn", "Qformer", "lora"]  # ⬅️ Stage 3: 3개 모두 추적
+log_weight_norm_interval: 10
+
+top_selfies_tokens: []        # Stage 3에서는 Embedding 학습 안 함
+
+# ============================================
+# Debug Logging
+# ============================================
+log_embedding_status: true   
+embedding_log_interval: 100
+log_model_init_details: true
+log_nan_details: true
+nan_log_dir: './nan_logs'
+
+log_stepwise_denoising: false
+stepwise_log_dir: '/app/stepwise_logs'
+stepwise_max_samples: '4'
+
+# ============================================
+# MolPO Preference Optimization 설정 (Stage 3 핵심!)
+# ============================================
+# 2: 배치가 chosen/rejected 두 그룹으로 나뉨 (DPO 스타일 학습)
+# 3: 배치가 sft/chosen/rejected 세 그룹으로 나뉨 (SFT + DPO 동시 학습)
+molpo_batch_division: 2       # ⬅️ 2: (chosen, rejected) pair
+
+# Loss Weights (논문 Table 7b)
+sft_weight: 1.0               # ⬅️ SFT loss 가중치
+molpo_weight: 0.25            # ⬅️ MolPO loss 가중치 (c=0.25, 논문 권장)
+
+# MolPO Hyperparameters (논문 기준)
+beta: 1.0                     # ⬅️ Temperature (logit scaling)
+gamma_beta_ratio: 0.5         # ⬅️ γ/β 비율
+molpo_lambda: -0.5            # ⬅️ Task-adaptive margin coefficient (λmargin)
+margin_clip_scale: 1.0        # ⬅️ Margin clipping threshold (λclip)
+
+# Optional MolPO Parameters
+anc_rejected_weight: 0.0      # Anchor loss weight (사용 안 함)
+loss_type: sigmoid            # MolPO loss 함수 타입
+anc_loss_type: sigmoid        # Anchor loss 함수 타입
+reject_label_mask: false      # Rejected label masking
+anc_reject_clip: -1           # Anchor clipping threshold
+rejected_lambda: 1.5
+apply_preference_system_prompt: false
+# ============================================
+# [필수] Stage 2 체크포인트 로드
+# ============================================
+# Stage 2에서 학습된 Q-Former와 Graph Encoder를 로드합니다.
+pretrained_ckpt_path: "Mol-LLM_Custom/checkpoint/LLaDA_Stage2/stage1_HPC_total_240steps_stage2/last.ckpt"
+
+# ============================================
+# [주의] 반드시 False로 설정
+# ============================================
+log_attn_score: false         # ⚠️ LLaDA는 Attention logging 미지원
