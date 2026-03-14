@@ -473,6 +473,132 @@ class Blip2Stage3(pl.LightningModule):
         with open(os.path.join(self.logger.log_dir, filename), "w") as f:
             json.dump(instances, f, ensure_ascii=False, indent=4)
 
+    def _save_batch_predictions_to_file(
+        self,
+        strategy: str,
+        predictions: list,
+        targets: list,
+        tasks: list,
+        prompts: list,
+        input_mol_strings: list,
+        probs: list = None,
+        mode: str = "val",
+    ):
+        """
+        Save a single batch's predictions to JSONL (append mode).
+
+        Args:
+            strategy: Strategy name (e.g., "default", "likelihood", "semi_ar")
+            predictions: List of prediction strings
+            targets: List of target strings
+            tasks: List of task names
+            prompts: List of prompt strings
+            input_mol_strings: List of input molecule strings
+            probs: Optional list of probability lists (for classification)
+            mode: "val" or "test"
+
+        File naming: {mode}-step{global_step}-rank{rank}-{strategy}-predictions.jsonl
+        """
+        if not hasattr(self, "logger") or not hasattr(self.logger, "log_dir"):
+            return
+
+        step_for_filename = self._trained_global_step if mode == "test" and self._trained_global_step is not None else self.global_step
+
+        filename = f"{mode}-step{step_for_filename}-rank{self.global_rank}-{strategy}-predictions.jsonl"
+        filepath = os.path.join(self.logger.log_dir, filename)
+
+        # Ensure directory exists
+        os.makedirs(self.logger.log_dir, exist_ok=True)
+
+        # Append batch predictions to JSONL
+        with open(filepath, "a") as f:
+            for i in range(len(predictions)):
+                instance = {
+                    "task": tasks[i],
+                    "prediction": predictions[i],
+                    "target": targets[i],
+                    "prompt": prompts[i],
+                    "input_mol_strings": input_mol_strings[i],
+                }
+                if probs is not None and i < len(probs):
+                    instance["prob"] = probs[i]
+                f.write(json.dumps(instance, ensure_ascii=False) + "\n")
+
+    def _load_predictions_from_files(self, strategy: str, mode: str = "val"):
+        """
+        Load all JSONL prediction files for a given strategy from all ranks.
+
+        Args:
+            strategy: Strategy name
+            mode: "val" or "test"
+
+        Returns:
+            dict with keys: predictions, targets, tasks, prompts, input_mol_strings, probs
+        """
+        step_for_filename = self._trained_global_step if mode == "test" and self._trained_global_step is not None else self.global_step
+
+        accumulated = {
+            "predictions": [],
+            "targets": [],
+            "tasks": [],
+            "prompts": [],
+            "input_mol_strings": [],
+            "probs": [],
+        }
+
+        # Load from all ranks (0 to world_size-1)
+        world_size = self.trainer.world_size
+        for rank in range(world_size):
+            filename = f"{mode}-step{step_for_filename}-rank{rank}-{strategy}-predictions.jsonl"
+            filepath = os.path.join(self.logger.log_dir, filename)
+
+            if not os.path.exists(filepath):
+                if self.debug:
+                    print(f"⚠️  JSONL file not found: {filepath}")
+                continue
+
+            with open(filepath, "r") as f:
+                for line in f:
+                    instance = json.loads(line.strip())
+                    accumulated["predictions"].append(instance["prediction"])
+                    accumulated["targets"].append(instance["target"])
+                    accumulated["tasks"].append(instance["task"])
+                    accumulated["prompts"].append(instance["prompt"])
+                    accumulated["input_mol_strings"].append(instance["input_mol_strings"])
+                    if "prob" in instance:
+                        accumulated["probs"].append(instance["prob"])
+
+        if self.debug:
+            print(f"📂 Loaded {len(accumulated['predictions'])} predictions for strategy '{strategy}' from {world_size} ranks")
+
+        return accumulated
+
+    def _cleanup_jsonl_files(self, mode: str = "val"):
+        """
+        Delete JSONL prediction files after evaluation is complete.
+        Only called by rank 0 after metrics calculation.
+
+        Args:
+            mode: "val" or "test"
+        """
+        if self.global_rank != 0:
+            return
+
+        step_for_filename = self._trained_global_step if mode == "test" and self._trained_global_step is not None else self.global_step
+
+        import glob
+        pattern = os.path.join(self.logger.log_dir, f"{mode}-step{step_for_filename}-rank*-*-predictions.jsonl")
+        jsonl_files = glob.glob(pattern)
+
+        for filepath in jsonl_files:
+            try:
+                os.remove(filepath)
+                if self.debug:
+                    print(f"🗑️  Deleted JSONL: {filepath}")
+            except Exception as e:
+                if self.debug:
+                    print(f"⚠️  Failed to delete {filepath}: {e}")
+
     def on_test_epoch_start(self) -> None:
         # test 시작 시 학습된 global_step 저장 (trainer.test()가 step을 리셋하기 전)
         if self._trained_global_step is None:
@@ -527,6 +653,21 @@ class Blip2Stage3(pl.LightningModule):
         molpo_batch_division=2,
         config=None
     ):
+        # =================================================================
+        # [Shape Validation] instance_loss와 molpo_labels의 batch 크기 검증
+        # =================================================================
+        if instance_loss is not None:
+            inst_batch = instance_loss.shape[0]
+            label_batch = molpo_labels.shape[0]
+            if inst_batch != label_batch:
+                raise ValueError(
+                    f"[MolPO Shape Mismatch] instance_loss.shape[0]={inst_batch} != "
+                    f"molpo_labels.shape[0]={label_batch}. "
+                    f"This usually means input_ids batch size doesn't match molpo_labels batch size. "
+                    f"Check your DataLoader collate function for MolPO training. "
+                    f"Expected: Both should have batch_size * molpo_batch_division = {label_batch}."
+                )
+
         out = concatenated_forward(
             all_logits=logits,
             all_labels=molpo_labels,
@@ -553,14 +694,14 @@ class Blip2Stage3(pl.LightningModule):
             assert (
                 labels.shape[0] % molpo_batch_division == 0
             ), "batch_size(labels.shape[0]) should be divisible by molpo_batch_division"
-            sft_loss_mask = labels[: labels.shape[0] // 2, :] != -100
+            sft_loss_mask = (labels[: labels.shape[0] // 2, :] != -100).to(sft_instance_loss.device)
             sft_loss = (sft_instance_loss * sft_loss_mask.sum(-1))[
                 sft_loss_mask.sum(-1) > 0
             ].sum() / sft_loss_mask.sum()
 
         elif molpo_batch_division == 3:
             policy_sft_logps = out["sft_logps"]
-            sft_loss_mask = out["sft_loss_mask"]
+            sft_loss_mask = out["sft_loss_mask"].to(sft_instance_loss.device)
             sft_rewards = self.args.beta * policy_sft_logps
 
             sft_loss = (sft_instance_loss * sft_loss_mask.sum(-1))[
@@ -671,6 +812,10 @@ class Blip2Stage3(pl.LightningModule):
             )
 
     def training_step(self, batch, batch_idx):
+        # [DEBUG] training_step 호출 확인 - 조건 없이 100 step마다 출력
+        if self.global_step % 100 == 0:
+            print(f"\n[STEP-MILESTONE] global_step={self.global_step}, batch_idx={batch_idx}", flush=True)
+
         if self.args.llava_pretraining:
             self.apply_separated_stage()
 
@@ -679,6 +824,35 @@ class Blip2Stage3(pl.LightningModule):
 
         # [중요] 전역 id2task 함수 사용 (함수 내 import 제거)
         tasks = [id2task(task_id.item()) for task_id in batch.tasks]
+
+        # [Critical] MolPO batch shape 검증 (model forward 전)
+        if hasattr(self.args, "train_molpo") and self.args.train_molpo:
+            # attribute access vs dict access 모두 확인 (모델은 dict access 사용)
+            input_ids_attr = batch.input_ids.shape[0] if hasattr(batch, 'input_ids') else -1
+            input_ids_dict = batch['input_ids'].shape[0] if 'input_ids' in batch else -1
+            molpo_labels_bs = batch.molpo_labels.shape[0] if hasattr(batch, 'molpo_labels') else -1
+
+            # [중요] dict access와 attribute access가 다른 값을 반환하는지 확인
+            if input_ids_attr != input_ids_dict:
+                raise ValueError(
+                    f"[CRITICAL] batch.input_ids.shape[0]={input_ids_attr} != "
+                    f"batch['input_ids'].shape[0]={input_ids_dict}! "
+                    f"BatchEncoding has inconsistent data. Model uses dict access."
+                )
+
+            if self.debug:
+                print(f"[MolPO Batch Debug] step={batch_idx}, "
+                      f"input_ids(attr)={batch.input_ids.shape}, "
+                      f"input_ids(dict)={batch['input_ids'].shape}, "
+                      f"molpo_labels={batch.molpo_labels.shape}")
+
+            # input_ids와 molpo_labels의 batch size가 다르면 에러 발생 전에 경고
+            if input_ids_dict != molpo_labels_bs:
+                raise ValueError(
+                    f"[MolPO Batch Shape Mismatch BEFORE model forward] step={batch_idx}: "
+                    f"batch['input_ids'].shape[0]={input_ids_dict} != molpo_labels.shape[0]={molpo_labels_bs}. "
+                    f"This is a DataLoader/collate issue. Check data_utils.py collate function."
+                )
 
         outputs = self.blip2model(batch)
         
@@ -756,43 +930,62 @@ class Blip2Stage3(pl.LightningModule):
                 if valid_len == 0:
                     if self.debug:
                         print(f"[WARNING] Task {t} has NO valid labels (all -100). This causes NaN instance loss.")
-                if hasattr(self.args, "train_molpo") and self.args.train_molpo:
-                    compute_loss_context_manager = torch.amp.autocast
-                    len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
-                    tasks = tasks[:len_tuple]
 
-                    with compute_loss_context_manager(device_type="cuda"):
-                        # outputs가 dict인 경우 instance_loss 가져오기
-                        inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
-                        
-                        loss, metrics = self.get_total_molpo_loss(
-                            logits=logits,
-                            labels=batch.labels,
-                            molpo_labels=batch.molpo_labels,
-                            instance_loss=inst_loss,
-                            tasks=tasks,
-                            is_train=True,
-                            molpo_batch_division=self.args.molpo_batch_division,
-                            config=self.args
-                        )
-                    outputs.update(metrics)
+        # [FIX] MolPO 처리는 for 루프 바깥에서 수행 (모든 task에 적용)
+        if hasattr(self.args, "train_molpo") and self.args.train_molpo:
+            compute_loss_context_manager = torch.amp.autocast
+            len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
+            # [FIX] 원본 tasks를 수정하지 않고 별도 변수 사용
+            molpo_tasks = tasks[:len_tuple]
 
-                    if "graph_avg_norm" in outputs:
-                        graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
-                        for k in graph_keys:
-                            avg_norm = outputs.pop(k)
-                            if self.args.molpo_batch_division == 2:
-                                chosen_avg_norm = avg_norm[:len_tuple]
-                                reject_avg_norm = avg_norm[len_tuple:]
-                            elif self.args.molpo_batch_division == 3:
-                                sft_avg_norm = avg_norm[:len_tuple]
-                                chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
-                                reject_avg_norm = avg_norm[2 * len_tuple :]
+            with compute_loss_context_manager(device_type="cuda"):
+                # outputs가 dict인 경우 instance_loss 가져오기
+                inst_loss = outputs.get("instance_loss", None) if isinstance(outputs, dict) else None
 
-                                outputs[f"{k}/sft"] = sft_avg_norm
+                # [Debug] Shape 확인
+                if self.debug and inst_loss is not None:
+                    print(f"[MolPO Debug] inst_loss.shape={inst_loss.shape}, "
+                          f"batch.molpo_labels.shape={batch.molpo_labels.shape}, "
+                          f"batch.labels.shape={batch.labels.shape}, "
+                          f"batch.input_ids.shape={batch.input_ids.shape if hasattr(batch, 'input_ids') else 'N/A'}")
 
-                            outputs[f"{k}/chosen"] = chosen_avg_norm
-                            outputs[f"{k}/reject"] = reject_avg_norm
+                loss, metrics = self.get_total_molpo_loss(
+                    logits=logits,
+                    labels=batch.labels,
+                    molpo_labels=batch.molpo_labels,
+                    instance_loss=inst_loss,
+                    tasks=molpo_tasks,  # [FIX] molpo_tasks 사용
+                    is_train=True,
+                    molpo_batch_division=self.args.molpo_batch_division,
+                    config=self.args
+                )
+            outputs.update(metrics)
+
+            # [DEBUG] MolPO metrics 확인 (config의 debug=True이고 RANK=0일 때만 출력)
+            rank = self.global_rank if hasattr(self, 'global_rank') else 0
+            if self.args.debug and rank == 0 and any("chebi-20-mol2text" in str(t) for t in tasks):
+                print(f"\n[DEBUG-MolPO] Step {self.global_step}, RANK=0: chebi-20-mol2text in batch")
+                for key in ['logps/chosen', 'logps/rejected', 'rewards/chosen', 'rewards/rejected', 'rewards/margins']:
+                    if key in outputs:
+                        v = outputs[key]
+                        print(f"  {key}: shape={v.shape}, mean={v.mean().item():.4f}")
+
+            if "graph_avg_norm" in outputs:
+                graph_keys = ["graph_avg_norm", "moltoken_avg_norm"]
+                for k in graph_keys:
+                    avg_norm = outputs.pop(k)
+                    if self.args.molpo_batch_division == 2:
+                        chosen_avg_norm = avg_norm[:len_tuple]
+                        reject_avg_norm = avg_norm[len_tuple:]
+                    elif self.args.molpo_batch_division == 3:
+                        sft_avg_norm = avg_norm[:len_tuple]
+                        chosen_avg_norm = avg_norm[len_tuple : 2 * len_tuple]
+                        reject_avg_norm = avg_norm[2 * len_tuple :]
+
+                        outputs[f"{k}/sft"] = sft_avg_norm
+
+                    outputs[f"{k}/chosen"] = chosen_avg_norm
+                    outputs[f"{k}/reject"] = reject_avg_norm
 
         # 5개 LR 그룹 모두 로깅
         self._log_all_learning_rates()
@@ -855,6 +1048,11 @@ class Blip2Stage3(pl.LightningModule):
 
         if not hasattr(self, "task_specific_outputs"):
             self.task_specific_outputs = {}
+
+        # [DEBUG] task_specific_logging 호출 여부 확인 - 조건 단순화
+        if self.global_step < 20:
+            print(f"\n[DEBUG-ENTRY-early] Step {self.global_step}: calling task_specific_logging, outputs={list(outputs.keys())}", flush=True)
+
         self.task_specific_logging(
             outputs=outputs,
             tasks=tasks,
@@ -881,7 +1079,121 @@ class Blip2Stage3(pl.LightningModule):
 
         # [Fix 2.3] Training sample token-level logging
         if self.global_step % self.trainer.log_every_n_steps == 0:
+            outputs["logits"] = logits  # Restore logits for _log_sample_predictions
             self._log_sample_predictions(batch, outputs, tasks, batch_idx, mode="train")
+
+        # ================================================================
+        # [DEBUG] MolPO 계산 검증
+        # ================================================================
+        if hasattr(self.args, 'train_molpo') and self.args.train_molpo and hasattr(self.args, 'debug') and self.args.debug:
+            # Rank 0에서만 출력 (DDP 환경)
+            rank = self.global_rank if hasattr(self, 'global_rank') else 0
+            if rank == 0:
+                # 100 step마다 상세 로깅
+                if self.global_step % 100 == 0:
+                    try:
+                        len_tuple = batch.labels.shape[0] // self.args.molpo_batch_division
+                        batch_size = len_tuple
+
+                        print(f"\n{'='*80}")
+                        print(f"[MolPO Validation] Step {self.global_step}")
+                        print(f"{'='*80}")
+
+                        # 1. 보상 통계
+                        if "rewards/chosen" in outputs and "rewards/rejected" in outputs:
+                            chosen_rewards_mean = outputs["rewards/chosen"][:batch_size].mean().item()
+                            chosen_rewards_std = outputs["rewards/chosen"][:batch_size].std().item()
+                            rejected_rewards_mean = outputs["rewards/rejected"][:batch_size].mean().item()
+                            rejected_rewards_std = outputs["rewards/rejected"][:batch_size].std().item()
+
+                            print(f"\n[1] Reward Statistics:")
+                            print(f"  Chosen:   μ={chosen_rewards_mean:+.4f}, σ={chosen_rewards_std:.4f}")
+                            print(f"  Rejected: μ={rejected_rewards_mean:+.4f}, σ={rejected_rewards_std:.4f}")
+
+                            # 2. Margin 통계
+                            if "rewards/margins" in outputs:
+                                margin_mean = outputs["rewards/margins"][:batch_size].mean().item()
+                                margin_std = outputs["rewards/margins"][:batch_size].std().item()
+                                margin_min = outputs["rewards/margins"][:batch_size].min().item()
+                                margin_max = outputs["rewards/margins"][:batch_size].max().item()
+
+                                print(f"\n[2] Margin Statistics (r_w - r_ℓ):")
+                                print(f"  Mean: {margin_mean:+.4f}")
+                                print(f"  Std:  {margin_std:.4f}")
+                                print(f"  Range: [{margin_min:+.4f}, {margin_max:+.4f}]")
+
+                                # 3. Preference Accuracy
+                                if "rewards/accuracies" in outputs:
+                                    accuracy = outputs["rewards/accuracies"][:batch_size].mean().item()
+                                    print(f"\n[3] Preference Accuracy (r_w > r_ℓ): {accuracy:.2%}")
+
+                                    if accuracy < 0.5:
+                                        print(f"  ⚠️  WARNING: Accuracy < 50%!")
+                                        print(f"  → Chosen reward가 Rejected보다 낮은 경우 발생")
+                                        print(f"  → 그래프 섭동이 너무 약하거나, 모델이 그래프를 무시하는 중")
+
+                        # 4. Task-Adaptive Margin
+                        if hasattr(self, 'task_specific_chosen_reward') and len(self.task_specific_chosen_reward) > 0:
+                            print(f"\n[4] Task-Adaptive Margins (γ_i = λ_margin × |E[r_w]|):")
+
+                            # molpo_lambda 확인
+                            molpo_lambda = self.args.molpo_lambda if hasattr(self.args, 'molpo_lambda') else 0.5
+
+                            for task, avg_reward in list(self.task_specific_chosen_reward.items())[:5]:
+                                margin = molpo_lambda * abs(avg_reward)
+                                print(f"  {task:40s}: γ={margin:+.4f} (E[r_w]={avg_reward:+.4f})")
+
+                            if len(self.task_specific_chosen_reward) > 5:
+                                print(f"  ... and {len(self.task_specific_chosen_reward) - 5} more tasks")
+
+                        # 5. Loss 분해
+                        if "sft_loss" in outputs and "molpo_loss" in outputs:
+                            sft_loss_val = outputs["sft_loss"].item() if isinstance(outputs["sft_loss"], torch.Tensor) else outputs["sft_loss"]
+                            molpo_loss_val = outputs["molpo_loss"].mean().item() if isinstance(outputs["molpo_loss"], torch.Tensor) else outputs["molpo_loss"]
+                            total_loss_val = loss.item()
+
+                            print(f"\n[5] Loss Breakdown:")
+                            print(f"  SFT Loss:   {sft_loss_val:.4f} (weight: {self.args.sft_weight})")
+                            print(f"  MolPO Loss: {molpo_loss_val:.4f} (weight: {self.args.molpo_weight})")
+                            print(f"  Total Loss: {total_loss_val:.4f}")
+
+                            # 6. 이상 상태 감지
+                            print(f"\n[6] Sanity Checks:")
+                            checks_passed = True
+
+                            # Check 1: Margin이 대부분 양수인지
+                            if "rewards/margins" in outputs:
+                                positive_margin_ratio = (outputs["rewards/margins"][:batch_size] > 0).float().mean().item()
+                                if positive_margin_ratio < 0.7:
+                                    print(f"  ❌ Positive Margin Ratio: {positive_margin_ratio:.2%} (expected > 70%)")
+                                    checks_passed = False
+                                else:
+                                    print(f"  ✅ Positive Margin Ratio: {positive_margin_ratio:.2%}")
+
+                            # Check 2: Reward 범위가 합리적인지
+                            if "rewards/chosen" in outputs:
+                                chosen_mean = outputs["rewards/chosen"][:batch_size].mean().item()
+                                if chosen_mean < -10.0 or chosen_mean > 0.0:
+                                    print(f"  ❌ Chosen Reward Mean: {chosen_mean:.4f} (expected -5.0 ~ 0.0)")
+                                    checks_passed = False
+                                else:
+                                    print(f"  ✅ Chosen Reward Mean: {chosen_mean:.4f}")
+
+                            # Check 3: Loss가 NaN/Inf가 아닌지
+                            if torch.isnan(loss) or torch.isinf(loss):
+                                print(f"  ❌ Total Loss: NaN or Inf detected!")
+                                checks_passed = False
+                            else:
+                                print(f"  ✅ Total Loss: {total_loss_val:.4f}")
+
+                            if checks_passed:
+                                print(f"\n✅ All sanity checks passed!")
+                            else:
+                                print(f"\n⚠️  Some sanity checks failed. Review the warnings above.")
+
+                        print(f"{'='*80}\n")
+                    except Exception as e:
+                        print(f"[Warning] MolPO validation logging failed: {e}")
 
         return loss
 
@@ -1651,6 +1963,16 @@ class Blip2Stage3(pl.LightningModule):
                 if isinstance(v, torch.Tensor) and v.shape != torch.Size([])
             }
 
+            # [DEBUG] 수집할 metrics 확인 - 조건 단순화
+            if mode == "train" and self.global_step % 100 == 0:
+                print(f"\n[DEBUG-task_specific-100] Step {self.global_step}: new_outputs keys={list(new_outputs.keys())}, tasks={tasks}", flush=True)
+                for k, v in new_outputs.items():
+                    print(f"  {k}: shape={v.shape}", flush=True)
+
+            # [DEBUG] 처음 20 step에서 매 step마다 outputs 확인
+            if mode == "train" and self.global_step < 20:
+                print(f"[VERBOSE-task_specific-early] Step {self.global_step}: outputs keys={list(outputs.keys())}, new_outputs keys={list(new_outputs.keys())}", flush=True)
+
             for task in tasks:
                 if task not in task_specific_outputs:
                     task_specific_outputs[task] = {}
@@ -1660,6 +1982,11 @@ class Blip2Stage3(pl.LightningModule):
 
             for metric, v in new_outputs.items():
 
+                # [DEBUG] Shape mismatch 확인
+                if self.args.debug and mode == "train" and rank == 0 and self.global_step % 10 == 0:
+                    if v.shape[0] != len(tasks):
+                        print(f"  ⚠️  MISMATCH: {metric} shape[0]={v.shape[0]}, tasks len={len(tasks)}")
+
                 for i in range(v.shape[0]):
                     if torch.isnan(v[i]):
                         if i < 5:  # 로그 폭주 방지용
@@ -1668,16 +1995,30 @@ class Blip2Stage3(pl.LightningModule):
                         continue
 
                     task = tasks[i]
+                    if metric not in task_specific_outputs[task]:
+                        # [DEBUG] 첫 추가 시 로깅
+                        if self.args.debug and mode == "train" and rank == 0:
+                            print(f"  [NEW] Adding {metric} to {task}")
+                        task_specific_outputs[task][metric] = []
                     task_specific_outputs[task][metric].append(v[i].item())
 
                     if num_moving_samples is not None and (
-                        len(self.task_specific_outputs[task][metric])
+                        len(task_specific_outputs[task][metric])
                         > num_moving_samples
                     ):
                         task_specific_outputs[task][metric].pop(0)
 
         if mode == "train" or epoch_end:
             for task, metric_dict in task_specific_outputs.items():
+                # [DEBUG] task별 로깅 확인 - 조건 단순화
+                if task == "chebi-20-mol2text" and mode == "train" and self.global_step < 50:
+                    print(f"\n[DEBUG-LOG-early] Step {self.global_step}: Logging for {task}, metrics={list(metric_dict.keys())}", flush=True)
+                    for m, v in metric_dict.items():
+                        if v:
+                            print(f"  {m}: len={len(v)}, avg={sum(v)/len(v):.4f}", flush=True)
+                        else:
+                            print(f"  {m}: EMPTY LIST (not logged)", flush=True)
+
                 for metric, vs in metric_dict.items():
                     if vs:
                         self.log(
@@ -1685,7 +2026,13 @@ class Blip2Stage3(pl.LightningModule):
                             sum(vs) / len(vs),
                             batch_size=len(vs),
                             sync_dist=False,
+                            on_step=True,
+                            on_epoch=False,
+                            logger=True,
                         )
+                    elif mode == "train" and task == "chebi-20-mol2text" and self.global_step < 50:
+                        # [DEBUG] 왜 empty인지 확인
+                        print(f"  ❌ {metric} is empty, skipping logging", flush=True)
 
     def _fix_modules_to_save_gradients(self):
         """
@@ -2156,9 +2503,17 @@ class Blip2Stage3(pl.LightningModule):
         # - 각 후보(True/False)의 log-likelihood를 계산하여 argmax로 예측
         # ===========================================================================
 
-        # 샘플별 분류
-        cls_indices = [i for i, t in enumerate(task_names) if t in CLASSIFICATION_BENCHMARKS]
-        gen_indices = [i for i, t in enumerate(task_names) if t not in CLASSIFICATION_BENCHMARKS]
+        # [FIX] MolPO eval 모드에서는 첫 번째 반만 사용 (chosen samples only)
+        # rejected 샘플은 손상된 데이터이므로 평가에서 제외
+        if self.args.eval_molpo:
+            eval_batch_size = len(task_names) // self.args.molpo_batch_division
+            task_names_for_eval = task_names[:eval_batch_size]
+        else:
+            task_names_for_eval = task_names
+
+        # 샘플별 분류 (eval용 task_names만 사용)
+        cls_indices = [i for i, t in enumerate(task_names_for_eval) if t in CLASSIFICATION_BENCHMARKS]
+        gen_indices = [i for i, t in enumerate(task_names_for_eval) if t not in CLASSIFICATION_BENCHMARKS]
 
         is_all_classification = len(gen_indices) == 0
         is_all_generation = len(cls_indices) == 0
@@ -2221,6 +2576,18 @@ class Blip2Stage3(pl.LightningModule):
                 self.strategy_list_logs["likelihood"]["probs"].extend(cls_probs_list)
                 self.strategy_list_logs["likelihood"]["prompts"].extend(cls_prompts)
                 self.strategy_list_logs["likelihood"]["input_mol_strings"].extend(cls_input_mol_strings)
+
+                # [DEADLOCK FIX] Save to JSONL immediately
+                self._save_batch_predictions_to_file(
+                    strategy="likelihood",
+                    predictions=cls_predictions,
+                    targets=cls_targets,
+                    tasks=cls_task_names,
+                    prompts=cls_prompts,
+                    input_mol_strings=cls_input_mol_strings,
+                    probs=cls_probs_list,
+                    mode=mode,
+                )
 
             # -----------------------------------------------------------------------
             # [혼합 배치] Generation 샘플 처리 (실제 Generation 방식)
@@ -2335,6 +2702,18 @@ class Blip2Stage3(pl.LightningModule):
                     self.strategy_list_logs[strategy]["probs"].extend(gen_probs_list)
                     self.strategy_list_logs[strategy]["prompts"].extend(gen_prompts)
                     self.strategy_list_logs[strategy]["input_mol_strings"].extend(gen_input_mol_strings)
+
+                    # [DEADLOCK FIX] Save to JSONL immediately
+                    self._save_batch_predictions_to_file(
+                        strategy=strategy,
+                        predictions=gen_predictions,
+                        targets=gen_targets,
+                        tasks=gen_task_names,
+                        prompts=gen_prompts,
+                        input_mol_strings=gen_input_mol_strings,
+                        probs=gen_probs_list,
+                        mode=mode,
+                    )
 
             # 혼합 배치 처리 완료 - 나머지 로직 건너뛰기
             return
@@ -2694,9 +3073,15 @@ class Blip2Stage3(pl.LightningModule):
 
             # [핵심] Metrics 내부의 모든 텐서를 스칼라(Python float)로 변환
             # 이렇게 해야 GPU 그래프가 끊기고 메모리가 해제됩니다.
+            # [FIX] 배치 차원 텐서의 경우 mean()을 먼저 취한 후 .item() 호출
             for k, v in raw_metrics.items():
                 if isinstance(v, torch.Tensor):
-                    metrics[k] = v.item()
+                    if v.numel() == 1:
+                        # 스칼라 텐서: 직접 .item() 호출
+                        metrics[k] = v.item()
+                    else:
+                        # 배치 차원 텐서: 평균을 취한 후 .item() 호출
+                        metrics[k] = v.mean().item()
                 else:
                     metrics[k] = v
 
@@ -2885,6 +3270,18 @@ class Blip2Stage3(pl.LightningModule):
             self.strategy_list_logs["likelihood"]["prompts"].extend(prompts)
             self.strategy_list_logs["likelihood"]["input_mol_strings"].extend(input_mol_strings)
 
+            # [DEADLOCK FIX] Save to JSONL immediately
+            self._save_batch_predictions_to_file(
+                strategy="likelihood",
+                predictions=predictions_to_log,
+                targets=targets,
+                tasks=tasks,
+                prompts=prompts,
+                input_mol_strings=input_mol_strings,
+                probs=probs_list,
+                mode=mode,
+            )
+
             # 기존 호환성을 위한 list_logs 업데이트
             self.list_logs = self.strategy_list_logs["likelihood"]
         else:
@@ -2909,6 +3306,18 @@ class Blip2Stage3(pl.LightningModule):
                 self.strategy_list_logs[strategy]["prompts"].extend(prompts)
                 self.strategy_list_logs[strategy]["input_mol_strings"].extend(input_mol_strings)
 
+                # [DEADLOCK FIX] Save to JSONL immediately
+                self._save_batch_predictions_to_file(
+                    strategy=strategy,
+                    predictions=strategy_predictions,
+                    targets=targets,
+                    tasks=tasks,
+                    prompts=prompts,
+                    input_mol_strings=input_mol_strings,
+                    probs=probs_list,
+                    mode=mode,
+                )
+
             # 기존 호환성을 위한 list_logs 업데이트 (첫 번째 전략 참조)
             self.list_logs = self.strategy_list_logs[self.active_val_strategies[0]]
 
@@ -2921,7 +3330,7 @@ class Blip2Stage3(pl.LightningModule):
         # - 각 step의 loss에 importance weighting (1/p) 적용
         # - val_total_loss와 유사하지만 전체 trajectory를 deterministic하게 시뮬레이션
         # LLaDA Classification 최적화 경로에서는 generation이 없으므로 건너뜀
-        if is_llada and not skip_generation_loop:
+        if is_llada and not skip_generation_loop and self.args.cal_average_generation_loss:
             with torch.no_grad():
                 # 각 전략별로 조건을 반영한 Teacher Forcing Loss 계산
                 # Config 설정: val_strategies: ["random", "semi_ar"], remasking_strategy: "low_confidence"
@@ -3006,7 +3415,7 @@ class Blip2Stage3(pl.LightningModule):
                 # LLaDA Classification 최적화 경로: forward_loss 사용
                 # Generation을 건너뛰었으므로 forward_loss를 val_total_loss로 로깅
                 if forward_loss is not None:
-                    self.log("val_total_loss", forward_loss.item(), sync_dist=True, prog_bar=True, logger=True)
+                    self.log("val_total_loss", forward_loss.item(), sync_dist=False, prog_bar=True, logger=True)
             elif hasattr(self, 'strategy_total_gen_loss'):
                 # 일반 LLaDA 경로: 전략별 gen_loss 단순 평균
                 valid_gen_losses = []
@@ -3018,7 +3427,7 @@ class Blip2Stage3(pl.LightningModule):
                 if valid_gen_losses:
                     # 전략별 평균 gen_loss의 단순 평균
                     avg_gen_loss = sum(valid_gen_losses) / len(valid_gen_losses)
-                    self.log("val_total_loss", avg_gen_loss, sync_dist=True, prog_bar=True, logger=True)
+                    self.log("val_total_loss", avg_gen_loss, sync_dist=False, prog_bar=True, logger=True)
         
         # [강제 메모리 정리]
         import gc
@@ -3189,8 +3598,56 @@ class Blip2Stage3(pl.LightningModule):
             # likelihood 전략도 추가 (덮어쓰기가 아닌 추가!)
             strategies_to_evaluate.append("likelihood")
 
+        # ======================================================================
+        # [DEADLOCK FIX] Rank 0 Only Metric Calculation
+        # ======================================================================
+        if self.global_rank != 0:
+            # Non-rank-0 GPUs: Clear in-memory predictions and return immediately
+            if self.debug:
+                print(f"🔹 Rank {self.global_rank}: Clearing in-memory predictions and exiting evaluation")
+
+            # Clear in-memory accumulations (already saved to JSONL)
+            for strategy in self.strategy_list_logs:
+                self.strategy_list_logs[strategy] = {
+                    "predictions": [],
+                    "targets": [],
+                    "tasks": [],
+                    "probs": [],
+                    "prompts": [],
+                    "input_mol_strings": [],
+                }
+
+            return  # Early exit for non-rank-0 GPUs
+
+        # ======================================================================
+        # Rank 0 Only: Load JSONL and Calculate Metrics
+        # ======================================================================
+        if self.debug:
+            print(f"📊 Rank 0: Loading JSONL files and calculating metrics")
+
+        # Pre-load all strategy data from JSONL files
+        loaded_strategy_data = {}
         for strategy in strategies_to_evaluate:
-            strategy_logs = self.strategy_list_logs[strategy]
+            if self.debug:
+                print(f"\n{'='*70}")
+                print(f"📊 [Strategy: {strategy}] Loading JSONL files...")
+                print(f"{'='*70}")
+
+            strategy_logs = self._load_predictions_from_files(strategy=strategy, mode=mode)
+
+            if len(strategy_logs["predictions"]) == 0:
+                if self.debug:
+                    print(f"⚠️  No predictions found for strategy '{strategy}', skipping")
+                continue
+
+            loaded_strategy_data[strategy] = strategy_logs
+
+        # Evaluate each strategy
+        for strategy in strategies_to_evaluate:
+            if strategy not in loaded_strategy_data:
+                continue
+
+            strategy_logs = loaded_strategy_data[strategy]
             strategy_suffix = f"_{strategy}" if strategy != "default" else ""
 
             if self.debug:
@@ -3209,7 +3666,7 @@ class Blip2Stage3(pl.LightningModule):
                 tokenizer=self.blip2model.llm_tokenizer,
                 total_task_subtask_pairs=self.task_subtask_name_pairs,
             )
-            
+
             all_strategy_results[strategy] = {
                 "evaluation_results": evaluation_results,
                 "failed_cases": failed_cases,
@@ -3223,7 +3680,7 @@ class Blip2Stage3(pl.LightningModule):
                 prompts=strategy_logs["prompts"],
                 probs=strategy_logs["probs"],
                 input_mol_strings=strategy_logs["input_mol_strings"],
-                filename=f"{self.args.mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-outputs.json",
+                filename=f"{mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-outputs.json",
             )
 
             self.save_predictions(
@@ -3232,7 +3689,7 @@ class Blip2Stage3(pl.LightningModule):
                 tasks=failed_cases["tasks"],
                 prompts=failed_cases["prompts"],
                 input_mol_strings=failed_cases["input_mol_strings"],
-                filename=f"{self.args.mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-failed_cases.json",
+                filename=f"{mode}-step{step_for_filename}-{self.global_rank}{strategy_suffix}-failed_cases.json",
             )
 
         # evaluate classification tasks - prepare common structures
@@ -3348,49 +3805,18 @@ class Blip2Stage3(pl.LightningModule):
         flattened_metric_keys = [flattened_metric_keys[idx] for idx in sorted_idx]
         flattened_metric_tensors = flattened_metric_tensors[sorted_idx]
 
-        if self.trainer.world_size > 1:
-            if self.debug:
-                print("gather the metrics across devices")
-            raw_gathered_flattened_metric_tensors = self.all_gather(
-                flattened_metric_tensors
-            )  # [world_size, num_metrics, metric_value * per_device_instance_count, per_device_instance_count]
+        # [DEADLOCK FIX] No all_gather needed - rank 0 already has all data from JSONL
+        if self.debug:
+            print("📊 Rank 0: Using JSONL-aggregated data (no all_gather needed)")
 
-            # get rid of nan values (nan )
-            gathered_flattened_metric_tensors = torch.where(
-                torch.isnan(raw_gathered_flattened_metric_tensors),
-                torch.zeros_like(raw_gathered_flattened_metric_tensors),
-                raw_gathered_flattened_metric_tensors,
-            )
-            scaled_flattened_metric_tensors = gathered_flattened_metric_tensors[
-                :, :, 0
-            ].sum(dim=0)
+        # Use local tensors directly (they already contain all data from JSONL files)
+        scaled_flattened_metric_tensors = flattened_metric_tensors[:, 0]
+        total_instance_count = flattened_metric_tensors[:, 1]
+        total_instance_count_include_nan = total_instance_count
 
-            # total_instance_count = gathered_flattened_metric_tensors[:, :, 1].sum(dim=0)
-            total_instance_count = torch.where(
-                torch.isnan(gathered_flattened_metric_tensors[:, :, 0]),
-                torch.zeros_like(gathered_flattened_metric_tensors[:, :, 1]),
-                gathered_flattened_metric_tensors[:, :, 1],
-            ).sum(dim=0)
-            total_instance_count_include_nan = gathered_flattened_metric_tensors[
-                :, :, 1
-            ].sum(dim=0)
-
-            # Gather per-strategy classification tensors
-            strategy_uniform_cls_tensors = {}
-            for strategy in strategies_to_evaluate:
-                gathered_cls_tensor = self.all_gather(self.strategy_per_device_cls_tensors[strategy])
-                strategy_uniform_cls_tensors[strategy] = torch.cat(
-                    [cls_tensor for cls_tensor in gathered_cls_tensor], dim=0
-                )
-            # For backward compatibility
-            uniform_cls_tensor = strategy_uniform_cls_tensors[strategies_to_evaluate[0]]
-        else:
-            scaled_flattened_metric_tensors = flattened_metric_tensors[:, 0]
-            total_instance_count = flattened_metric_tensors[:, 1]
-            total_instance_count_include_nan = total_instance_count
-
-            strategy_uniform_cls_tensors = self.strategy_per_device_cls_tensors
-            uniform_cls_tensor = self.per_device_cls_tensor
+        # Classification tensors (already built from JSONL data)
+        strategy_uniform_cls_tensors = self.strategy_per_device_cls_tensors
+        uniform_cls_tensor = self.per_device_cls_tensor
 
         # if total_instance_count is 0, set the metric to null value
         averaged_flattened_metric_tensors = torch.where(
@@ -3752,6 +4178,12 @@ class Blip2Stage3(pl.LightningModule):
         if self.debug:
             print(f"🧹 [Memory Cleanup] GPU cache cleared after validation")
 
+        # [DEADLOCK FIX] Cleanup JSONL files after metrics are calculated
+        self._cleanup_jsonl_files(mode=mode)
+
+        if self.debug:
+            print(f"✅ Rank 0: Evaluation complete, JSONL files cleaned up")
+
     def on_train_epoch_end(self) -> None:
         """Epoch 종료 시 epoch 전체에 대한 validation metric summary 로깅"""
         if not hasattr(self, 'epoch_val_metrics') or not self.epoch_val_metrics:
@@ -4045,17 +4477,64 @@ def molpo_loss(
         The losses tensor contains the molpo loss for each example in the batch.
         The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
     """
+    # Ensure all tensors are on the same device
+    device = chosen_rewards.device
+    chosen_loss_mask = chosen_loss_mask.to(device)
+    rejected_loss_mask = rejected_loss_mask.to(device)
+    if avg_chosen_rewards is not None:
+        avg_chosen_rewards = avg_chosen_rewards.to(device)
+
+    # Validate shapes match
+    batch_size = chosen_rewards.shape[0]
+    mask_batch_size = chosen_loss_mask.shape[0]
+    if batch_size != mask_batch_size:
+        raise ValueError(
+            f"Shape mismatch in molpo_loss: chosen_rewards has batch_size={batch_size}, "
+            f"but chosen_loss_mask has batch_size={mask_batch_size}. "
+            f"Check molpo_batch_division and data preprocessing."
+        )
+
     # calculate molpo loss
     margin = chosen_rewards - rejected_rewards
     if margin_clip_scale > 0:
-        max_clip = margin_clip_scale * torch.abs(avg_chosen_rewards)
-        min_clip = -torch.abs(margin)
-        margin = torch.clamp(margin, min=min_clip, max=max_clip)
+        max_clip = (margin_clip_scale * torch.abs(chosen_rewards)).to(margin.device)
+        margin = torch.clamp(margin, max=max_clip)
 
-    if molpo_lambda is not None or isinstance(molpo_lambda, str):
-        assert molpo_lambda <= 0, f"molpo_lambda: {molpo_lambda} should be <= 0.0."
-        logits = margin - molpo_lambda * avg_chosen_rewards
+    # ================================================================
+    # [FIX] Margin Clipping과 Task-Adaptive Margin 계산
+    #
+    # 논문 공식: L = -log σ(min(r_w - r_ℓ, λ_clip|r_w|) - γ_i)
+    #
+    # Step 1: Margin Clipping (개별 샘플 기반)
+    #   max_clip = λ_clip × |r_w|  ← 개별 chosen_rewards 사용
+    #   clipped_margin = min(margin, max_clip)
+    #
+    # Step 2: Task-Adaptive Margin (EMA 기반)
+    #   γ_i = λ_m × |E[r_w]|  ← exponential moving average로 추정
+    #
+    # λ_clip: clipping 계수 (논문 권장값 1.0, 개별 샘플 사용)
+    # λ_m: margin 조정 계수 (논문 권장값 0.5, EMA 사용)
+    # ================================================================
+
+    if molpo_lambda is not None and not isinstance(molpo_lambda, str):
+        # molpo_lambda는 이제 양수여야 함 (λ_margin)
+        # 논문 권장: 0.5
+        if molpo_lambda < 0:
+            raise ValueError(
+                f"molpo_lambda should be >= 0.0 (논문 권장: 0.5), "
+                f"got {molpo_lambda}. "
+                f"config 파일에서 molpo_lambda를 양수로 변경하세요."
+            )
+
+        # Task-adaptive margin 계산 (EMA 사용)
+        # γ_i = λ_m × |E[r_w]|  (E[r_w]는 exponential moving average)
+        task_margins = molpo_lambda * torch.abs(avg_chosen_rewards)
+
+        # Logits 계산: clipped_margin - γ_i
+        logits = margin - task_margins
+
     else:
+        # Fallback: gamma_beta_ratio 사용 (이전 방식)
         logits = margin - beta * gamma_beta_ratio
     if loss_type == "sigmoid":
         losses = -F.logsigmoid(beta * logits)
@@ -4070,7 +4549,12 @@ def molpo_loss(
         True,
         False,
     )
-    loss = losses[loss_mask].mean()
+
+    # Handle empty batch or shape mismatch
+    if losses.numel() == 0 or loss_mask.sum() == 0:
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+    else:
+        loss = losses[loss_mask].mean()
 
     return loss, losses
 
@@ -4081,6 +4565,10 @@ def anchor_loss(
     rejected_lambda: float,
     loss_type: str = "sigmoid",
 ):
+    # Ensure tensors are on the same device
+    device = rejected_rewards.device
+    avg_chosen_rewards = avg_chosen_rewards.to(device)
+
     assert (
         rejected_lambda >= 0.0
     ), f"rejected_lambda: {rejected_lambda} should be >= 0.0."
@@ -4236,9 +4724,55 @@ def concatenated_forward(
         # Diffusion 모델은 get_batch_logps(AR 방식)를 수행하지 않고 instance_loss를 바로 사용
         if instance_loss is None:
             raise ValueError("LLaDA requires instance_loss for MolPO in concatenated_forward().")
-        
-        # Loss는 낮을수록 좋으므로, Reward 관점에서는 (-)를 붙여야 함
-        all_logps = -instance_loss 
+
+        # ================================================================
+        # [FIX] Instance Loss 정규화
+        #
+        # 논문 공식: r = (β / |y|) × Σ log π(y_t | ...)
+        #
+        # instance_loss는 이미 시퀀스 평균이지만, padding 토큰을 포함한
+        # 전체 길이로 나눈 값입니다. 논문에서는 유효 토큰 수만 고려해야 하므로
+        # 재정규화가 필요합니다.
+        #
+        # Steps:
+        # 1. 유효 토큰 수 계산 (label != -100인 토큰)
+        # 2. instance_loss를 유효 토큰 수로 재정규화
+        # 3. 음수 변환 (손실 → 보상)
+        # ================================================================
+
+        # Step 1: 유효 토큰 수 계산
+        # all_labels: [batch_size, seq_len]
+        valid_token_mask = (all_labels != label_pad_token_id)  # [batch_size, seq_len]
+        token_counts = valid_token_mask.sum(dim=1).float()     # [batch_size]
+        token_counts = torch.clamp(token_counts, min=1.0)      # 0 방지
+
+        # Step 2: 재정규화
+        # instance_loss: [batch_size] - 이미 평균값
+        # 하지만 CrossEntropyLoss는 전체 시퀀스 길이로 평균을 냄
+        # 우리는 유효 토큰만으로 평균을 내야 함
+
+        # 전체 시퀀스 길이 (padding 포함)
+        total_seq_len = all_labels.shape[1]
+
+        # instance_loss를 합으로 복원
+        total_loss = instance_loss * total_seq_len
+
+        # 유효 토큰 수로 재평균
+        normalized_loss_per_token = total_loss / token_counts  # [batch_size]
+
+        # Step 3: 보상으로 변환 (손실이 낮을수록 보상 높음)
+        all_logps = -normalized_loss_per_token
+
+        # Debug logging (config.debug=True일 때만)
+        if config is not None and hasattr(config, 'debug') and config.debug:
+            try:
+                rank = torch.distributed.get_rank() if torch.distributed.is_available() else 0
+                if rank == 0:
+                    print(f"[LLaDA MolPO] instance_loss: {instance_loss[:3]}")
+                    print(f"[LLaDA MolPO] token_counts: {token_counts[:3]}")
+                    print(f"[LLaDA MolPO] all_logps (rewards): {all_logps[:3]}")
+            except:
+                pass  # Distributed 환경이 아닌 경우 
     else:
         # [Autoregressive Path]
         # 기존 모델들은 Log Probability 계산 (Shift 연산 포함)

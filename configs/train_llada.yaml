@@ -1,5 +1,5 @@
 defaults:
-  - data: multi_task_stage2
+  - data: multi_task_stage3
   - gnn: gine_tokengt
   - trainer: llada8b
 

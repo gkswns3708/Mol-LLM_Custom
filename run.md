@@ -15,4 +15,13 @@ bash /home/jovyan/CHJ/Mol-LLM_Custom/bashes/Task/stage1_llm_pretraining_total_me
 
 bash /home/jovyan/CHJ/Mol-LLM_Custom/bashes/stage1_llm_pretraining.sh > /home/jovyan/CHJ/log/512_Truncation_chebi_mol2text/train_$(TZ='UTC-9' date +%Y%m%d_%H%M%S).txt
 
+# Stage2 Pretraining
 bash /home/jovyan/CHJ/Mol-LLM_Custom/bashes/stage2_qformer_pretraining.sh > /home/jovyan/CHJ/log/stage2_512_Trucation_240steps/step2_train_240steps_$(TZ='UTC-9' date +%Y%m%d_%H%M%S).txt
+
+# Stage3 Finetuning
+bash /home/jovyan/CHJ/Mol-LLM_Custom/bashes/stage3_mol-llm_custom.sh > /home/jovyan/CHJ/log/stage3_512_Truncation_molpo-replace-0.3_v3_ccc_replacement_all/step3_train_240steps_cccreplacement_$(TZ='UTC-9' date +%Y%m%d_%H%M%S).txt 2>&1
+
+# Stage3 Test
+bash /home/jovyan/CHJ/Mol-LLM_Custom/bashes/stage3_mol-llm_custom_test.sh 2>&1 | tee /home/jovyan/CHJ/log/stage3_Test_512_Truncation_molpo-replace-0.3_v3_ccc_replacement_all/test_log_$(TZ='UTC-9' date +%Y%m%d_%H%M%S).txt
+
+bash /home/jovyan/CHJ/Mol-LLM_Custom/bashes/stage3_mol-llm_custom_test.sh 2>&1 | tee /home/jovyan/CHJ/log/stage3_512_Truncation_chebi-20-mol2text/test_128_log_$(TZ='UTC-9' date +%Y%m%d_%H%M%S).txt

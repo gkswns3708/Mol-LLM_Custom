@@ -31,6 +31,9 @@ from data_utils import (
 # -----------------------------------------------------------------------------
 # [Helper Functions]
 # -----------------------------------------------------------------------------
+def clean_selfies(selfies_str):
+    """SELFIES에서 세미콜론을 점으로 변환"""
+    return re.sub(r"\s*;\s*", ".", str(selfies_str))
 
 def wrap_label(label, task):
     # (기존 코드와 동일 - 생략 가능하지만 전체 코드 제공을 위해 포함)
@@ -311,12 +314,14 @@ class MolInstructionDatset(Dataset):
                 if ">>" in input_:
                     list_selfies = input_.split(">>")
                     input_mol_string = input_.replace(">>", f"{added_tokens.SELFIES[1]}{added_tokens.REACTION_DIRECTION[0]}{added_tokens.SELFIES[0]}")
-                    list_smiles = [sf.decoder(s.strip()) for s in list_selfies]
+                    # list_smiles = [sf.decoder(s.strip()) for s in list_selfies]
+                    list_smiles = [sf.decoder(clean_selfies(s.strip())) for s in list_selfies]
                     graph = [smiles2data(s) for s in list_smiles]
                 elif "|>>|" in input_:
                     list_selfies = input_.split("|>>|")
                     input_mol_string = input_
-                    list_smiles = [sf.decoder(s.strip()) for s in list_selfies]
+                    # list_smiles = [sf.decoder(s.strip()) for s in list_selfies]
+                    list_smiles = [sf.decoder(clean_selfies(s.strip())) for s in list_selfies]
                     graph = [smiles2data(s) for s in list_smiles]
                 else:
                     raise ValueError(f"Invalid reagent format: {input_}")
@@ -327,13 +332,15 @@ class MolInstructionDatset(Dataset):
         
         elif self.task in CLASSIFICATION_BENCHMARKS:
             input_mol_string = input_
-            smiles = sf.decoder(input_mol_string.strip())
+            # smiles = sf.decoder(input_mol_string.strip())
+            smiles = sf.decoder(clean_selfies(input_mol_string.strip()))
             if smiles is None: raise ValueError(f"SELFIES decoding failed")
             graph = [smiles2data(smiles), smiles2data('CC')]
             
         else: 
             input_mol_string = input_
-            smiles = sf.decoder(input_mol_string.strip())
+            # smiles = sf.decoder(input_mol_string.strip())
+            smiles = sf.decoder(clean_selfies(input_mol_string.strip()))
             if smiles is None: raise ValueError(f"SELFIES decoding failed")
             graph = [smiles2data(smiles), smiles2data('CC')]
             
@@ -421,7 +428,8 @@ class SMolInstructDataset(Dataset):
             input_mol_string = str(raw_input) 
 
             try:
-                smiles = sf.decoder(input_mol_string)
+                # smiles = sf.decoder(input_mol_string)
+                smiles = sf.decoder(clean_selfies(input_mol_string))
                 if smiles is None: 
                     smiles = "CC" 
                 
@@ -444,7 +452,8 @@ class SMolInstructDataset(Dataset):
             instruction = np.random.choice(self.instruction_templates)
             input_mol_string = raw_input
             try:
-                smiles = sf.decoder(input_mol_string)
+                # smiles = sf.decoder(input_mol_string)
+                smiles = sf.decoder(clean_selfies(input_mol_string))
                 if smiles is None: raise ValueError("Decode failed")
                 graph = [smiles2data(smiles), smiles2data('CC')]
             except:
@@ -454,13 +463,15 @@ class SMolInstructDataset(Dataset):
             instance_input = self.data[index]["input"]
             instruction = re.sub(r"\[.*\]", "<INPUT>", instance_input)
             input_mol_string = re.sub(r"\s*;\s*", ".", raw_input)
-            smiles = sf.decoder(input_mol_string)
+            # smiles = sf.decoder(input_mol_string)
+            smiles = sf.decoder(clean_selfies(input_mol_string))
             graph = [smiles2data(smiles), smiles2data('CC')]
             
         elif self.task in MOL2TEXT_BENCHMARKS + CLASSIFICATION_BENCHMARKS + REGRESSION_BENCHMARKS:
             instruction = np.random.choice(self.instruction_templates)
             input_mol_string = re.sub(r"\s*;\s*", ".", raw_input)
-            smiles = sf.decoder(input_mol_string)
+            # smiles = sf.decoder(input_mol_string)
+            smiles = sf.decoder(clean_selfies(input_mol_string))
             graph = [smiles2data(smiles), smiles2data('CC')]
             
         else:

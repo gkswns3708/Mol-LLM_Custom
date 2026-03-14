@@ -126,14 +126,14 @@ original_vocab_size: 126349
 # ============================================
 # [필수] LLaDA 전용 설정
 # ============================================
-remasking_strategy: 'random'  # 'low_confidence' | 'random' | 'none'
-sampling_steps: 16            # ⬅️ Inference 시 사용
+remasking_strategy: 'low_confidence'  # 'low_confidence' | 'random' | 'none'
+sampling_steps: 32            # ⬅️ Inference 시 사용
 
 use_semi_ar: false
 semi_ar_block_size: 32
 semi_ar_steps_per_block: 4
 
-val_strategies: null          # ⬅️ Stage 2: null (기본 전략만 사용)
+val_strategies: ["random", "semi_ar"]     # ⬅️ Stage 2: null (기본 전략만 사용)
 
 # ============================================
 # [필수] 데이터
