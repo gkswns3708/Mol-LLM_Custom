@@ -1,6 +1,6 @@
 raw_data_root: Mol-LLM_Custom/dataset/train_official # 실제 학습 해야하는 경로
+# data_tag: 512_Truncation_chebi-20-mol2text # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
 data_tag: 512_Truncation_molpo-replace-0.3_v3_ccc_replacement_all # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
-# data_tag: 512_Truncation_molpo-replace-0.3 # 중복제거 로직으로 진행됨. 1007개 삭제(check_chebi_dataset.ipynb)
 
 target_benchmarks:
   # ---- used for training (논문 인스트럭션 튜닝 대상) ----

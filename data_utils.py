@@ -569,22 +569,42 @@ class DataCollator(DataCollatorForSeq2Seq):
 
         features["labels"] = labels_ids
         if self.apply_molpo:
-            molpo_labels_ids = labels_ids.clone()
-            for molpo_mask_id in self.tokenizer.molpo_mask_ids:
-                molpo_labels_ids = molpo_labels_ids.masked_fill(
-                    molpo_labels_ids == molpo_mask_id, -100
-                )
-            if hasattr(self.args, "reject_label_mask") and self.args.reject_label_mask:
-                num_chosen = molpo_labels_ids.shape[0] // self.args.molpo_batch_division
-                chosen_molpo_labels_ids = molpo_labels_ids.clone()[:num_chosen]
-                reject_molpo_labels_ids = molpo_labels_ids.clone()[num_chosen:]
+            # ================================================================
+            # [FIX] MolPO Labels 생성
+            #
+            # 논문: 모든 유효 토큰의 로그 확률을 평균하여 보상 계산
+            # 따라서 불필요한 마스킹을 제거합니다.
+            #
+            # 유지해야 할 마스킹:
+            # 1. Prompt 부분 (-100): Response만 loss 계산
+            # 2. Padding 토큰 (-100): 유효 토큰만 고려
+            #
+            # 제거해야 할 마스킹:
+            # 1. molpo_mask_ids: 용도 불명확
+            # 2. reject_label_mask: 논문과 불일치
+            # ================================================================
 
-                chosen_molpo_labels_ids = chosen_molpo_labels_ids.masked_fill(
-                    chosen_molpo_labels_ids == reject_molpo_labels_ids, -100
-                )
-                molpo_labels_ids = torch.cat(
-                    (chosen_molpo_labels_ids, reject_molpo_labels_ids), dim=0
-                )
+            molpo_labels_ids = labels_ids.clone()
+
+            # ----------------------------------------------------------------
+            # [Optional] 특수 토큰 제외 (필요한 경우만)
+            # ----------------------------------------------------------------
+            # 예: <mol> 토큰은 graph representation이므로 제외
+            if hasattr(self.args, 'exclude_mol_tokens') and self.args.exclude_mol_tokens:
+                if hasattr(self.tokenizer, 'mol_token_id'):
+                    molpo_labels_ids = molpo_labels_ids.masked_fill(
+                        molpo_labels_ids == self.tokenizer.mol_token_id, -100
+                    )
+
+            # ----------------------------------------------------------------
+            # [Deprecated] reject_label_mask 기능 제거
+            # ----------------------------------------------------------------
+            # 이유: 논문에서는 모든 토큰을 고려하여 평균 로그 확률 계산
+            #
+            # 만약 이 기능이 필요하다면, config에 명시적으로 문서화 필요
+            # if hasattr(self.args, "reject_label_mask") and self.args.reject_label_mask:
+            #     [기존 코드 제거]
+
             features["molpo_labels"] = molpo_labels_ids
 
         assert (

@@ -298,18 +298,18 @@ class Blip2LLaDA(Blip2OPT):
 
     def set_llm_model(self, llm_model):
         self.llm_model = AutoModelForCausalLM.from_pretrained(
-            llm_model, 
-            trust_remote_code=True, 
+            llm_model,
+            trust_remote_code=True,
             torch_dtype=torch.bfloat16
         )
         self.llm_tokenizer = AutoTokenizer.from_pretrained(
-            llm_model, 
+            llm_model,
             trust_remote_code=True
         )
-        
+
         if self.llm_tokenizer.pad_token is None:
             self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
-        
+
         self.llm_tokenizer.padding_side = 'left' 
 
         # Embedding Layer 참조 (안전하게 가져오기)
@@ -621,6 +621,19 @@ class Blip2LLaDA(Blip2OPT):
         # 오직 response 영역(is_answer)에서만 마스킹
         masked_indices = (mask_prob < p_mask) & is_answer
 
+        # ================================================================
+        # [FIX] 최소 1개 토큰은 무조건 마스킹되도록 보장
+        # t가 매우 작으면 p_mask가 거의 0이 되어 마스킹이 안 될 수 있음
+        # 이 경우 loss가 computation graph에서 분리되어 backward 에러 발생
+        # ================================================================
+        if masked_indices.sum() == 0:
+            for b in range(batch_size):
+                answer_positions = is_answer[b].nonzero(as_tuple=True)[0]
+                if len(answer_positions) > 0:
+                    # response 영역에서 랜덤하게 1개 선택하여 마스킹
+                    random_idx = answer_positions[torch.randint(len(answer_positions), (1,), device=self.device)]
+                    masked_indices[b, random_idx] = True
+
         # 원본 토큰 저장 (loss 계산용)
         original_tokens = input_ids.clone()
 
@@ -651,63 +664,59 @@ class Blip2LLaDA(Blip2OPT):
         loss_fct = nn.CrossEntropyLoss(reduction='none')
         token_loss = None  # NaN 로깅을 위해 미리 초기화
 
-        if masked_indices.sum() == 0:
-            loss = torch.tensor(0.0, device=self.device, requires_grad=True)
-            instance_loss = torch.zeros(batch_size, device=self.device)
-            instance_loss_no_eos = torch.zeros(batch_size, device=self.device)
-        else:
-            # ================================================================
-            # [핵심 수정] SMDM 원본 방식으로 loss 계산
-            #
-            # 원본: loss = CE(logits[mask], target[mask]) / p_mask[mask]
-            #       loss = loss.sum() / (batch_size * seq_len)
-            #
-            # 마스킹된 위치에서만 loss를 계산하고, 1/p_mask로 weighting
-            # ================================================================
+        # ================================================================
+        # SMDM 원본 방식으로 loss 계산
+        #
+        # 원본: loss = CE(logits[mask], target[mask]) / p_mask[mask]
+        #       loss = loss.sum() / (batch_size * seq_len)
+        #
+        # 마스킹된 위치에서만 loss를 계산하고, 1/p_mask로 weighting
+        # ================================================================
 
-            # logits: [batch, seq_len, vocab_size]
-            # masked_indices: [batch, seq_len] boolean
+        # logits: [batch, seq_len, vocab_size]
+        # masked_indices: [batch, seq_len] boolean
 
-            # 마스킹된 위치의 logits와 targets 추출
-            masked_logits = logits[masked_indices]  # [num_masked, vocab_size]
-            masked_targets = original_tokens[masked_indices]  # [num_masked]
-            masked_p = p_mask[masked_indices]  # [num_masked]
+        # 마스킹된 위치의 logits와 targets 추출
+        masked_logits = logits[masked_indices]  # [num_masked, vocab_size]
+        masked_targets = original_tokens[masked_indices]  # [num_masked]
+        masked_p = p_mask[masked_indices]  # [num_masked]
 
-            # Cross-entropy loss (마스킹된 위치만)
-            token_loss = loss_fct(masked_logits, masked_targets)  # [num_masked]
+        # Cross-entropy loss (마스킹된 위치만)
+        token_loss = loss_fct(masked_logits, masked_targets)  # [num_masked]
 
-            # Importance weighting: 1/p_mask
-            weighted_loss = token_loss / masked_p  # [num_masked]
+        # Importance weighting: 1/p_mask
+        weighted_loss = token_loss / masked_p  # [num_masked]
 
-            # Normalization: response 길이의 합으로 나눔 (원본은 전체 seq_len이지만,
-            # conditional generation이므로 response 길이 사용)
-            answer_lengths = is_answer.sum(dim=1).float()  # [batch]
-            total_answer_length = answer_lengths.sum()
+        # Normalization: response 길이의 합으로 나눔 (원본은 전체 seq_len이지만,
+        # conditional generation이므로 response 길이 사용)
+        answer_lengths = is_answer.sum(dim=1).float()  # [batch]
+        total_answer_length = answer_lengths.sum()
 
-            loss = weighted_loss.sum() / (total_answer_length + 1e-8)
+        loss = weighted_loss.sum() / (total_answer_length + 1e-8)
 
-            # Instance-level loss 계산 (per-sample)
-            # 각 샘플별로 마스킹된 토큰의 weighted loss 합계
-            instance_loss = torch.zeros(batch_size, device=self.device)
-            batch_indices = torch.where(masked_indices)[0]  # 각 마스킹된 토큰이 어떤 배치에 속하는지
-            instance_loss.scatter_add_(0, batch_indices, weighted_loss)
-            instance_loss = instance_loss / (answer_lengths + 1e-8)
+        # Instance-level loss 계산 (per-sample)
+        # 각 샘플별로 마스킹된 토큰의 weighted loss 합계
+        instance_loss = torch.zeros(batch_size, device=self.device)
+        batch_indices = torch.where(masked_indices)[0]  # 각 마스킹된 토큰이 어떤 배치에 속하는지
+        instance_loss.scatter_add_(0, batch_indices, weighted_loss)
+        instance_loss = instance_loss / (answer_lengths + 1e-8)
 
-            # Instance-level loss (EOS 제외) 계산
-            # EOS padding을 제외한 실제 response 영역만의 loss
-            eos_token_id = self.llm_tokenizer.eos_token_id
-            is_not_eos = (masked_targets != eos_token_id)  # [num_masked]
+        # Instance-level loss (EOS 제외) 계산
+        # EOS padding을 제외한 실제 response 영역만의 loss
+        eos_token_id = self.llm_tokenizer.eos_token_id
+        is_not_eos = (masked_targets != eos_token_id)  # [num_masked]
 
-            instance_loss_no_eos = torch.zeros(batch_size, device=self.device)
-            if is_not_eos.sum() > 0:
-                # EOS가 아닌 토큰들의 weighted loss만 scatter
-                weighted_loss_no_eos = weighted_loss * is_not_eos.float()  # EOS 위치는 0
-                instance_loss_no_eos.scatter_add_(0, batch_indices, weighted_loss_no_eos)
+        instance_loss_no_eos = torch.zeros(batch_size, device=self.device)
+        if is_not_eos.sum() > 0:
+            # EOS가 아닌 토큰들의 weighted loss만 scatter
+            weighted_loss_no_eos = weighted_loss * is_not_eos.float()  # EOS 위치는 0
+            instance_loss_no_eos.scatter_add_(0, batch_indices, weighted_loss_no_eos)
 
-                # EOS가 아닌 토큰 개수로 나눔 (샘플별)
-                non_eos_counts = torch.zeros(batch_size, device=self.device)
-                non_eos_counts.scatter_add_(0, batch_indices, is_not_eos.float())
-                instance_loss_no_eos = instance_loss_no_eos / (non_eos_counts + 1e-8)
+            # EOS가 아닌 토큰 개수로 나눔 (샘플별)
+            non_eos_counts = torch.zeros(batch_size, device=self.device)
+            non_eos_counts.scatter_add_(0, batch_indices, is_not_eos.float())
+            instance_loss_no_eos = instance_loss_no_eos / (non_eos_counts + 1e-8)
+
         if torch.isnan(loss) or torch.isinf(loss):
             # NaN 로깅 (config로 제어)
             if self._log_nan_details:
@@ -724,8 +733,7 @@ class Blip2LLaDA(Blip2OPT):
                 )
 
             # [임시 조치] 학습이 터지는 것을 막기 위해 Loss를 0으로 강제 변환
-            loss = torch.tensor(0.0, device=self.device, requires_grad=True)
-
+            
         # ==============================================================================
         # [디버깅] Special Token Embedding 상태 로깅 (config로 제어)
         # ==============================================================================
